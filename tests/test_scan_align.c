@@ -217,6 +217,7 @@ static insn_t decode(const uint8_t *p, size_t avail)
     switch (b) {
     case 0x90: /* nop (also 66 90) */
     case 0xC3: /* ret */
+    case 0xCC: /* int3: 1-byte trap in the post-ret trap sled */
         d.len = i + 1;
         return d;
     case 0xE9: /* jmp rel32 */

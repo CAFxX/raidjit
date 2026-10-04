@@ -154,7 +154,6 @@ typedef struct {
                                * <= 0 = default (11) */
     int    emit_endbr;        /* endbr64 at entry (NOP on non-CET CPUs) */
     int    emit_shadow_stack; /* setssbsy/clrssbsy; needs OS-enabled CET */
-    int    emit_traps;        /* ud2 trap sleds after ret */
     int    loop_align;        /* 0 = auto (64/32/16 by vector width);
                                * otherwise must be a power of two */
     int verbose;           /* print candidate table to stderr */

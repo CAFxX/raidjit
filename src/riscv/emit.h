@@ -75,6 +75,9 @@ void em_bne(em_t *e, int rs1, int rs2, int lab);   /* rel, label fixup */
 void em_jal(em_t *e, int rd, int lab);
 void em_lui(em_t *e, int rd, int imm20);
 void em_jalr(em_t *e, int rd, int rs1, int off12); /* ret = jalr x0, ra, 0 */
+void em_unimp(em_t *e); /* all-zero word: permanently illegal (trap sled) */
+void em_trap_align(em_t *e, unsigned a); /* UNIMP sled to alignment a (power
+                                          * of 2); dead space after ret only */
 /* rd = address of (label + add); emits auipc+addi with a paired fixup */
 void em_lla(em_t *e, int rd, int lab, int add);
 

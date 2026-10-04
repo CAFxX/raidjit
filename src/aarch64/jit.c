@@ -1086,8 +1086,10 @@ static void gen_function(cg_t *cg)
     if (save_x19)
         em_ldr64_post(e, 19, XSP, 16);
     em_ret(e);
-    if (o->emit_traps)
-        em_udf(e);
+    /* Trap sled after ret, unconditional: a fall-through past ret is a
+     * codegen bug and must fault immediately, never slide through NOPs
+     * into the const pool. */
+    em_udf(e);
     /* pool_lab is bound by the caller after 64-byte alignment */
 }
 
@@ -1349,8 +1351,9 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 
     gen_function(&cg);
 
-    /* constant pool after the code, 64-byte aligned */
-    em_align(&cg.em, 6);
+    /* constant pool after the code, 64-byte aligned. The dead space
+     * between ret and the pool is trap-filled (never NOPs). */
+    em_trap_align(&cg.em, 6);
     em_bind(&cg.em, cg.pool_lab);
     size_t code_size = cg.em.len;
     for (size_t i = 0; i < cg.pool_len; i++)

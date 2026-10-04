@@ -153,6 +153,22 @@ void em_align(em_t *e, unsigned a)
         emit32(e, 0x00000013u);
 }
 
+/* The all-zero word is architecturally guaranteed illegal on RISC-V
+ * (UNIMP); it traps even where the C extension is present (c.unimp). */
+void em_unimp(em_t *e) { emit32(e, 0x00000000u); }
+
+/* Pad to alignment a with UNIMP words. Dead space after ret only: a
+ * fall-through past ret must trap immediately, never slide through NOPs
+ * into the const pool. The 16-byte pool alignment is always a whole
+ * number of 4-byte words. */
+void em_trap_align(em_t *e, unsigned a)
+{
+    assert(a && (a & (a - 1)) == 0);
+    assert((e->len & 3) == 0); /* all emits are 32-bit; no sub-word tail */
+    while (e->len & (a - 1))
+        em_unimp(e);
+}
+
 /* ---------------- integer ---------------- */
 
 void em_add(em_t *e, int rd, int rs1, int rs2)

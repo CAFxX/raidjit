@@ -50,7 +50,8 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_xorsched $(BUILDDIR)/test_xorsched_e2e \
         $(BUILDDIR)/test_matrix_search $(BUILDDIR)/test_xorcode \
         $(BUILDDIR)/test_notail_xorsched $(BUILDDIR)/test_survivor \
-        $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch
+        $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
+        $(BUILDDIR)/test_traps
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -86,6 +87,7 @@ _test-qemu-aarch64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_emit
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_nt
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_b4_prefetch
+	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_traps
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_pdelta
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_pdelta_edge
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_boundaries
@@ -170,6 +172,7 @@ test-qemu-riscv64:
 _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_nt
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_b4_prefetch
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_traps
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pdelta
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pdelta_edge
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_boundaries
@@ -305,6 +308,7 @@ endif
 	./$(BUILDDIR)/test_survivor
 	./$(BUILDDIR)/test_tailduel
 	./$(BUILDDIR)/test_b4_prefetch
+	./$(BUILDDIR)/test_traps
 
 # Sanitizer build: all tests under ASan+UBSan (leaks, OOB, UB).
 test-asan: clean
@@ -406,6 +410,9 @@ $(BUILDDIR)/test_tailduel: tests/test_tailduel.c $(BUILDDIR)/libraidjit.a $(HDRS
 
 $(BUILDDIR)/test_b4_prefetch: tests/test_b4_prefetch.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_b4_prefetch.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_traps: tests/test_traps.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_traps.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_nt: tests/test_nt.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_nt.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

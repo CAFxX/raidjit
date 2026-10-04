@@ -276,6 +276,26 @@ void em_ud2(em_t *e)
     em_u8(e, 0x0B);
 }
 
+void em_int3(em_t *e) { em_u8(e, 0xCC); }
+
+/* Pad to alignment a with trap instructions: UD2 pairs, plus a single
+ * INT3 when the pad length is odd (x86 has no 1-byte UD2; INT3 is the
+ * standard 1-byte trap and raises SIGTRAP). Used only for dead space
+ * after ret: if execution ever falls through past ret it must fault
+ * immediately instead of sliding through NOPs into the const pool.
+ * Executable alignment (loops) still uses em_align's real NOPs. */
+void em_trap_align(em_t *e, unsigned a)
+{
+    assert(a && (a & (a - 1)) == 0);
+    size_t need = ((e->len + a - 1) & ~(size_t)(a - 1)) - e->len;
+    while (need >= 2) {
+        em_ud2(e);
+        need -= 2;
+    }
+    if (need)
+        em_int3(e);
+}
+
 void em_ret(em_t *e) { em_u8(e, 0xC3); }
 
 void em_push_r(em_t *e, int r)

@@ -42,12 +42,16 @@ void em_bind(em_t *e, int lab);
 void em_resolve(em_t *e);        /* patch all fixups; call after binding all */
 void em_free(em_t *e);           /* release label/fixup tables (not the code buf) */
 void em_align(em_t *e, unsigned a); /* NOP sled to alignment a (power of 2) */
+void em_trap_align(em_t *e, unsigned a); /* trap sled (UD2/INT3) to alignment a;
+                                          * for dead space after ret only --
+                                          * never inside executable paths */
 
 /* --- control / misc --- */
 void em_endbr64(em_t *e);
 void em_setssbsy(em_t *e);
 void em_clrssbsy(em_t *e);
 void em_ud2(em_t *e);
+void em_int3(em_t *e);           /* 1-byte trap (odd padding after UD2 pairs) */
 void em_ret(em_t *e);
 void em_push_r(em_t *e, int r);
 void em_pop_r(em_t *e, int r);

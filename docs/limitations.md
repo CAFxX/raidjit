@@ -160,8 +160,11 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
   by `rj_compile`.
 - `emit_shadow_stack` requires OS-enabled CET; on non-CET hardware the
   emitted `setssbsy` raises `#UD` (verified under QEMU). `emit_endbr` is a
-  NOP on non-CET CPUs and always safe. `emit_traps` appends `ud2` sleds
-  after `ret` — a debugging aid, not a security boundary.
+  NOP on non-CET CPUs and always safe. After `ret` every backend emits an
+  unconditional trap sled (`ud2` on x86-64, `udf #0` on AArch64, `unimp`
+  on RISC-V) and the dead space before the const pool is trap-filled, so a
+  fall-through past `ret` faults immediately instead of sliding through
+  NOPs into the pool.
 - Determinism: same CPU + topology + op ⇒ same winner (deterministic
   tie-breaks). Across different CPUs the winner may differ — expected.
 

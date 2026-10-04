@@ -50,6 +50,18 @@ void em_align(em_t *e, unsigned a)
         em_word(e, 0xD503201Fu); /* hint #0 = nop */
 }
 
+/* Pad to 2^a alignment with UDF #0 (permanently undefined). Dead space
+ * after ret only: a fall-through past ret must fault immediately, never
+ * slide through NOPs into the const pool. The 64-byte pool alignment is
+ * always a whole number of 4-byte words, so no odd-byte filler is needed. */
+void em_trap_align(em_t *e, unsigned a)
+{
+    assert((e->len & 3) == 0); /* all emits are 32-bit; no sub-word tail */
+    size_t want = ((e->len + ((size_t)1 << a) - 1) >> a) << a;
+    while (e->len < want)
+        em_udf(e);
+}
+
 static void lb_grow(em_t *e)
 {
     if (e->lb.n >= e->lb.cap) {

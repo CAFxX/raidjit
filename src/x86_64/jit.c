@@ -1316,8 +1316,10 @@ static void gen_function(cg_t *cg)
     if (!is_sse(cg))
         em_vzeroupper(e);
     em_ret(e);
-    if (o->emit_traps)
-        em_ud2(e);
+    /* Trap sled after ret, unconditional: a fall-through past ret is a
+     * codegen bug and must fault immediately (#UD), never slide through
+     * NOPs into the const pool. */
+    em_ud2(e);
 }
 
 /* ---------------- version build ---------------- */
@@ -1506,8 +1508,9 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 
     gen_function(&cg);
 
-    /* constant pool after the code */
-    em_align(&cg.em, 64);
+    /* constant pool after the code. The dead space between ret and the
+     * pool is trap-filled (never NOPs): see em_trap_align. */
+    em_trap_align(&cg.em, 64);
     em_bind(&cg.em, cg.pool_lab);
     size_t code_size = cg.em.len;
     for (size_t i = 0; i < cg.pool_len; i++)

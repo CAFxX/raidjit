@@ -116,8 +116,10 @@ aligned (`loop_align`, default 64/32/16 by vector width, must be 0 or a
 power of two); scalar tails handle any `len`, including 0. Constant
 pools are 64-aligned, RIP-relative; code is mapped RW, filled, then
 `mprotect`ed RX (no RWX window). Optional hardening: `endbr64` at entry,
-shadow-stack `setssbsy`/`clrssbsy` (needs OS-enabled CET), `ud2` trap
-sleds after `ret`.
+shadow-stack `setssbsy`/`clrssbsy` (needs OS-enabled CET). Trap sleds
+after `ret` (`ud2` on x86-64, `udf #0` on AArch64, `unimp` on RISC-V)
+are always emitted, and the dead space before the const pool is
+trap-filled, so a fall-through past `ret` faults immediately.
 
 Length-specialized dispatch: after the benchmark picks the winning
 candidate, `rj_compile` also builds its notail twin (same loop, tail

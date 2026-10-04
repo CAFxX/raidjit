@@ -59,6 +59,8 @@ void em_free(em_t *e);
 void em_byte(em_t *e, uint8_t v);
 void em_word(em_t *e, uint32_t w);          /* one A64/SVE instruction */
 void em_align(em_t *e, unsigned a);         /* NOP sled to 2^a alignment */
+void em_trap_align(em_t *e, unsigned a);    /* UDF sled to 2^a alignment;
+                                             * dead space after ret only */
 
 int  em_label(em_t *e);
 void em_bind(em_t *e, int lab);
