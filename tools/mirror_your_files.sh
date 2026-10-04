@@ -9,7 +9,7 @@
 # Canonical home (single source of truth):
 #   ~/workspace/goals/raidjit-follow-on-extensions/files/
 # Library-visible mirror:
-#   ~/workspace/your_files/raidjit/  (+ raidjit-source.zip)
+#   ~/workspace/your_files/raidjit/  (+ raidjit-source.zip, + raidjit_kernels.md)
 #
 # Re-run after any `make kernels` or other deliverable refresh.
 # `make kernels` (tools/finalize_kernels.sh) calls this automatically.
@@ -29,4 +29,8 @@ cp -al "$G/raidjit/." "$Y/raidjit/"
 rm -f "$Y/raidjit-source.zip"
 ln "$G/raidjit-source.zip" "$Y/raidjit-source.zip"
 
-echo "mirror: $Y/raidjit and $Y/raidjit-source.zip now hardlink $G"
+# Disassembled-kernels reference doc, top-level in your_files per 2026-10-04.
+rm -f "$Y/raidjit_kernels.md"
+ln "$G/raidjit/raidjit_kernels.md" "$Y/raidjit_kernels.md"
+
+echo "mirror: $Y/raidjit, $Y/raidjit-source.zip and $Y/raidjit_kernels.md now hardlink $G"

@@ -1,9 +1,10 @@
 #!/bin/sh
 # tools/finalize_kernels.sh <stagedir> — disassemble staged kernel bins,
 # build manifest.json, install into the goal files dir
-# (goals/raidjit-follow-on-extensions/files/raidjit/kernels/), rebuild
-# kernels.zip, then mirror into your_files/raidjit/ (the Library / System
-# Files browser does not follow symlinks, so your_files holds hardlinks).
+# (goals/raidjit-follow-on-extensions/files/raidjit/kernels/), build the
+# disassembled-kernels reference document raidjit_kernels.md, then mirror
+# into your_files/ (the Library / System Files browser does not follow
+# symlinks, so your_files holds hardlinks).
 # Run via `make kernels` (rvv is generated last, immediately before this step).
 set -eu
 
@@ -13,7 +14,7 @@ DEST=$REPO/../goals/raidjit-follow-on-extensions/files/raidjit/kernels
 DATE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 for c in objdump aarch64-linux-gnu-objdump riscv64-linux-gnu-objdump \
-    riscv64-linux-gnu-as python3 zip; do
+    riscv64-linux-gnu-as python3; do
     command -v "$c" >/dev/null 2>&1 || {
         echo "finalize_kernels.sh: missing required tool: $c" >&2
         exit 1
@@ -99,10 +100,11 @@ cp "$STAGE/manifest.json" "$DEST/"
 # installs it — no hand-copying from /tmp.
 cp "$REPO/tools/kernels-README.md" "$DEST/README.md"
 
-# Zip to a temp name and rename atomically: a zip failure must not delete
-# the previous kernels.zip with no replacement.
-(cd "$DEST/.." && zip -qr kernels.zip.tmp kernels && mv -f kernels.zip.tmp kernels.zip)
-echo "finalize_kernels.sh: installed 6 kernels + manifest.json + README.md, rebuilt kernels.zip"
-ls -la "$DEST" "$DEST/../kernels.zip"
-# Refresh the Library-visible hardlink mirror (your_files/raidjit/).
+# Build the disassembled-kernels reference document: per-kernel configuration
+# table plus the full disassembly of all six kernels (replaces kernels.zip as
+# the shipped deliverable).
+python3 "$REPO/tools/gen_kernels_md.py" "$STAGE" "$DEST/../raidjit_kernels.md"
+echo "finalize_kernels.sh: installed 6 kernels + manifest.json + README.md, built raidjit_kernels.md"
+ls -la "$DEST" "$DEST/../raidjit_kernels.md"
+# Refresh the Library-visible hardlink mirror (your_files/).
 sh "$REPO/tools/mirror_your_files.sh"
