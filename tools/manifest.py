@@ -20,8 +20,11 @@ from datetime import datetime, timezone
 EXPECTED = [
     "raid5-4_avx512-gfni",
     "raid6-5_avx512-gfni",
+    "raid5-4_avx512-gfni_maskedtail",  # item-14 tail twin (track B1x86)
     "raid5-4_sve2",
     "raid6-5_sve2",
+    "raid5-4_sve2_predtail",  # item-14 tail twin (track B1sve)
+    "raid6-5_sve2_predtail",  # item-14 tail twin (track B1sve)
     "raid5-4_rvv",
     "raid6-5_rvv",
 ]

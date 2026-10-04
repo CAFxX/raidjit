@@ -269,6 +269,35 @@ static int count_rvv(const uint8_t *code, size_t code_size)
     return n;
 }
 
+static int count_kmovq(const uint8_t *code, size_t code_size)
+{
+    /* KMOVQ k,m64 (tail-mask load, track B1x86): VEX.0F.W1 90 /r, i.e.
+     * 3-byte VEX 0xC4, two payload bytes, opcode 0x90. See
+     * em_kmovq_km (src/x86_64/emit.c). */
+    int n = 0;
+    for (size_t i = 0; i + 3 < code_size; i++) {
+        if (code[i] == 0xC4 && code[i + 3] == 0x90)
+            n++;
+    }
+    return n;
+}
+
+static int count_whilelt(const uint8_t *code, size_t code_size)
+{
+    /* WHILELT pd.b,xRn,xRm (predicated-tail predicate, track B1sve):
+     * 0x25201400 | rm<<16 | rn<<5 | pd. Mask out the register fields;
+     * cf. em_sve_whilelt (src/aarch64/emit.c) and the CHECK_WORD pins in
+     * tests/test_aarch64_emit.c. */
+    int n = 0;
+    for (size_t i = 0; i + 4 <= code_size; i += 4) {
+        uint32_t w;
+        memcpy(&w, code + i, 4);
+        if ((w & 0xFFE0FC10u) == 0x25201400u)
+            n++;
+    }
+    return n;
+}
+
 /* Returns marker description (static). Dies if the marker is absent. */
 static const char *check_marker(const char *target, const char *kname,
                                 const uint8_t *code, size_t code_size,
@@ -276,7 +305,20 @@ static const char *check_marker(const char *target, const char *kname,
 {
     int n = 0;
     const char *m = NULL;
-    if (!strcmp(target, "sve2")) {
+    if (strstr(kname, "_maskedtail")) {
+        /* Item-14 tail twin: the marker is the tail-mask load. The body
+         * is the winner's (already ISA-marked); the twin exists for the
+         * tail, so the tail instruction class is the assertion. */
+        n = count_kmovq(code, code_size);
+        m = "KMOVQ (tail-mask load into k1) present";
+        if (!strstr(desc, "maskedtail"))
+            die("%s: expected maskedtail twin, desc='%s'", kname, desc);
+    } else if (strstr(kname, "_predtail")) {
+        n = count_whilelt(code, code_size);
+        m = "WHILELT (predicated-tail predicate) present";
+        if (!strstr(desc, "predtail"))
+            die("%s: expected predtail twin, desc='%s'", kname, desc);
+    } else if (!strcmp(target, "sve2")) {
         if (strstr(kname, "raid6")) {
             /* P_HORNER has GF multiplies: SVE2 EOR3 must be present.
              * This is the proof the "sve2" label is accurate. */
@@ -323,6 +365,224 @@ static const char *check_marker(const char *target, const char *kname,
     if (count_out)
         *count_out = n;
     return m;
+}
+
+/* Forward: strategy_name is defined in the build section below, but
+ * emit_kernel (manifest fragment) needs it. */
+static const char *strategy_name(plan_kind_t k);
+
+/* Emit one kernel: verify the live image against the scalar reference,
+ * check the ISA (or tail-twin) marker on the exact emitted bytes, dump the
+ * bytes, re-verify the shipped bytes from a fresh executable mapping, and
+ * write the manifest fragment. Used for the winning version and for the
+ * item-14 tail twins. */
+static void emit_kernel(const plan_t *pl, version_t *v, const char *kname,
+                        const char *target, const char *outdir,
+                        const char *sname, int ndata, int redgreen)
+{
+const uint8_t *code = (const uint8_t *)v->mem;
+const uint8_t *cnst = code + v->code_size;
+
+/* 1. verify the live image against the scalar reference */
+kernel_t k = {pl, v->fn};
+long runs = 0;
+if (verify_kernel(&k, &runs))
+    die("%s: correctness verification FAILED", kname);
+
+/* 2. ISA marker on the exact emitted bytes */
+int mcount = 0;
+const char *marker =
+    check_marker(target, kname, code, v->code_size, v->desc, &mcount);
+
+if (redgreen) {
+    /* --- red-green proof (never shipped) ---
+     * (a) flip one const-pool byte -> the check must FAIL. */
+    int rg_ok = 1;
+    if (v->const_size > 0) {
+        long ps = sysconf(_SC_PAGESIZE);
+        size_t msz = (v->code_size + v->const_size +
+                      (size_t)ps - 1) &
+                     ~((size_t)ps - 1);
+        uint8_t *mem = (uint8_t *)v->mem;
+        /* Keep PROT_EXEC: we execute the kernel below to observe
+         * the corruption. */
+        if (mprotect(mem, msz, PROT_READ | PROT_WRITE | PROT_EXEC))
+            die("%s: redgreen mprotect failed", kname);
+        /* Flip one const-pool byte. For the maskedtail twin the pool
+         * is the tail-mask table whose entry 0 is never read by
+         * construction (chunk length rdx in 1..64), so flip the first
+         * byte of the last entry (mask[64], exercised by every
+         * 64-byte tail chunk) instead of pool[0]. */
+        size_t flip_off = v->code_size;
+        if (strstr(kname, "_maskedtail"))
+            flip_off = v->code_size + v->const_size - 8;
+        mem[flip_off] ^= 0xFF;
+        if (verify_case(&k, 1003, 0xC0FFEEULL) == 0) {
+            printf("REDGREEN-FAIL %s: const corruption NOT detected\n",
+                   kname);
+            rg_ok = 0;
+        }
+        mem[flip_off] ^= 0xFF; /* restore */
+        if (mprotect(mem, msz, PROT_READ | PROT_EXEC))
+            die("%s: redgreen mprotect restore failed", kname);
+        /* sanity: restored image verifies again */
+        if (verify_case(&k, 1003, 0xC0FFEEULL) != 0) {
+            printf("REDGREEN-FAIL %s: restore did not recover\n",
+                   kname);
+            rg_ok = 0;
+        }
+    } else {
+        printf("redgreen %s: no const pool, skipping flip test\n",
+               kname);
+    }
+    /* (b) corrupt the expected output -> comparator must FAIL.
+     * Proves the memcmp is not vacuous (also covers const_size==0
+     * kernels). */
+    {
+        int n_in = pl->n_in, n_out = pl->n_out;
+        const void *in[256];
+        void *out[256];
+        uint8_t *inb[256], *outb[256], *wantb[256];
+        size_t len = 1003;
+        xrng_state = 0xB16B00B5ULL;
+        for (int i = 0; i < n_in; i++) {
+            if (posix_memalign((void **)&inb[i], 64, len))
+                die("oom");
+            for (size_t j = 0; j < len; j++)
+                inb[i][j] = (uint8_t)xrng();
+            in[i] = inb[i];
+        }
+        for (int j = 0; j < n_out; j++) {
+            if (posix_memalign((void **)&outb[j], 64, len))
+                die("oom");
+            if (posix_memalign((void **)&wantb[j], 64, len))
+                die("oom");
+            out[j] = outb[j];
+        }
+        ref_run(pl, (const uint8_t **)in, wantb, len);
+        v->fn(in, out, len);
+        wantb[0][0] ^= 0xFF; /* corrupt expectation */
+        int cmp = 0;
+        for (int j = 0; j < n_out; j++)
+            if (memcmp(outb[j], wantb[j], len))
+                cmp = 1;
+        if (!cmp) {
+            printf("REDGREEN-FAIL %s: comparator vacuous\n", kname);
+            rg_ok = 0;
+        }
+        for (int i = 0; i < n_in; i++)
+            free(inb[i]);
+        for (int j = 0; j < n_out; j++) {
+            free(outb[j]);
+            free(wantb[j]);
+        }
+    }
+    if (!rg_ok)
+        die("%s: red-green proof failed", kname);
+    printf("redgreen %s: OK (corruption detected)\n", kname);
+}
+
+/* 3. dump exact bytes */
+char code_path[512], const_path[512], frag_path[512];
+snprintf(code_path, sizeof(code_path), "%s/%s.code.bin", outdir,
+         kname);
+snprintf(const_path, sizeof(const_path), "%s/%s.const.bin", outdir,
+         kname);
+snprintf(frag_path, sizeof(frag_path), "%s/%s.json", outdir, kname);
+FILE *f = fopen(code_path, "wb");
+if (!f)
+    die("cannot write %s", code_path);
+if (v->code_size && fwrite(code, 1, v->code_size, f) != v->code_size)
+    die("short write %s", code_path);
+fclose(f);
+f = fopen(const_path, "wb");
+if (!f)
+    die("cannot write %s", const_path);
+if (v->const_size &&
+    fwrite(cnst, 1, v->const_size, f) != v->const_size)
+    die("short write %s", const_path);
+fclose(f);
+
+/* 4. re-mmap the SHIPPED bytes as a fresh image, re-verify those */
+{
+    size_t total = v->code_size + v->const_size;
+    long ps = sysconf(_SC_PAGESIZE);
+    size_t msz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
+    uint8_t *img =
+        mmap(NULL, msz ? msz : (size_t)ps, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (img == MAP_FAILED)
+        die("%s: reload mmap failed", kname);
+    /* re-read from disk: the bytes under test are the files */
+    FILE *fc = fopen(code_path, "rb");
+    FILE *fp = fopen(const_path, "rb");
+    if (!fc || !fp)
+        die("%s: cannot re-read dumped bins", kname);
+    if (v->code_size &&
+        fread(img, 1, v->code_size, fc) != v->code_size)
+        die("%s: short re-read code", kname);
+    if (v->const_size &&
+        fread(img + v->code_size, 1, v->const_size, fp) !=
+            v->const_size)
+        die("%s: short re-read const", kname);
+    fclose(fc);
+    fclose(fp);
+    __builtin___clear_cache((char *)img, (char *)img + total);
+    if (mprotect(img, msz ? msz : (size_t)ps, PROT_READ | PROT_EXEC))
+        die("%s: reload mprotect failed", kname);
+    kernel_t kr = {pl, (rj_fn)img};
+    long rruns = 0;
+    if (verify_kernel(&kr, &rruns))
+        die("%s: SHIPPED-BYTES verification FAILED", kname);
+    munmap(img, msz ? msz : (size_t)ps);
+    printf("%s: shipped-bytes re-verified (%ld runs)\n", kname,
+           rruns);
+}
+
+/* 5. manifest fragment (sha256 added by tools/manifest.py) */
+{
+    char edesc[256], emarker[256];
+    json_escape(edesc, sizeof(edesc), v->desc);
+    json_escape(emarker, sizeof(emarker), marker);
+    int nominal_vl =
+        !strcmp(target, "avx512-gfni")
+            ? 64
+            : 16; /* sve2/rvv nominal VL in bytes for selection */
+    f = fopen(frag_path, "w");
+    if (!f)
+        die("cannot write %s", frag_path);
+    fprintf(f,
+            "{\n"
+            "  \"name\": \"%s\",\n"
+            "  \"target\": \"%s\",\n"
+            "  \"topology\": \"%s(%d)\",\n"
+            "  \"op\": \"encode\",\n"
+            "  \"desc\": \"%s\",\n"
+            "  \"strategy\": \"%s\",\n"
+            "  \"unroll\": %d,\n"
+            "  \"nominal_vl_bytes\": %d,\n"
+            "  \"code_size\": %zu,\n"
+            "  \"const_size\": %zu,\n"
+            "  \"uops_per_byte\": %.6f,\n"
+            "  \"mem_per_byte\": %.6f,\n"
+            "  \"code_file\": \"%s.code.bin\",\n"
+            "  \"const_file\": \"%s.const.bin\",\n"
+            "  \"asm_file\": \"%s.asm\",\n"
+            "  \"selection\": \"heuristic\",\n"
+            "  \"marker\": \"%s\",\n"
+            "  \"marker_count\": %d\n"
+            "}\n",
+            kname, target, sname, ndata, edesc,
+            strategy_name(pl->kind), v->cand.U, nominal_vl,
+            v->code_size, v->const_size, v->uops_per_byte,
+            v->mem_per_byte, kname, kname, kname, emarker, mcount);
+    fclose(f);
+}
+
+printf("%s: desc=\"%s\" code=%zu const=%zu verified=%ld runs "
+       "marker=\"%s\" x%d\n",
+       kname, v->desc, v->code_size, v->const_size, runs, marker,
+       mcount);
 }
 
 /* ---------------- build ---------------- */
@@ -405,201 +665,41 @@ int main(int argc, char **argv)
             die("%s: heuristic_select failed", kname);
         version_t *v = &vs[w];
 
-        const uint8_t *code = (const uint8_t *)v->mem;
-        const uint8_t *cnst = code + v->code_size;
+        emit_kernel(&pl, v, kname, target, outdir,
+                    specs[s].sname, specs[s].ndata, redgreen);
 
-        /* 1. verify the live image against the scalar reference */
-        kernel_t k = {&pl, v->fn};
-        long runs = 0;
-        if (verify_kernel(&k, &runs))
-            die("%s: correctness verification FAILED", kname);
-
-        /* 2. ISA marker on the exact emitted bytes */
-        int mcount = 0;
-        const char *marker =
-            check_marker(target, kname, code, v->code_size, v->desc, &mcount);
-
-        if (redgreen) {
-            /* --- red-green proof (never shipped) ---
-             * (a) flip one const-pool byte -> the check must FAIL. */
-            int rg_ok = 1;
-            if (v->const_size > 0) {
-                long ps = sysconf(_SC_PAGESIZE);
-                size_t msz = (v->code_size + v->const_size +
-                              (size_t)ps - 1) &
-                             ~((size_t)ps - 1);
-                uint8_t *mem = (uint8_t *)v->mem;
-                /* Keep PROT_EXEC: we execute the kernel below to observe
-                 * the corruption. */
-                if (mprotect(mem, msz, PROT_READ | PROT_WRITE | PROT_EXEC))
-                    die("%s: redgreen mprotect failed", kname);
-                mem[v->code_size] ^= 0xFF;
-                if (verify_case(&k, 1003, 0xC0FFEEULL) == 0) {
-                    printf("REDGREEN-FAIL %s: const corruption NOT detected\n",
-                           kname);
-                    rg_ok = 0;
-                }
-                mem[v->code_size] ^= 0xFF; /* restore */
-                if (mprotect(mem, msz, PROT_READ | PROT_EXEC))
-                    die("%s: redgreen mprotect restore failed", kname);
-                /* sanity: restored image verifies again */
-                if (verify_case(&k, 1003, 0xC0FFEEULL) != 0) {
-                    printf("REDGREEN-FAIL %s: restore did not recover\n",
-                           kname);
-                    rg_ok = 0;
-                }
-            } else {
-                printf("redgreen %s: no const pool, skipping flip test\n",
-                       kname);
-            }
-            /* (b) corrupt the expected output -> comparator must FAIL.
-             * Proves the memcmp is not vacuous (also covers const_size==0
-             * kernels). */
-            {
-                int n_in = pl.n_in, n_out = pl.n_out;
-                const void *in[256];
-                void *out[256];
-                uint8_t *inb[256], *outb[256], *wantb[256];
-                size_t len = 1003;
-                xrng_state = 0xB16B00B5ULL;
-                for (int i = 0; i < n_in; i++) {
-                    if (posix_memalign((void **)&inb[i], 64, len))
-                        die("oom");
-                    for (size_t j = 0; j < len; j++)
-                        inb[i][j] = (uint8_t)xrng();
-                    in[i] = inb[i];
-                }
-                for (int j = 0; j < n_out; j++) {
-                    if (posix_memalign((void **)&outb[j], 64, len))
-                        die("oom");
-                    if (posix_memalign((void **)&wantb[j], 64, len))
-                        die("oom");
-                    out[j] = outb[j];
-                }
-                ref_run(&pl, (const uint8_t **)in, wantb, len);
-                v->fn(in, out, len);
-                wantb[0][0] ^= 0xFF; /* corrupt expectation */
-                int cmp = 0;
-                for (int j = 0; j < n_out; j++)
-                    if (memcmp(outb[j], wantb[j], len))
-                        cmp = 1;
-                if (!cmp) {
-                    printf("REDGREEN-FAIL %s: comparator vacuous\n", kname);
-                    rg_ok = 0;
-                }
-                for (int i = 0; i < n_in; i++)
-                    free(inb[i]);
-                for (int j = 0; j < n_out; j++) {
-                    free(outb[j]);
-                    free(wantb[j]);
-                }
-            }
-            if (!rg_ok)
-                die("%s: red-green proof failed", kname);
-            printf("redgreen %s: OK (corruption detected)\n", kname);
-        }
-
-        /* 3. dump exact bytes */
-        char code_path[512], const_path[512], frag_path[512];
-        snprintf(code_path, sizeof(code_path), "%s/%s.code.bin", outdir,
-                 kname);
-        snprintf(const_path, sizeof(const_path), "%s/%s.const.bin", outdir,
-                 kname);
-        snprintf(frag_path, sizeof(frag_path), "%s/%s.json", outdir, kname);
-        FILE *f = fopen(code_path, "wb");
-        if (!f)
-            die("cannot write %s", code_path);
-        if (v->code_size && fwrite(code, 1, v->code_size, f) != v->code_size)
-            die("short write %s", code_path);
-        fclose(f);
-        f = fopen(const_path, "wb");
-        if (!f)
-            die("cannot write %s", const_path);
-        if (v->const_size &&
-            fwrite(cnst, 1, v->const_size, f) != v->const_size)
-            die("short write %s", const_path);
-        fclose(f);
-
-        /* 4. re-mmap the SHIPPED bytes as a fresh image, re-verify those */
+        /* Item-14 tail twins: built from the winning candidate exactly as
+         * api.c does (plan_candidates never sets these flags). The twin
+         * is a complete version whose scalar tail is replaced by the
+         * masked (AVX-512) or predicated (SVE) vector tail. Eligibility
+         * mirrors api.c; a twin build failure is fatal here -- silently
+         * dropping it would leave the deliverable without the item-14
+         * representative again. */
         {
-            size_t total = v->code_size + v->const_size;
-            long ps = sysconf(_SC_PAGESIZE);
-            size_t msz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
-            uint8_t *img =
-                mmap(NULL, msz ? msz : (size_t)ps, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if (img == MAP_FAILED)
-                die("%s: reload mmap failed", kname);
-            /* re-read from disk: the bytes under test are the files */
-            FILE *fc = fopen(code_path, "rb");
-            FILE *fp = fopen(const_path, "rb");
-            if (!fc || !fp)
-                die("%s: cannot re-read dumped bins", kname);
-            if (v->code_size &&
-                fread(img, 1, v->code_size, fc) != v->code_size)
-                die("%s: short re-read code", kname);
-            if (v->const_size &&
-                fread(img + v->code_size, 1, v->const_size, fp) !=
-                    v->const_size)
-                die("%s: short re-read const", kname);
-            fclose(fc);
-            fclose(fp);
-            __builtin___clear_cache((char *)img, (char *)img + total);
-            if (mprotect(img, msz ? msz : (size_t)ps, PROT_READ | PROT_EXEC))
-                die("%s: reload mprotect failed", kname);
-            kernel_t kr = {&pl, (rj_fn)img};
-            long rruns = 0;
-            if (verify_kernel(&kr, &rruns))
-                die("%s: SHIPPED-BYTES verification FAILED", kname);
-            munmap(img, msz ? msz : (size_t)ps);
-            printf("%s: shipped-bytes re-verified (%ld runs)\n", kname,
-                   rruns);
+            cand_t twc = vs[w].cand;
+            const char *suffix = NULL;
+            if (twc.isa == ISA_SVE) {
+                twc.predtail = 1;
+                suffix = "predtail";
+            } else if (twc.isa == ISA_AVX512 && pl.kind == P_XOR &&
+                       !twc.ternlog && !twc.xorsched && !twc.nt &&
+                       cpu.avx512f && cpu.avx512bw) {
+                twc.maskedtail = 1;
+                suffix = "maskedtail";
+            }
+            if (suffix) {
+                char twname[128], e3[256];
+                snprintf(twname, sizeof(twname), "%s_%s", kname, suffix);
+                version_t twin;
+                memset(&twin, 0, sizeof(twin));
+                if (jit_build_version(&pl, &twc, &cpu, &o, &twin, e3,
+                                      sizeof(e3)))
+                    die("%s: tail twin build failed: %s", twname, e3);
+                emit_kernel(&pl, &twin, twname, target, outdir,
+                            specs[s].sname, specs[s].ndata, redgreen);
+                jit_free_version(&twin);
+            }
         }
-
-        /* 5. manifest fragment (sha256 added by tools/manifest.py) */
-        {
-            char edesc[256], emarker[256];
-            json_escape(edesc, sizeof(edesc), v->desc);
-            json_escape(emarker, sizeof(emarker), marker);
-            int nominal_vl =
-                !strcmp(target, "avx512-gfni")
-                    ? 64
-                    : 16; /* sve2/rvv nominal VL in bytes for selection */
-            f = fopen(frag_path, "w");
-            if (!f)
-                die("cannot write %s", frag_path);
-            fprintf(f,
-                    "{\n"
-                    "  \"name\": \"%s\",\n"
-                    "  \"target\": \"%s\",\n"
-                    "  \"topology\": \"%s(%d)\",\n"
-                    "  \"op\": \"encode\",\n"
-                    "  \"desc\": \"%s\",\n"
-                    "  \"strategy\": \"%s\",\n"
-                    "  \"unroll\": %d,\n"
-                    "  \"nominal_vl_bytes\": %d,\n"
-                    "  \"code_size\": %zu,\n"
-                    "  \"const_size\": %zu,\n"
-                    "  \"uops_per_byte\": %.6f,\n"
-                    "  \"mem_per_byte\": %.6f,\n"
-                    "  \"code_file\": \"%s.code.bin\",\n"
-                    "  \"const_file\": \"%s.const.bin\",\n"
-                    "  \"asm_file\": \"%s.asm\",\n"
-                    "  \"selection\": \"heuristic\",\n"
-                    "  \"marker\": \"%s\",\n"
-                    "  \"marker_count\": %d\n"
-                    "}\n",
-                    kname, target, specs[s].sname, specs[s].ndata, edesc,
-                    strategy_name(pl.kind), v->cand.U, nominal_vl,
-                    v->code_size, v->const_size, v->uops_per_byte,
-                    v->mem_per_byte, kname, kname, kname, emarker, mcount);
-            fclose(f);
-        }
-
-        printf("%s: desc=\"%s\" code=%zu const=%zu verified=%ld runs "
-               "marker=\"%s\" x%d\n",
-               kname, v->desc, v->code_size, v->const_size, runs, marker,
-               mcount);
 
         for (int i = 0; i < nv; i++)
             jit_free_version(&vs[i]);

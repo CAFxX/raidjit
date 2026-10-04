@@ -21,8 +21,16 @@ for c in objdump aarch64-linux-gnu-objdump riscv64-linux-gnu-objdump \
     }
 done
 
-NAMES="raid5-4_avx512-gfni raid6-5_avx512-gfni \
-       raid5-4_sve2 raid6-5_sve2 raid5-4_rvv raid6-5_rvv"
+NAMES=""
+for j in "$STAGE"/*.json; do
+    n=$(basename "$j" .json)
+    [ "$n" = "manifest" ] && continue
+    NAMES="$NAMES $n"
+done
+[ -n "$NAMES" ] || { echo "finalize_kernels.sh: no kernel fragments in $STAGE" >&2; exit 1; }
+# Strip leading space for tidy logs.
+NAMES=$(echo "$NAMES" | sed 's/^ //')
+echo "finalize_kernels.sh: kernels:$NAMES"
 
 disasm() { # $1 = kernel name, $2 = objdump, rest = objdump args
     name=$1
@@ -78,14 +86,13 @@ EOF
     fi
 }
 
-for n in raid5-4_avx512-gfni raid6-5_avx512-gfni; do
-    disasm "$n" objdump -b binary -m i386:x86-64
-done
-for n in raid5-4_sve2 raid6-5_sve2; do
-    disasm "$n" aarch64-linux-gnu-objdump -b binary -m aarch64
-done
-for n in raid5-4_rvv raid6-5_rvv; do
-    disasm_rvv "$n"
+for n in $NAMES; do
+    case "$n" in
+        *avx512*) disasm "$n" objdump -b binary -m i386:x86-64;;
+        *sve2*)   disasm "$n" aarch64-linux-gnu-objdump -b binary -m aarch64;;
+        *rvv*)    disasm_rvv "$n";;
+        *) echo "finalize_kernels.sh: unknown target for $n" >&2; exit 1;;
+    esac
 done
 
 # Pass our timestamp so manifest.json and the .asm headers agree.
@@ -104,7 +111,8 @@ cp "$REPO/tools/kernels-README.md" "$DEST/README.md"
 # table plus the full disassembly of all six kernels (replaces kernels.zip as
 # the shipped deliverable).
 python3 "$REPO/tools/gen_kernels_md.py" "$STAGE" "$DEST/../raidjit_kernels.md"
-echo "finalize_kernels.sh: installed 6 kernels + manifest.json + README.md, built raidjit_kernels.md"
+NK=$(echo "$NAMES" | wc -w)
+echo "finalize_kernels.sh: installed $NK kernels + manifest.json + README.md, built raidjit_kernels.md"
 ls -la "$DEST" "$DEST/../raidjit_kernels.md"
 # Refresh the Library-visible hardlink mirror (your_files/).
 sh "$REPO/tools/mirror_your_files.sh"

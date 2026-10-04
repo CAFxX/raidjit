@@ -24,8 +24,9 @@ tested bytes). Buffers 64-byte aligned per the API contract. A red-green
 proof (const-pool byte flip + corrupted-expectation, in `/tmp`, never
 shipped) confirmed the checks are not vacuous: both corruptions are
 detected. (The flip test needs a const pool, so it is skipped for the
-three RAID-5 kernels, which have `const_size == 0`; the corrupted-
-expectation check runs for all six.)
+four kernels with `const_size == 0` (the three plain RAID-5 kernels plus
+the raid5-4_sve2 predtail twin); the corrupted-
+expectation check runs for all nine.)
 
 An ISA marker assertion runs at generation time and fails the build if
 absent (counts below are occurrences in the emitted code bytes).
@@ -35,19 +36,28 @@ absent (counts below are occurrences in the emitted code bytes).
 | ISA | Desc | Code | Const | Marker |
 |-----|------|------|-------|--------|
 | avx512-gfni | raid5-4 xor avx512 U=8 | 512 B | 0 B | VPXORD (EVEX.66.0F.W0 EF) ×24 |
-| rvv | raid5-4 xor rvv U=5 | 448 B | 0 B | RVV vector opcodes ×21 |
-| sve2 | sve xor U=5 | 512 B | 0 B | SVE codegen path ×16 (EOR3 n/a, see below) |
+| avx512-gfni | raid5-4 xor avx512 U=8 maskedtail | 576 B | 520 B | KMOVQ (tail-mask load into k1) ×1 |
+| rvv | raid5-4 xor rvv U=5 | 784 B | 0 B | RVV vector opcodes ×37 |
+| sve2 | sve xor U=5 | 512 B | 0 B | SVE codegen path ×21 (EOR3 n/a, see below) |
+| sve2 | sve xor U=5 predtail | 512 B | 0 B | WHILELT (predicated-tail predicate) ×1 |
 
 RAID-5 parity is pure XOR (no GF multiplication), so the avx512 kernel uses
 `VPXORD` (not GFNI); "gfni" in the filename names the target CPU.
+
+The `maskedtail` / `predtail` rows are the item-14 tail twins: complete
+versions of the winning candidate whose scalar tail loop is replaced by the
+masked AVX-512 tail (`KMOVQ` k1 from the 520-byte tail-mask pool, `{k1}{z}`
+loads / `{k1}` stores) or the fully predicated SVE tail (`WHILELT`). Built
+from the winner exactly as `api.c` does; see `tools/gen_kernels.c`.
 
 ## RAID-6 (5 data + 2 parity) — Horner
 
 | ISA | Desc | Code | Const | Marker |
 |-----|------|------|-------|--------|
-| avx512-gfni | raid6-5 horner avx512+gfni U=8 | 1600 B | 576 B | VGF2P8AFFINEQB (EVEX.66.0F3A.W1 CE) ×32 |
-| rvv | raid6-5 horner rvv+nibble U=5 | 1232 B | 32 B | RVV vector opcodes ×184 |
-| sve2 | sve horner+nibble U=4+eor3 | 1280 B | 640 B | EOR3 (SVE2) ×16 |
+| avx512-gfni | raid6-5 horner avx512+gfni U=8 | 1664 B | 576 B | VGF2P8AFFINEQB (EVEX.66.0F3A.W1 CE) ×32 |
+| rvv | raid6-5 horner rvv+nibble U=5 | 2192 B | 32 B | RVV vector opcodes ×335 |
+| sve2 | sve horner+nibble U=4+eor3 | 1152 B | 640 B | EOR3 (SVE2) ×16 |
+| sve2 | sve horner+nibble U=4+eor3 predtail | 1024 B | 80 B | WHILELT (predicated-tail predicate) ×1 |
 
 RAID-6 Q parity uses Horner accumulation with GF(2⁸) multiplies:
 - avx512+gfni: `VGF2P8AFFINEQB` (single-instruction GF multiply)
