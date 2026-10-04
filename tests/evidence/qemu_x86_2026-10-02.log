@@ -1,0 +1,66 @@
+rm -rf build build-x86_64 build-aarch64 build-riscv64
+rm -f src/*.o src/aarch64/*.o src/riscv/*.o
+make build-x86_64/test_matrix
+make[1]: Entering directory '/home/hatch/workspace/raidjit-tracks/A2'
+mkdir -p build-x86_64
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/gf.o src/gf.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/plan.o src/plan.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/topo.o src/topo.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/bench.o src/bench.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/ref.o src/ref.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/api.o src/api.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/dispatch.o src/dispatch.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/x86_64/cpu.o src/x86_64/cpu.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/x86_64/emit.o src/x86_64/emit.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -c -o build-x86_64/src/x86_64/jit.o src/x86_64/jit.c
+ar rcs build-x86_64/libraidjit.a build-x86_64/src/gf.o build-x86_64/src/plan.o build-x86_64/src/topo.o build-x86_64/src/bench.o build-x86_64/src/ref.o build-x86_64/src/api.o build-x86_64/src/dispatch.o build-x86_64/src/x86_64/cpu.o build-x86_64/src/x86_64/emit.o build-x86_64/src/x86_64/jit.o
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_matrix tests/test_matrix.c build-x86_64/libraidjit.a -lm
+make[1]: Leaving directory '/home/hatch/workspace/raidjit-tracks/A2'
+tests/qemu_matrix.sh
+=== qemu -cpu qemu64,+ssse3,-avx ===
+cpu: QEMU Virtual CPU version 2.5+ (detected)
+ok cpu=detected
+matrix: 27113 runs, 0 failures
+matrix: all OK
+=== qemu -cpu Haswell ===
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.hle [bit 4]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.rtm [bit 11]
+cpu: Intel Core Processor (Haswell) (detected)
+ok cpu=detected
+matrix: 54166 runs, 0 failures
+matrix: all OK
+=== qemu -cpu Skylake-Server ===
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.hle [bit 4]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.rtm [bit 11]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+cpu: Intel Xeon Processor (Skylake) (detected)
+ok cpu=detected
+matrix: 54166 runs, 0 failures
+matrix: all OK
+=== qemu -cpu Icelake-Server ===
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.hle [bit 4]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.rtm [bit 11]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-x86_64: warning: TCG doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+cpu: Intel Xeon Processor (Icelake) (detected)
+ok cpu=detected
+matrix: 54166 runs, 0 failures
+matrix: all OK
+qemu_matrix: all OK
+test-qemu exit=0

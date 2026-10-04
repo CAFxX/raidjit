@@ -1,0 +1,23 @@
+=== M2: twin_dominates() symmetric in tl (prune twin-in-favor-of-plain) ===
+--- mutation diff ---
+--- /tmp/prune_mut/prune.c.pristine	2026-10-02 06:32:54.013844687 +0000
++++ src/prune.c	2026-10-02 06:34:40.219848410 +0000
+@@ -79,7 +79,8 @@
+      * a HORNER remat twin is a different codegen shape (pool
+      * rematerialization vs live tables), not a multiply twin, so it
+      * must never satisfy the twin relation. */
+-    if (a->cand.ternlog != 1 || b->cand.ternlog != 0)
++    /* M2: symmetric in tl */
++    if (a->cand.ternlog == b->cand.ternlog)
+         return 0;
+     if (a->cand.isa != b->cand.isa || a->cand.mul != b->cand.mul ||
+         a->cand.U != b->cand.U || a->cand.nt != b->cand.nt ||
+--- build ---
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+--- run (full) ---
+prune unit:
+FAIL unit_mulacc_plain_dominant_twin_survives:213: twin must not be pruned in favor of plain, got 1
+PRUNE TESTS FAILED (1/164 checks)
+--- restore ---
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+M2 done, pristine restored

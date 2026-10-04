@@ -1,0 +1,18 @@
+cpu: avx512f=1 avx2=1 sse2=1
+schedule: 2 temps
+naive: duel(20,4) xor avx512 U=4 uops/B=0.4648
+sched: duel(20,4) xor avx512 U=4+xsched uops/B=0.3711
+run  0: naive=   55.23 GB/s  sched=   60.48 GB/s  winner=sched
+run  1: naive=   32.69 GB/s  sched=   21.75 GB/s  winner=sched
+run  2: naive=   52.40 GB/s  sched=   44.75 GB/s  winner=sched
+run  3: naive=   10.80 GB/s  sched=   12.35 GB/s  winner=sched
+run  4: naive=   16.49 GB/s  sched=   20.05 GB/s  winner=sched
+run  5: naive=   24.81 GB/s  sched=   16.36 GB/s  winner=sched
+run  6: naive=   44.21 GB/s  sched=   64.34 GB/s  winner=sched
+run  7: naive=   11.78 GB/s  sched=   14.08 GB/s  winner=sched
+run  8: naive=   18.41 GB/s  sched=   18.16 GB/s  winner=sched
+run  9: naive=   62.20 GB/s  sched=   61.40 GB/s  winner=sched
+run 10: naive=   12.79 GB/s  sched=   10.66 GB/s  winner=sched
+run 11: naive=   11.72 GB/s  sched=   13.37 GB/s  winner=sched
+naive: median=21.61 GB/s IQR=[12.79, 52.40]
+sched: median=19.10 GB/s IQR=[14.08, 60.48]

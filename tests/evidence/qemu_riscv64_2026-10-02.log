@@ -1,0 +1,22 @@
+=== test-qemu-riscv64 ===
+Full suite ran 2026-10-02: all binaries passed except test_dispatch (prefetch-config platform bug, fixed after).
+test_dispatch re-run at vlen=128/256/512 after fix (2026-10-02):
+FAIL test_direct_twin:395: raid6(6) enc prefetch: no buildable candidate with prefetch
+note: e2e raid6(6) enc bench       -> raid6(6) horner rvv+nibble U=4 +notail       [dispatcher]
+note: e2e raid5(4) rec d0 bench    -> raid5(4) rec 0 xor rvv U=5 +notail           [dispatcher]
+note: e2e raid6(6) pup d1 bench    -> raid6(6) pupd 1 delta rvv+nibble U=5 +notail [dispatcher]
+note: e2e raid6(6) enc nt bench    -> raid6(6) horner rvv+nibble U=5 +notail       [dispatcher]
+note: e2e raid6(6) enc nobench     -> raid6(6) horner rvv+nibble U=5               [general-only]
+note: dispatcher installed in >=1 config
+note: per-call ns: direct=22977.9 dispatcher=22088.6 overhead=-889.3
+
+=== test_dispatch re-run after prefetch-skip fix (2026-10-02), exact Makefile commands ===
+== vlen=128 ==
+note: raid6(6) enc prefetch: no prefetch candidates on this CPU, skipped
+PASS test_dispatch
+== vlen=256 ==
+note: raid6(6) enc prefetch: no prefetch candidates on this CPU, skipped
+PASS test_dispatch
+== vlen=512 ==
+note: raid6(6) enc prefetch: no prefetch candidates on this CPU, skipped
+PASS test_dispatch

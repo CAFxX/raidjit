@@ -1,0 +1,15 @@
+=== B4-M2: em_prefetch emits UD2 (0F 0B) instead of PREFETCHT0 (0F 18) ===
+--- mutation diff ---
+--- /tmp/emit.c.b4orig	2026-10-03 18:04:50.963175232 +0000
++++ src/x86_64/emit.c	2026-10-03 18:04:51.014015472 +0000
+@@ -830,7 +830,7 @@
+     rxb(hint & 3, b, x, &R, &X, &B);
+     emit_rex(e, 0, R, X, B);
+     em_u8(e, 0x0F);
+-    em_u8(e, 0x18);
++    em_u8(e, 0x0B); /* B4-M2 mutation: UD2 instead of PREFETCHT0 */
+     emit_mrm(e, hint & 3, b, x, sc, disp, 1);
+ }
+ 
+--- run: ./build-x86_64/test_b4_prefetch ---
+exit=132 (SIGILL): Illegal instruction -- the past-end test executes the prefetch path

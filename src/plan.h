@@ -1,0 +1,211 @@
+/* Plan lowering: (topology, operation) -> execution strategy + version
+ * candidates.
+ *
+ * Strategy choice is algorithmic, not just ISA tuning:
+ *   P_XOR    - every coefficient is 0/1 (RAID-5 P, single-disk rebuild via
+ *              XOR parity, mirrors): pure XOR reduction, no GF multiplies.
+ *   P_HORNER - the coefficient matrix is Vandermonde in Horner order
+ *              (row j = [c_j^(n-1) ... c_j^0], incl. default RS matrices and
+ *              RAID-6): each parity row accumulates as
+ *              acc = acc*c_j ^ data, i.e. ONE GF multiply per input per row
+ *              instead of a per-(input,row) table multiply.
+ *   P_MULACC - general case: out[j] ^= in[i] * M[j][i] with per-constant
+ *              nibble-table (pshufb) or GFNI affine multiplies.
+ *   P_DELTA  - partial-stripe parity update: out[j] = oldpar[j] ^
+ *              (over changed i) ((old[i] ^ new[i]) * M[j][changed[i]]).
+ *              Same multiply-accumulate machinery as P_MULACC, but the
+ *              per-input value is the old/new delta and accumulators are
+ *              seeded from the old parities instead of zero.
+ *
+ * A "recover" op is first reduced to a plain linear combination of the
+ * surviving disks (solve_recovery), so reconstruction is a single
+ * encode-like pass -- the decode (system solve) happens once at JIT time,
+ * not per stripe.
+ */
+#pragma once
+#include <stdint.h>
+#include "../include/raidjit.h"
+#include "cpu.h"
+
+#define RJ_MAX_DISKS 256
+
+typedef enum { P_XOR, P_MULACC, P_HORNER, P_DELTA } plan_kind_t;
+
+typedef enum {
+    ISA_SSE = 0,
+    ISA_AVX2 = 1,
+    ISA_AVX512 = 2,
+    ISA_NEON = 3,      /* AArch64 Advanced SIMD, 16-byte vectors */
+    ISA_SVE = 4,       /* AArch64 SVE/SVE2, VL-agnostic */
+    ISA_RVV = 5,       /* RISC-V Vector, VL-agnostic */
+    ISA_PEXT = 6       /* RISC-V P-extension packed SIMD */
+} isa_t;
+typedef enum { MUL_NIBBLE = 0, MUL_GFNI = 1, MUL_ZVBC = 2 } mul_t;
+
+typedef struct {
+    isa_t isa;
+    mul_t mul; /* P_MULACC / P_HORNER / P_DELTA only */
+    int U;     /* unroll: vector-widths per group iteration */
+    int nt;    /* 1 = non-temporal (streaming) output stores. Fence
+                * contract is per-ISA: x86 emits no fence (caller must
+                * SFENCE), AArch64 emits no DMB (caller must DMB ISHST),
+                * RISC-V uses the Zihintntl NTL.ALL hint which does not
+                * change memory ordering (no caller fence needed). */
+    size_t prefetch_dist; /* 0 = no SW prefetch; else PREFETCHT0 each
+                           * input stream this many bytes ahead */
+    int ternlog; /* 1 = use VPTERNLOGD for AVX-512 XOR-reduction: for
+                  * P_MULACC/P_DELTA this folds the nibble path's
+                  * acc ^= r1 ^ r2 into one ternary-logic uop; for P_XOR
+                  * (only when n_out >= 2, where the shared in[a] load
+                  * amortizes) it folds acc ^= in[a] ^ in[b] (column
+                  * pairs, in[b] as the memory operand) into one uop.
+                  * The benchmark picks the twin empirically; never
+                  * forced. */
+    int remat;   /* 1 = HORNER: rematerialize tables from pool into a
+                  * scratch register instead of keeping hreg live
+                  * (trades L1 loads for registers, allowing larger U) */
+    int notail;  /* 1 = length-dispatch twin: omit the tail path entirely
+                  * (scalar tail on x86-64/AArch64, strip-mining remainder
+                  * on RISC-V). Only valid for len % group == 0; the
+                  * dispatcher (src/dispatch.c) guarantees it. Never set
+                  * by plan_candidates: api.c builds the twin from the
+                  * winning candidate after selection. See
+                  * docs/length_dispatch.md. */
+    int predtail; /* 1 = length-dispatch twin: replace the scalar tail with
+                   * a fully predicated vector tail (SVE only, via whilelt;
+                   * track B1sve, SOTA item 14). Serves tail lengths only
+                   * (TAIL_MASKED, dispatch.h); the scalar general variant
+                   * defers to it when it is installed. Disjoint from
+                   * notail: a version is never both. Never set by
+                   * plan_candidates: api.c builds the twin from the
+                   * winning SVE candidate after selection, and the
+                   * compile-time benchmark decides between tail variants
+                   * empirically. */
+    int maskedtail; /* 1 = length-dispatch twin: replace the scalar tail
+                   * with a masked AVX-512 vector tail (x86-64 only, via
+                   * opmask k1; track B1x86, SOTA item 14). Serves tail
+                   * lengths only (TAIL_MASKED, dispatch.h); the scalar
+                   * general variant defers to it when it is installed.
+                   * Disjoint from notail/predtail: a version is never
+                   * both. Never set by plan_candidates: api.c builds the
+                   * twin from the winning AVX-512 candidate after
+                   * selection, gated by its own tail-duel benchmark
+                   * (bench_tail_duel, src/bench.c). */
+    int permi2b; /* 1 = P_MULACC/P_DELTA nibble twin: look the nibbles up
+                   * with VPERMI2B (AVX512_VBMI) instead of the two-load
+                   * VPSHUFB ping-pong (track B2, SOTA item 15). The two
+                   * 16-entry tables travel interleaved in one pool entry
+                   * (CK_NIBBOTH); the +16 high-nibble index offset folds
+                   * into a memory-source VPORB. Never set by
+                   * plan_candidates: api.c builds the twin from the
+                   * stage-1 winning candidate after selection (stage-2
+                   * duel with the standard bench_select protocol, gated
+                   * on cpu->vbmi), like the notail/maskedtail/predtail
+                   * twins. The stage-2 benchmark picks the twin
+                   * empirically, never forced. */
+    int xorsched; /* 1 = P_XOR: drive the body from the plan's xor_sched
+                   * program (cross-row CSE) instead of the naive per-row
+                   * emitter. Enumerated only when the static model
+                   * predicts a strict uop win; the benchmark picks the
+                   * twin empirically, never forced. */
+} cand_t;
+
+typedef struct {
+    plan_kind_t kind;
+    int n_in, n_out;
+    uint8_t *mat;      /* n_out * n_in, row-major; 0/1 entries for P_XOR.
+                        * P_DELTA: n_out * nchanged extracted delta columns
+                        * M[j][changed[i]] (see nchanged). */
+    uint8_t *horner_c; /* P_HORNER: c_j per output row */
+    int nchanged;      /* P_DELTA: number of changed data disks; input layout
+                        * is [old_0..old_{nc-1}, new_0..new_{nc-1},
+                        * oldpar_0..oldpar_{np-1}] */
+    int noop;          /* n_out == 0: emit trivial function */
+    char name[128];    /* e.g. "raid6 enc" / "rs(6,3) rec d0+d1";
+                          * sized for the "[rows ...]" suffix; opname is
+                          * t->name (32B) so %.31s below never truncates
+                          * a real name */
+    struct xorsched *xor_sched; /* P_XOR cross-row CSE program (NULL when
+                                 * there is nothing to share); built by
+                                 * plan_build, freed by plan_free. The
+                                 * xorsched candidate twin reads it. */
+} plan_t;
+
+typedef struct {
+    int ndata, npar;
+    uint8_t *mat; /* npar*ndata or NULL when npar == 0 */
+} topo_int_t;
+
+/* Build the internal view from a public topology (copies the matrix). */
+int topo_int_build(topo_int_t *ti, const rj_topology *t, char *err,
+                   size_t errlen);
+void topo_int_free(topo_int_t *ti);
+
+/* Short name like "raid6(8)" / "rs(6,3)" for plan naming. */
+const char *topo_internal_name(const rj_topology *t);
+
+/* Build a plan from topology + op. Returns 0 on success, -1 on error
+ * (err filled). */
+int plan_build(const topo_int_t *topo, const rj_op *op, const char *opname,
+               plan_t *pl, char *err, size_t errlen);
+void plan_free(plan_t *pl);
+
+/* Validate + sort/dedupe a recover op's failed-disk list (shared by
+ * plan_build and the A5 survivor path). Returns the deduped count
+ * (>= 1) with *F_out the sorted list (caller frees), or -1 on error
+ * with err set. */
+int plan_recover_failed_list(const rj_op *op, int nd, int np, int **F_out,
+                             char *err, size_t errlen);
+
+/* Build a recovery plan from an explicit parity-row equation set
+ * (track A5: cheapest measured survivor set). F[0..nf-1] is the
+ * validated sorted/deduped failed-disk list (1 <= nf <= npar);
+ * rows[0..nrows-1] are the parity rows used as solve equations
+ * (nrows >= nf; a failed parity disk j forces some rows[r] == j).
+ * The plan name records the row set ("... [rows 0+2]"). Returns 0 on
+ * success, -1 on error (err filled); singular row sets fail here so
+ * the enumerator can skip them. plan_build's recover path is the
+ * all-rows special case (rows = 0..npar-1). */
+int plan_build_recover_rows(const topo_int_t *topo, const int *F, int nf,
+                            const int *rows, int nrows, const char *opname,
+                            plan_t *pl, char *err, size_t errlen);
+
+/* Enumerate version candidates for a plan on this CPU. Returns count. */
+/* allow_nt: also emit a non-temporal twin of every candidate (the
+ * jitted code emits no fence; on x86 the caller must SFENCE and on
+ * AArch64 the caller must DMB ISHST after the call, while on RISC-V
+ * the Zihintntl hint needs no caller fence -- see cand_t.nt).
+ * prefetch_dist: if nonzero, also emit a prefetch
+ * twin of every candidate with PREFETCHT0 this far ahead. Twins are
+ * appended after their temporal originals, so static (non-benchmark)
+ * selection, which prefers the first of equal-cost candidates, keeps
+ * temporal behavior. */
+int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
+                    cand_t *out, int maxout, int allow_nt,
+                    size_t prefetch_dist);
+
+const char *isa_name(isa_t isa);
+int isa_nregs(isa_t isa);
+int isa_vl(isa_t isa); /* vector length in bytes */
+
+/* Exact number of vector registers the backend assigns for this
+ * (isa, mul, plan, U), matching the backend's register assignment
+ * instruction-for-instruction (accumulators n_out*U plus the backend's
+ * temp/table registers). The planner drops candidates with need >
+ * isa_nregs(isa); the backends assert their assignment against this so
+ * planner and backend can never drift. mul is ignored for P_XOR and for
+ * ISAs with a single multiply method. */
+int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat);
+
+/* Coefficient-triviality predicate: 1 iff some coefficient the vector
+ * nibble path would multiply by lies outside {0,1} -- i.e. the nibble
+ * split, its 0x0F mask register, and the table temps are really needed.
+ * P_MULACC scans the full matrix, P_DELTA its n_out x nchanged delta
+ * columns, P_HORNER the row coefficients; P_XOR is all-{0,1} by
+ * construction (0). A NULL matrix/coefficient vector (never produced by
+ * plan_build; only hand-built test plans) is treated as nontrivial:
+ * nothing is proven dead, so the conservative count stands. This is the
+ * single source of truth shared by plan_need_regs and every backend's
+ * need_mask computation, so the cost model and the emitter cannot
+ * diverge. */
+int plan_any_nontrivial(const plan_t *pl);

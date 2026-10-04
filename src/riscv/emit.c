@@ -1,0 +1,411 @@
+/* RISC-V (RV64G + RVV 1.0) machine-code emitter. See emit.h.
+ *
+ * Encoding notes (all verified against GNU as):
+ * - vsetvli:  bit31=0,  bits30:20 = vtypei, rs1, funct3=111, rd, 0x57.
+ * - vsetivli: bit31=1,  bits30:20 = vtypei, uimm, funct3=111, rd, 0x57.
+ *   vtypei[10:0] = {1'b1 for vsetivli (0 for vsetvli), 2'b00, vma, vta,
+ *   vsew[2:0], vlmul[2:0]}.
+ * - vle8.v/vse8.v (unit stride): nf=000, mop=00, vm=1, rs1 in the
+ *   vs1 field (bits 19:15), lumop/sumop=00000, width=000, vd/vs3;
+ *   major opcode 0000111 for loads, 0100111 for stores.
+ * - OPIVV (funct3=000): vxor.vv funct6=001011, vand.vv funct6=001001,
+ *   vrgather.vv funct6=001100 (table in vs2 field, indices in vs1 field),
+ *   vmv.v.v funct6=010111 (source in vs1 field, vs2 field = 0).
+ * - OPIVX (funct3=100): vand.vx funct6=001001, vmv.v.x funct6=010111
+ *   (scalar in the vs1 field, vs2 field = 0).
+ * - OPIVI (funct3=011): vsrl.vi funct6=101000 (uimm in vs1 field).
+ */
+#include "emit.h"
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+void em_init(em_t *e, uint8_t *buf, size_t cap)
+{
+    memset(e, 0, sizeof(*e));
+    e->buf = buf;
+    e->cap = cap;
+}
+
+void em_byte(em_t *e, uint8_t v)
+{
+    assert(e->len < e->cap);
+    e->buf[e->len++] = v;
+}
+
+static void emit32(em_t *e, uint32_t w)
+{
+    assert(e->len + 4 <= e->cap);
+    e->buf[e->len++] = (uint8_t)w;
+    e->buf[e->len++] = (uint8_t)(w >> 8);
+    e->buf[e->len++] = (uint8_t)(w >> 16);
+    e->buf[e->len++] = (uint8_t)(w >> 24);
+}
+
+static uint32_t read32(em_t *e, size_t at)
+{
+    assert(at + 4 <= e->len);
+    return (uint32_t)e->buf[at] | ((uint32_t)e->buf[at + 1] << 8) |
+           ((uint32_t)e->buf[at + 2] << 16) | ((uint32_t)e->buf[at + 3] << 24);
+}
+
+static void patch32(em_t *e, size_t at, uint32_t w)
+{
+    assert(at + 4 <= e->len);
+    e->buf[at] = (uint8_t)w;
+    e->buf[at + 1] = (uint8_t)(w >> 8);
+    e->buf[at + 2] = (uint8_t)(w >> 16);
+    e->buf[at + 3] = (uint8_t)(w >> 24);
+}
+
+int em_label(em_t *e)
+{
+    if (e->nlab == e->clab) {
+        e->clab = e->clab ? e->clab * 2 : 32;
+        e->lpos = realloc(e->lpos, (size_t)e->clab * sizeof(*e->lpos));
+        assert(e->lpos);
+    }
+    e->lpos[e->nlab] = (size_t)-1;
+    return e->nlab++;
+}
+
+void em_bind(em_t *e, int lab)
+{
+    assert(lab >= 0 && lab < e->nlab);
+    assert(e->lpos[lab] == (size_t)-1); /* bind once */
+    e->lpos[lab] = e->len;
+}
+
+static void add_fix(em_t *e, size_t at, int lab, int add, int kind)
+{
+    if (e->nfix == e->cfix) {
+        e->cfix = e->cfix ? e->cfix * 2 : 32;
+        e->fix = realloc(e->fix, (size_t)e->cfix * sizeof(*e->fix));
+        assert(e->fix);
+    }
+    e->fix[e->nfix].at = at;
+    e->fix[e->nfix].lab = lab;
+    e->fix[e->nfix].add = add;
+    e->fix[e->nfix].kind = kind;
+    e->nfix++;
+}
+
+void em_resolve(em_t *e)
+{
+    for (int i = 0; i < e->nfix; i++) {
+        size_t labpos = e->lpos[e->fix[i].lab];
+        assert(labpos != (size_t)-1); /* every referenced label is bound */
+        long target = (long)(labpos + (size_t)e->fix[i].add);
+        long at = (long)e->fix[i].at;
+        if (e->fix[i].kind == 0) {
+            /* B-type branch: patch the 12-bit signed offset (in units of
+             * 2 bytes) into the already-emitted instruction. */
+            long off = target - at;
+            assert(off >= -4096 && off < 4096 && (off & 1) == 0);
+            uint32_t w = read32(e, (size_t)at);
+            uint32_t u = (uint32_t)off;
+            w |= ((u >> 12) & 1u) << 31; /* imm[12] */
+            w |= ((u >> 5) & 0x3fu) << 25; /* imm[10:5] */
+            w |= ((u >> 1) & 0xfu) << 8; /* imm[4:1] */
+            w |= ((u >> 11) & 1u) << 7; /* imm[11] */
+            patch32(e, (size_t)at, w);
+        } else if (e->fix[i].kind == 2) {
+            /* J-type: patch the 20-bit signed offset (units of 2 bytes). */
+            long off = target - at;
+            assert(off >= -(1L << 20) && off < (1L << 20) && (off & 1) == 0);
+            uint32_t w = read32(e, (size_t)at);
+            uint32_t u = (uint32_t)off;
+            w |= ((u >> 20) & 1u) << 31; /* imm[20] */
+            w |= ((u >> 1) & 0x3ffu) << 21; /* imm[10:1] */
+            w |= ((u >> 11) & 1u) << 20; /* imm[11] */
+            w |= ((u >> 12) & 0xffu) << 12; /* imm[19:12] */
+            patch32(e, (size_t)at, w);
+        } else {
+            /* auipc+addi pair: PC-relative address of (label + add). */
+            long off = target - at;
+            long hi = (off + 0x800) >> 12;
+            long lo = off - (hi << 12);
+            assert(hi >= -(1L << 19) && hi < (1L << 19));
+            assert(lo >= -2048 && lo < 2048);
+            uint32_t au = read32(e, (size_t)at);
+            au |= ((uint32_t)hi & 0xfffffu) << 12;
+            patch32(e, (size_t)at, au);
+            uint32_t ad = read32(e, (size_t)at + 4);
+            ad |= ((uint32_t)lo & 0xfffu) << 20;
+            patch32(e, (size_t)at + 4, ad);
+        }
+    }
+}
+
+void em_free(em_t *e)
+{
+    free(e->lpos);
+    free(e->fix);
+    e->lpos = NULL;
+    e->fix = NULL;
+}
+
+void em_align(em_t *e, unsigned a)
+{
+    assert(a && (a & (a - 1)) == 0);
+    /* NOP = addi x0, x0, 0 */
+    while (e->len & (a - 1))
+        emit32(e, 0x00000013u);
+}
+
+/* ---------------- integer ---------------- */
+
+void em_add(em_t *e, int rd, int rs1, int rs2)
+{
+    emit32(e, (0x00u << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x33u);
+}
+
+void em_sub(em_t *e, int rd, int rs1, int rs2)
+{
+    emit32(e, (0x20u << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x33u);
+}
+
+/* M extension: mul/divu. funct7=0000001. */
+void em_mul(em_t *e, int rd, int rs1, int rs2)
+{
+    emit32(e, (0x01u << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x33u);
+}
+
+void em_divu(em_t *e, int rd, int rs1, int rs2)
+{
+    emit32(e, (0x01u << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x5u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x33u);
+}
+
+void em_addi(em_t *e, int rd, int rs1, int imm12)
+{
+    assert(imm12 >= -2048 && imm12 < 2048);
+    emit32(e, (((uint32_t)imm12 & 0xfffu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x13u);
+}
+
+void em_slli(em_t *e, int rd, int rs1, unsigned sh)
+{
+    assert(sh < 64);
+    emit32(e, (0x00u << 25) | ((sh & 0x3fu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x1u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x13u);
+}
+
+void em_srli(em_t *e, int rd, int rs1, unsigned sh)
+{
+    assert(sh < 64);
+    emit32(e, (0x00u << 25) | ((sh & 0x3fu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x5u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x13u);
+}
+
+void em_ld(em_t *e, int rd, int rs1, int off12)
+{
+    assert(off12 >= -2048 && off12 < 2048);
+    emit32(e, (((uint32_t)off12 & 0xfffu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x3u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x03u);
+}
+
+void em_sd(em_t *e, int rs2, int rs1, int off12)
+{
+    assert(off12 >= -2048 && off12 < 2048);
+    uint32_t u = (uint32_t)off12 & 0xfffu;
+    emit32(e, (((u >> 5) & 0x7fu) << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x3u << 12) |
+                  ((u & 0x1fu) << 7) | 0x23u);
+}
+
+static void em_branch(em_t *e, int funct3, int rs1, int rs2, int lab)
+{
+    size_t at = e->len;
+    emit32(e, ((uint32_t)(rs2 & 31) << 20) | ((uint32_t)(rs1 & 31) << 15) |
+                  ((uint32_t)(funct3 & 7) << 12) | 0x63u);
+    add_fix(e, at, lab, 0, 0);
+}
+
+void em_beq(em_t *e, int rs1, int rs2, int lab)
+{
+    em_branch(e, 0x0, rs1, rs2, lab);
+}
+
+void em_bne(em_t *e, int rs1, int rs2, int lab)
+{
+    em_branch(e, 0x1, rs1, rs2, lab);
+}
+
+void em_jal(em_t *e, int rd, int lab)
+{
+    size_t at = e->len;
+    emit32(e, ((uint32_t)(rd & 31) << 7) | 0x6fu);
+    add_fix(e, at, lab, 0, 2);
+}
+
+void em_lui(em_t *e, int rd, int imm20)
+{
+    emit32(e, (((uint32_t)imm20 & 0xfffffu) << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x37u);
+}
+
+void em_jalr(em_t *e, int rd, int rs1, int off12)
+{
+    assert(off12 >= -2048 && off12 < 2048);
+    emit32(e, (((uint32_t)off12 & 0xfffu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x67u);
+}
+
+void em_lla(em_t *e, int rd, int lab, int add)
+{
+    size_t at = e->len;
+    emit32(e, ((uint32_t)(rd & 31) << 7) | 0x17u); /* auipc rd, 0 */
+    emit32(e, ((uint32_t)(rd & 31) << 15) | ((uint32_t)(rd & 31) << 7) |
+                  0x13u); /* addi rd, rd, 0 */
+    add_fix(e, at, lab, add, 1);
+}
+
+/* ---------------- vector ---------------- */
+
+static uint32_t vtypei(int ivli, int vsew, int vlmul, int vta, int vma)
+{
+    return ((uint32_t)(ivli & 1) << 10) | ((uint32_t)(vma & 1) << 7) |
+           ((uint32_t)(vta & 1) << 6) | ((uint32_t)(vsew & 7) << 3) |
+           (uint32_t)(vlmul & 7);
+}
+
+void em_vsetvli(em_t *e, int rd, int rs1, int vsew, int vlmul, int vta, int vma)
+{
+    emit32(e, (0u << 31) | (vtypei(0, vsew, vlmul, vta, vma) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x7u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x57u);
+}
+
+void em_vsetivli(em_t *e, int rd, unsigned uimm, int vsew, int vlmul, int vta,
+                 int vma)
+{
+    assert(uimm < 32);
+    emit32(e, (1u << 31) | (vtypei(1, vsew, vlmul, vta, vma) << 20) |
+                  ((uimm & 31u) << 15) | (0x7u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x57u);
+}
+
+void em_vle8(em_t *e, int vd, int rs1)
+{
+    /* nf=000, mop=00 (unit stride), vm=1, rs1, lumop=00000, width=000 */
+    emit32(e, (0u << 29) | (1u << 25) | (0u << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(vd & 31) << 7) | 0x07u);
+}
+
+void em_vse8(em_t *e, int vs3, int rs1)
+{
+    /* nf=000, mop=00 (unit stride), vm=1, rs1, sumop=00000, width=000;
+     * note the STORE major opcode 0100111 */
+    emit32(e, (0u << 29) | (1u << 25) | (0u << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
+                  ((uint32_t)(vs3 & 31) << 7) | 0x27u);
+}
+
+void em_ntl_all(em_t *e)
+{
+    /* GAS-verified (`ntl.all`, -march=rv64g_zihintntl): 0x00500033.
+     * ADD x0,x0,x5 is a HINT encoding: it executes as a NOP on every
+     * RISC-V implementation, including ones without Zihintntl. */
+    emit32(e, 0x00500033u);
+}
+
+void em_prefetch_r(em_t *e, int rs1, unsigned off)
+{
+    /* Zicbop prefetch.r is an ORI x0,rs1,imm HINT: imm[4:0]=0b00001
+     * selects .r, imm[11:5] is the offset in 32-byte units.
+     * GAS-verified (`-march=rv64gcv_zicbop`):
+     *   prefetch.r 0(a0)     -> 0x00156013
+     *   prefetch.r 32(t2)     -> 0x0213e013
+     *   prefetch.r 2016(t2)   -> 0x7e13e013
+     * GAS rejects offsets above 2016, so the emitter caps there too. */
+    assert((off & 31u) == 0 && off <= 2016);
+    uint32_t imm = (off & 0x7e0u) | 0x001u;
+    emit32(e, (imm << 20) | ((uint32_t)(rs1 & 31) << 15) |
+                      (0x6u << 12) | (0x0u << 7) | 0x13u);
+}
+
+/* OP-V ALU skeleton: funct6 | vm | vs2 | vs1 | funct3 | vd | 0x57 */
+static void em_opv(em_t *e, int funct6, int vs2, int vs1, int funct3, int vd)
+{
+    emit32(e, ((uint32_t)(funct6 & 0x3f) << 26) | (1u << 25) |
+                  ((uint32_t)(vs2 & 31) << 20) | ((uint32_t)(vs1 & 31) << 15) |
+                  ((uint32_t)(funct3 & 7) << 12) | ((uint32_t)(vd & 31) << 7) |
+                  0x57u);
+}
+
+void em_vxor_vv(em_t *e, int vd, int vs1, int vs2)
+{
+    em_opv(e, 0x0b /*001011*/, vs2, vs1, 0x0 /*OPIVV*/, vd);
+}
+
+void em_vand_vv(em_t *e, int vd, int vs1, int vs2)
+{
+    em_opv(e, 0x09 /*001001*/, vs2, vs1, 0x0 /*OPIVV*/, vd);
+}
+
+void em_vand_vx(em_t *e, int vd, int vs2, int rs1)
+{
+    em_opv(e, 0x09 /*001001*/, vs2, rs1, 0x4 /*OPIVX*/, vd);
+}
+
+void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm)
+{
+    assert(uimm < 32);
+    em_opv(e, 0x28 /*101000*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
+}
+
+void em_vrgather_vv(em_t *e, int vd, int vtab, int vidx)
+{
+    /* note: OPIVV class (funct3=000), not OPMVV */
+    em_opv(e, 0x0c /*001100*/, vtab, vidx, 0x0 /*OPIVV*/, vd);
+}
+
+/* Zvbc/Zvkg carryless multiply. OPMVV class (funct3=010); the first
+ * source register goes in bits[24:20], the second in bits[19:15], the
+ * standard placement (GAS-verified words:
+ *   vclmul.vv  v8,v9,v10  -> 0x32952457
+ *   vclmulh.vv v11,v9,v10 -> 0x369525d7).
+ * A dedicated encoder (not em_opv) keeps the field assignment explicit
+ * and independently testable; the shape test pins it byte-for-byte. */
+static void em_vclmul(em_t *e, int funct6, int vd, int vs1, int vs2)
+{
+    emit32(e, ((uint32_t)(funct6 & 0x3f) << 26) | (1u << 25) |
+                  ((uint32_t)(vs1 & 31) << 20) | ((uint32_t)(vs2 & 31) << 15) |
+                  (0x2u << 12) | ((uint32_t)(vd & 31) << 7) | 0x57u);
+}
+
+void em_vclmul_vv(em_t *e, int vd, int vs1, int vs2)
+{
+    em_vclmul(e, 0x0c /*001100*/, vd, vs1, vs2);
+}
+
+void em_vclmulh_vv(em_t *e, int vd, int vs1, int vs2)
+{
+    em_vclmul(e, 0x0d /*001101*/, vd, vs1, vs2);
+}
+
+void em_vmv_v_v(em_t *e, int vd, int vs1)
+{
+    /* note: OPIVV class (funct3=000), not OPMVV */
+    em_opv(e, 0x17 /*010111*/, 0, vs1, 0x0 /*OPIVV*/, vd);
+}
+
+void em_vmv_v_x(em_t *e, int vd, int rs1)
+{
+    /* note: OPIVX class (funct3=100), not OPMVX */
+    em_opv(e, 0x17 /*010111*/, 0, rs1, 0x4 /*OPIVX*/, vd);
+}
