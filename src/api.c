@@ -642,6 +642,7 @@ void rj_get_info(const rj_jit *j, rj_info *info)
              : j->v.kind == P_DELTA  ? "delta"
                                     : "mulacc");
     info->unroll = j->v.cand.U;
+    info->lmul = j->v.cand.lmul ? j->v.cand.lmul : 1;
     info->gbps_measured = j->v.gbps_measured;
     info->gbps = j->v.gbps;
     info->uops_per_byte = j->v.uops_per_byte;

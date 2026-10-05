@@ -108,6 +108,15 @@ typedef struct {
                    * emitter. Enumerated only when the static model
                    * predicts a strict uop win; the benchmark picks the
                    * twin empirically, never forced. */
+    int lmul;    /* RVV only: vector register group multiplier (LMUL).
+                  * 1/2/4/8 (0 = 1, the default for zero-initialized
+                  * candidates). Enumerated by plan_candidates for RVV;
+                  * the backend maps logical vector register r to the
+                  * lmul-aligned physical group head r*lmul, and the
+                  * cost model amortizes over lmul*NOMVL bytes per
+                  * instruction. Pinned in prune.c's twin_dominates like
+                  * every other axis. x86/AArch64 backends reject
+                  * lmul > 1. */
 } cand_t;
 
 typedef struct {
@@ -194,7 +203,10 @@ int isa_vl(isa_t isa); /* vector length in bytes */
  * temp/table registers). The planner drops candidates with need >
  * isa_nregs(isa); the backends assert their assignment against this so
  * planner and backend can never drift. mul is ignored for P_XOR and for
- * ISAs with a single multiply method. */
+ * ISAs with a single multiply method. For RVV the count is in LOGICAL
+ * vector registers: the backend maps logical r to the lmul-aligned
+ * physical group head r*lmul, so callers scale by cand->lmul before
+ * comparing against isa_nregs(ISA_RVV). */
 int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat);
 
 /* Coefficient-triviality predicate: 1 iff some coefficient the vector

@@ -251,11 +251,12 @@ static rj_topology *topo_vandermonde4(int ndata)
     return t;
 }
 
-/* The planner must enumerate the RVV U=5 and U=4 remat twins for
- * custom(6,4) (persistent 38/33 regs > 32 >= remat 31/26) and must NOT
- * enumerate a remat twin at U=3, U=2 or U=1 (persistent 28/23/18 regs
- * already fit: the twin policy). On RS(6,3) it must enumerate no remat
- * twin at any U (persistent always fits within the RVV Us). */
+/* The planner must enumerate the RVV remat twins for custom(6,4)
+ * exactly where the twin policy says: for each (U, lmul), a remat twin
+ * iff the persistent variant needs > 32 physical regs but remat fits.
+ * (At lmul=1: U=5 and U=4 (persistent 38/33 regs); at wider lmul the
+ * same rule applies per (U, lmul).) On RS(6,3) the same per-(U,lmul)
+ * rule is verified. */
 static void test_planner_twin(void)
 {
     char err[256];
@@ -280,31 +281,33 @@ static void test_planner_twin(void)
 
         int n = plan_candidates(&pl, &cpu, cands, 512, 0, 0);
         CHECK(n > 0, "no candidates");
-        int found_u5 = 0, found_u4 = 0, found_u3 = 0, found_u2 = 0,
-            found_u1 = 0;
-        for (int i = 0; i < n; i++) {
-            if (cands[i].remat && cands[i].mul == MUL_NIBBLE &&
-                cands[i].isa == ISA_RVV) {
-                if (cands[i].U == 5)
-                    found_u5 = 1;
-                if (cands[i].U == 4)
-                    found_u4 = 1;
-                if (cands[i].U == 3)
-                    found_u3 = 1;
-                if (cands[i].U == 2)
-                    found_u2 = 1;
-                if (cands[i].U == 1)
-                    found_u1 = 1;
+        /* Twin policy, lmul-aware: for each (U, lmul) a remat twin is
+         * enumerated iff the persistent variant does not fit in 32
+         * physical regs at (U, lmul) but the remat variant does. */
+        static const int lmuls[] = { 1, 2, 4, 8 };
+        static const int Us[] = { 5, 4, 3, 2, 1 };
+        for (int ui = 0; ui < 5; ui++) {
+            int U = Us[ui];
+            for (int li = 0; li < 4; li++) {
+                int lmul = lmuls[li];
+                int need_p =
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0) * lmul;
+                int need_r =
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1) * lmul;
+                int want = (need_p > 32 && need_r <= 32);
+                int found = 0;
+                for (int i = 0; i < n; i++)
+                    if (cands[i].remat && cands[i].mul == MUL_NIBBLE &&
+                        cands[i].isa == ISA_RVV && cands[i].U == U &&
+                        (cands[i].lmul ? cands[i].lmul : 1) == lmul)
+                        found = 1;
+                CHECK(found == want,
+                      "custom(6,4) U=%d lmul=%d: remat twin %s, policy says %s "
+                      "(persistent %d, remat %d regs)",
+                      U, lmul, found ? "enumerated" : "absent",
+                      want ? "enumerate" : "skip", need_p, need_r);
             }
         }
-        CHECK(found_u5, "RVV U=5 remat twin not enumerated (n=%d)", n);
-        CHECK(found_u4, "RVV U=4 remat twin not enumerated (n=%d)", n);
-        CHECK(!found_u3, "RVV U=3 remat twin enumerated despite "
-              "persistent fitting (twin policy violated)");
-        CHECK(!found_u2, "RVV U=2 remat twin enumerated despite "
-              "persistent fitting (twin policy violated)");
-        CHECK(!found_u1, "RVV U=1 remat twin enumerated despite "
-              "persistent fitting (twin policy violated)");
 
         plan_free(&pl);
         rj_op_free(&op);
@@ -325,12 +328,30 @@ static void test_planner_twin(void)
         CHECK(pl.kind == P_HORNER, "expected P_HORNER, got kind %d",
               pl.kind);
         int n = plan_candidates(&pl, &cpu, cands, 512, 0, 0);
-        int found_any = 0;
-        for (int i = 0; i < n; i++)
-            if (cands[i].remat && cands[i].isa == ISA_RVV)
-                found_any = 1;
-        CHECK(!found_any, "RS(6,3): RVV remat twin enumerated despite "
-              "persistent fitting at every U (twin policy violated)");
+        /* Twin policy, lmul-aware: a remat twin may appear at (U, lmul)
+         * only when persistent does not fit there but remat does. */
+        static const int lmuls63[] = { 1, 2, 4, 8 };
+        static const int Us63[] = { 5, 4, 3, 2, 1 };
+        for (int ui = 0; ui < 5; ui++) {
+            for (int li = 0; li < 4; li++) {
+                int U = Us63[ui], lmul = lmuls63[li];
+                int need_p =
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0) * lmul;
+                int need_r =
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1) * lmul;
+                int want = (need_p > 32 && need_r <= 32);
+                int found = 0;
+                for (int i = 0; i < n; i++)
+                    if (cands[i].remat && cands[i].isa == ISA_RVV &&
+                        cands[i].U == U &&
+                        (cands[i].lmul ? cands[i].lmul : 1) == lmul)
+                        found = 1;
+                CHECK(found == want,
+                      "RS(6,3) U=%d lmul=%d: remat twin %s, policy says %s",
+                      U, lmul, found ? "enumerated" : "absent",
+                      want ? "enumerate" : "skip");
+            }
+        }
         plan_free(&pl);
         rj_op_free(&op);
         topo_int_free(&ti);

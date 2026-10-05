@@ -1241,6 +1241,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     cg.prefetch_dist = cand->prefetch_dist;
     cg.notail = cand->notail;
     cg.predtail = cand->predtail;
+    /* lmul is an RVV-only axis: reject cleanly rather than silently
+     * ignoring it. */
+    if (cand->lmul > 1) {
+        snprintf(err, errlen,
+                 "lmul=%d requires RVV (not implemented for AArch64)",
+                 cand->lmul);
+        return -1;
+    }
     /* notail and predtail are disjoint twins: the first omits the tail,
      * the second replaces it with a predicated vector tail. */
     assert(!(cg.notail && cg.predtail));

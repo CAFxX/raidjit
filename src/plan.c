@@ -547,6 +547,14 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         if (!cpu->rvv)
             return 0;
         static const int Us[] = {5, 4, 3, 2, 1};
+        /* LMUL is a genuine tuning axis on RVV: each vector instruction
+         * processes lmul*NOMVL bytes, so wider groups divide the per-byte
+         * uop/mem cost, at the price of lmul physical registers per
+         * logical one (plan_need_regs counts logical vector registers;
+         * the backend maps logical r to the lmul-aligned head r*lmul).
+         * Every (U, lmul) pair that fits in 32 physical registers is
+         * enumerated; the cost model and the empirical benchmark pick. */
+        static const int lmuls[] = {1, 2, 4, 8};
         int nregs = isa_nregs(ISA_RVV);
         /* Multiply-method twins (mirrors the x86 AVX-512 GFNI pattern):
          * the Zvbc carryless formulation is gated on Zvbc32e alone.
@@ -566,12 +574,18 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         muls[nmuls++] = MUL_NIBBLE;
         for (int mi = 0; mi < nmuls && n < maxout; mi++) {
             for (int ui = 0; ui < 5 && n < maxout; ui++) {
-                int U = Us[ui];
-                int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0);
-                if (need > nregs)
-                    continue;
-                out[n++] =
-                    (cand_t){.isa = ISA_RVV, .mul = muls[mi], .U = U};
+                for (int li = 0; li < 4 && n < maxout; li++) {
+                    int U = Us[ui];
+                    int lmul = lmuls[li];
+                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0) *
+                               lmul;
+                    if (need > nregs)
+                        continue;
+                    out[n++] = (cand_t){.isa = ISA_RVV,
+                                        .mul = muls[mi],
+                                        .U = U,
+                                        .lmul = lmul};
+                }
             }
             /* Remat twins for HORNER: unlock larger U via table reload.
              * Enumerated only when the persistent variant does not fit
@@ -582,16 +596,25 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
              * registers anyway). */
             if (pl->kind == P_HORNER && muls[mi] == MUL_NIBBLE) {
                 for (int ui = 0; ui < 5 && n < maxout; ui++) {
-                    int U = Us[ui];
-                    int need_normal =
-                        plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0);
-                    int need_remat =
-                        plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1);
-                    if (need_normal <= nregs)
-                        continue;
-                    if (need_remat > nregs)
-                        continue;
-                    out[n++] = (cand_t){.isa = ISA_RVV, .mul = MUL_NIBBLE, .U = U, .remat = 1};
+                    for (int li = 0; li < 4 && n < maxout; li++) {
+                        int U = Us[ui];
+                        int lmul = lmuls[li];
+                        int need_normal =
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0) *
+                            lmul;
+                        int need_remat =
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1) *
+                            lmul;
+                        if (need_normal <= nregs)
+                            continue;
+                        if (need_remat > nregs)
+                            continue;
+                        out[n++] = (cand_t){.isa = ISA_RVV,
+                                            .mul = MUL_NIBBLE,
+                                            .U = U,
+                                            .lmul = lmul,
+                                            .remat = 1};
+                    }
                 }
             }
         }
@@ -738,7 +761,11 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 continue;
             isa_t isa = out[i].isa;
             int U = out[i].U;
-            if (xorsched_need_regs(isa, pl, U) > isa_nregs(isa))
+            /* RVV: xorsched_need_regs counts logical registers; the
+             * twin inherits out[i].lmul, so scale to physical. */
+            int lmul = (isa == ISA_RVV && out[i].lmul > 1) ? out[i].lmul
+                                                           : 1;
+            if (xorsched_need_regs(isa, pl, U) * lmul > isa_nregs(isa))
                 continue;
             long u_naive =
                 xorsched_version_uops(pl->xor_sched, pl, isa, U, 0, 0, 0);

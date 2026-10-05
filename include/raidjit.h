@@ -235,6 +235,7 @@ typedef struct {
     char   isa_name[32];   /* "sse" / "avx2" / "avx512" */
     char   strategy[32];   /* "xor" / "horner" / "mulacc" / "delta" */
     int    unroll;         /* vector-width unroll factor U */
+    int    lmul;           /* RVV LMUL multiplier (1/2/4/8); 1 on other ISAs */
     int    gbps_measured;  /* 1 if gbps came from real benchmarks */
     double gbps;           /* measured or heuristically estimated.
                             * Measured values mean: best among the generated

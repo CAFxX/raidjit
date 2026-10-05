@@ -1370,6 +1370,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "predtail twin requires SVE (not implemented for x86-64)");
         return -1;
     }
+    /* lmul is an RVV-only axis: reject cleanly rather than silently
+     * ignoring it. */
+    if (cand->lmul > 1) {
+        snprintf(err, errlen,
+                 "lmul=%d requires RVV (not implemented for x86-64)",
+                 cand->lmul);
+        return -1;
+    }
     cg.permi2b = cand->permi2b;
     v->group_bytes = (size_t)cg.group;
     gf_build_logexp(cg.logtab, cg.exptab);

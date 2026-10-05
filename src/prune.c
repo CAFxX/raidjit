@@ -88,9 +88,14 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * structural, not numeric. predtail/maskedtail are pinned for the
      * same reason (both are 0 for every in-list candidate today: never
      * set by plan_candidates, built post-selection -- but the gate must
-     * not depend on that staying true). Behavior-preserving today: all
-     * in-list candidates have notail=0/predtail=0/maskedtail=0, and P_XOR
-     * pairs are refused by the kind guard anyway. */
+     * not depend on that staying true). lmul is pinned too: an
+     * (lmul=2,ternlog=1)/(lmul=1,ternlog=0) pair must never satisfy the
+     * twin relation on the checked axes. (Unlike notail/predtail/
+     * maskedtail, lmul genuinely varies in-list for RVV, so this pin
+     * is load-bearing, not just hardening.) Behavior-preserving for
+     * the other axes today: all in-list candidates have
+     * notail=0/predtail=0/maskedtail=0, and P_XOR pairs are refused by
+     * the kind guard anyway. */
     if (a->cand.ternlog != 1 || b->cand.ternlog != 0)
         return 0;
     if (a->cand.isa != b->cand.isa || a->cand.mul != b->cand.mul ||
@@ -101,7 +106,8 @@ static int twin_dominates(const version_t *a, const version_t *b,
         a->cand.predtail != b->cand.predtail ||
         a->cand.maskedtail != b->cand.maskedtail ||
         a->cand.permi2b != b->cand.permi2b ||
-        a->cand.xorsched != b->cand.xorsched)
+        a->cand.xorsched != b->cand.xorsched ||
+        a->cand.lmul != b->cand.lmul)
         return 0;
 
     int strict = 0;

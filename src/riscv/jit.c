@@ -5,18 +5,19 @@
  *   void fn(const void *in[], void *out[], size_t len);
  *   a0 = in, a1 = out, a2 = len
  *
- * Counted full-group loop driven by vsetvli (e8, m1, ta, ma). A group
- * is U * VLMAX bytes; each main-loop iteration consumes exactly one
- * group with vl pinned at VLMAX, so the per-iteration vl computation
- * (divu+mul, or srli+slli for U in {1,2,4}) collapses into a single
- * prologue divu for the trip count plus one mul/shift for the group
- * size. A sub-group remainder (remaining < U * VLMAX) falls through to
- * a strip-mining loop that runs at most once (vl = remaining / U <
- * VLMAX), then a single-chunk tail (vl == remaining, valid because
- * U <= 8 < VLMAX) -- there is NO scalar tail. Arbitrary lengths work,
- * including len < VL and (via an entry branch) len == 0. Note that
- * vsetvli with rs1 == x0 selects VLMAX rather than 0, hence the
- * explicit len == 0 guard at entry.
+ * Counted full-group loop driven by vsetvli (e8, ta, ma; LMUL from the
+ * candidate: m1/m2/m4/m8). A group is U * VLMAX bytes where
+ * VLMAX = LMUL * vlenb (SEW=8); each main-loop iteration consumes
+ * exactly one group with vl pinned at VLMAX, so the per-iteration vl
+ * computation (divu+mul, or srli+slli for U in {1,2,4}) collapses into
+ * a single prologue divu for the trip count plus one mul/shift for the
+ * group size. A sub-group remainder (remaining < U * VLMAX) falls
+ * through to a strip-mining loop that runs at most once
+ * (vl = remaining / U < VLMAX), then a single-chunk tail
+ * (vl == remaining, valid because U <= 8 < VLMAX) -- there is NO scalar
+ * tail. Arbitrary lengths work, including len < VL and (via an entry
+ * branch) len == 0. Note that vsetvli with rs1 == x0 selects VLMAX
+ * rather than 0, hence the explicit len == 0 guard at entry.
  *
  * GF(2^8) multiplies use the nibble method:
  *   lo = x & 0x0f; hi = x >> 4;
@@ -26,9 +27,12 @@
  * valid); mulacc/delta column tables are loaded per column from the
  * constant pool inside a vsetivli-16 window, so that a short tail VL
  * cannot leave table elements stale, with vl restored afterwards. The
- * counted full-group loop runs at vl == VLMAX >= 16 throughout, so its
- * table loads provably elide the window (it survives only in the
- * remainder/tail bodies, where vl can be < 16). The "VLMAX >= 16"
+ * window also narrows vl to exactly 16 whenever LMUL > 1: at
+ * vl == VLMAX a vle8.v would otherwise over-read the 16-byte pool
+ * entry (up to 8x at LMUL=8). At LMUL == 1 the counted full-group
+ * loop runs at vl == VLMAX >= 16 throughout, so its table loads
+ * provably elide the window (it survives only in the remainder/tail
+ * bodies, where vl can be < 16). The "VLMAX >= 16"
  * assumption is VLEN >= 128 (full V extension); cpu.c's "zve*" match
  * is optimistic -- on Zve32x with VLEN < 128 the 16-byte table loads
  * would be short (pre-existing limitation, not introduced here).
@@ -94,8 +98,15 @@ typedef struct {
         size_t off;
     } *cent;
     int ncent, ccent;
-    /* vector register assignment */
-    int vd0; /* first per-lane data reg: vd0 .. vd0+U-1 */
+    /* vector register assignment: all fields below hold PHYSICAL vector
+     * register numbers (group heads). Logical register r (as counted by
+     * plan_need_regs) maps to head r*lmul, so every head is lmul-aligned
+     * as the spec requires for LMUL>1. */
+    int lmul;  /* RVV LMUL multiplier (1/2/4/8): logical vector register r
+                * maps to the lmul-aligned physical group head r*lmul.
+                * 0 in cand->lmul means 1. */
+    int vlmul; /* vtype LMUL enum (VLMUL_M1/M2/M4/M8) for vsetvli */
+    int vd0; /* first per-lane data group head */
     int vd1; /* XOR-schedule 2nd temp (P_XOR xorsched twin only) */
     int tlo, thi, r1, r2, tbl_lo, tbl_hi, mask;
     int r3;    /* Zvbc path 3rd carryless temp (q needs lo/hi live) */
@@ -166,7 +177,10 @@ static void c_vle(cg_t *cg, int vd, int rs1)
 {
     em_vle8(&cg->em, vd, rs1);
     cg->uops += 1;
-    cg->mem += NOMVL;
+    /* Nominal data movement scales with LMUL: one vector load moves a
+     * full vl=VLMAX strip (lmul x NOMVL nominal bytes). Table loads
+     * (c_ldtab/c_ldtab1) narrow vl to 16 and count unscaled NOMVL. */
+    cg->mem += NOMVL * cg->lmul;
 }
 
 static void c_vse(cg_t *cg, int vs, int rs1)
@@ -181,7 +195,8 @@ static void c_vse(cg_t *cg, int vs, int rs1)
         em_ntl_all(&cg->em);
     em_vse8(&cg->em, vs, rs1);
     cg->uops += 1;
-    cg->mem += NOMVL;
+    /* As c_vle: nominal data movement scales with LMUL. */
+    cg->mem += NOMVL * cg->lmul;
 }
 
 /* Software prefetch for an input stream (Zicbop prefetch.r): prefetch
@@ -356,19 +371,24 @@ static void c_ldtab(cg_t *cg, uint8_t c, int win)
     size_t ohi = pool_get(cg, CK_NIBHI, c);
     /* T5 saves the vl value (dead at all call sites: T2/T4 hold the
      * live pointers, T5 is only c_ldptr scratch); T3 is c_pooladdr
-     * scratch. */
-    if (win)
+     * scratch. The 16-byte table loads need vl == 16 exactly: with
+     * LMUL>1, VLMAX can be 32/64/128/..., and a vle8.v at vl=VLMAX
+     * would over-read the 16-byte pool entry (segfault risk). So we
+     * narrow vl to 16 whenever LMUL>1, even in the counted loop
+     * (win=0) where vl==VLMAX is otherwise sufficient. */
+    int need_narrow = win || cg->lmul > 1;
+    if (need_narrow)
         em_addi(e, T5, T0, 0); /* save vl */
-    if (win)
-        em_vsetivli(e, X0, 16, VSEW8, VLMUL_M1, 1, 1);
+    if (need_narrow)
+        em_vsetivli(e, X0, 16, VSEW8, cg->vlmul, 1, 1);
     c_pooladdr(cg, olo);
     em_vle8(e, cg->tbl_lo, T3);
     c_pooladdr(cg, ohi);
     em_vle8(e, cg->tbl_hi, T3);
-    if (win)
+    if (need_narrow)
         /* restore vl: min(VLMAX, saved) == saved */
-        em_vsetvli(e, X0, T5, VSEW8, VLMUL_M1, 1, 1);
-    cg->uops += win ? 7 : 4;
+        em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
+    cg->uops += need_narrow ? 7 : 4;
     cg->mem += 2 * NOMVL;
 }
 
@@ -377,9 +397,11 @@ static void c_ldtab(cg_t *cg, uint8_t c, int win)
  * tables from the pool into the tbl scratch on every use; c_ldtab's
  * fixed (tbl_lo, tbl_hi) pair is only assigned in the MULACC/DELTA
  * register map, so it cannot serve the HORNER path. Same vsetivli-16
- * window discipline as c_ldtab, including the win elision: the
- * counted full-group loop runs at vl == VLMAX >= 16, so the window is
- * provably redundant there and skipped. */
+ * window discipline as c_ldtab: the window is elided in the counted
+ * full-group loop (win=0) only when LMUL==1 (vl==VLMAX==16 at
+ * VLEN=128, or VLMAX>16 but the over-read is benign); with LMUL>1
+ * the window is kept to narrow vl to 16 and avoid over-reading the
+ * 16-byte pool entry. */
 static void c_ldtab1(cg_t *cg, int vd, int kind, uint8_t c, int win)
 {
     em_t *e = &cg->em;
@@ -389,17 +411,23 @@ static void c_ldtab1(cg_t *cg, int vd, int kind, uint8_t c, int win)
     size_t off = pool_get(cg, kind, c);
     /* T5 saves the vl value (dead at all call sites: T2 holds the live
      * input pointer in the HORNER body, T5 is only c_ldptr scratch);
-     * T3 is c_pooladdr scratch. */
-    if (win)
+     * T3 is c_pooladdr scratch.
+     * The 16-byte table load needs vl == 16 exactly: with LMUL>1,
+     * VLMAX can be 32/64/128/..., and a vle8.v at vl=VLMAX would
+     * over-read the 16-byte pool entry (segfault risk). So we narrow
+     * vl to 16 whenever LMUL>1, even in the counted loop (win=0)
+     * where vl==VLMAX is otherwise sufficient. */
+    int need_narrow = win || cg->lmul > 1;
+    if (need_narrow)
         em_addi(e, T5, T0, 0); /* save vl */
-    if (win)
-        em_vsetivli(e, X0, 16, VSEW8, VLMUL_M1, 1, 1);
+    if (need_narrow)
+        em_vsetivli(e, X0, 16, VSEW8, cg->vlmul, 1, 1);
     c_pooladdr(cg, off);
     em_vle8(e, vd, T3);
-    if (win)
+    if (need_narrow)
         /* restore vl: min(VLMAX, saved) == saved */
-        em_vsetvli(e, X0, T5, VSEW8, VLMUL_M1, 1, 1);
-    cg->uops += win ? 5 : 2;
+        em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
+    cg->uops += need_narrow ? 5 : 2;
     cg->mem += NOMVL;
 }
 
@@ -409,9 +437,9 @@ static void gen_const_setup(cg_t *cg)
 {
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
-    /* vl = VLMAX (>= 16 on any RVV 1.0 implementation): full 16-byte
-     * table loads below are exact. */
-    em_vsetvli(e, T5, X0, VSEW8, VLMUL_M1, 1, 1);
+    /* vl = VLMAX (LMUL-scaled): the 16-byte table loads below narrow
+     * vl to 16 when LMUL>1 to avoid over-reading the pool entry. */
+    em_vsetvli(e, T5, X0, VSEW8, cg->vlmul, 1, 1);
     if (cg->need_mask) {
         em_addi(e, T3, X0, 0x0f);
         em_vmv_v_x(e, cg->mask, T3);
@@ -453,10 +481,17 @@ static void gen_const_setup(cg_t *cg)
                 assert(cg->hreg[2 * j] >= 0 && cg->hreg[2 * j + 1] >= 0);
                 size_t olo = pool_get(cg, CK_NIBLO, c);
                 size_t ohi = pool_get(cg, CK_NIBHI, c);
+                /* Narrow vl to 16 for the table loads: at LMUL>1,
+                 * vl==VLMAX would over-read the 16-byte pool entry.
+                 * (T5 holds VLMAX from above; restore after.) */
+                if (cg->lmul > 1)
+                    em_vsetivli(e, X0, 16, VSEW8, cg->vlmul, 1, 1);
                 c_pooladdr(cg, olo);
                 em_vle8(e, cg->hreg[2 * j], T3);
                 c_pooladdr(cg, ohi);
                 em_vle8(e, cg->hreg[2 * j + 1], T3);
+                if (cg->lmul > 1)
+                    em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
             }
         }
     }
@@ -487,8 +522,8 @@ static void mulacc_rows_c(cg_t *cg, int col, int ncols, const int *first_col,
             continue;
         int first = first_col && col == first_col[j];
         for (int u = 0; u < nu; u++) {
-            int acc = j * U + u;
-            int vd = cg->vd0 + u;
+            int acc = (j * U + u) * cg->lmul;
+            int vd = cg->vd0 + u * cg->lmul;
             if (c == 1) {
                 if (first)
                     c_vmv(cg, acc, vd); /* acc was 0 */
@@ -551,7 +586,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                     if (xs->urow_of[j] != uw)
                         continue;
                     for (int u = 0; u < nu; u++)
-                        c_vzero(cg, j * U + u);
+                        c_vzero(cg, (j * U + u) * cg->lmul);
                 }
             }
             /* phase 1: temp formation + fan-out */
@@ -575,7 +610,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                     c_vxor(cg, cg->vd0, cg->vd0, cg->vd1);
                     for (int wi = 0; wi < xs->temps[k].nusers; wi++) {
                         int uw = xs->temps[k].users[wi];
-                        int acc = xs->first_row[uw] * U + u;
+                        int acc = (xs->first_row[uw] * U + u) * cg->lmul;
                         if (xs->row_first[uw] == k)
                             c_vmv(cg, acc, cg->vd0);
                         else
@@ -603,13 +638,13 @@ static void gen_body(cg_t *cg, int nu, int win)
                     (nusers == 1 && xs->row_first[uw0] == xs->ntemps + i);
                 for (int u = 0; u < nu; u++) {
                     if (is_first) {
-                        int acc = xs->first_row[uw0] * U + u;
+                        int acc = (xs->first_row[uw0] * U + u) * cg->lmul;
                         c_vle(cg, acc, T2);
                     } else {
                         c_vle(cg, cg->vd0, T2);
                         for (int wi = 0; wi < nusers; wi++) {
                             int uw = xs->in_users[i][wi];
-                            int acc = xs->first_row[uw] * U + u;
+                            int acc = (xs->first_row[uw] * U + u) * cg->lmul;
                             if (xs->row_first[uw] == xs->ntemps + i)
                                 c_vmv(cg, acc, cg->vd0);
                             else
@@ -626,7 +661,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 if (j == xs->first_row[uw] || xs->row_first[uw] < 0)
                     continue;
                 for (int u = 0; u < nu; u++)
-                    c_vmv(cg, j * U + u, xs->first_row[uw] * U + u);
+                    c_vmv(cg, (j * U + u) * cg->lmul, (xs->first_row[uw] * U + u) * cg->lmul);
             }
         }
         } else {
@@ -642,7 +677,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 }
             if (first_in[j] < 0)
                 for (int u = 0; u < nu; u++)
-                    c_vzero(cg, j * U + u);
+                    c_vzero(cg, (j * U + u) * cg->lmul);
         }
         for (int i = 0; i < n_in; i++) {
             int users[RJ_MAX_DISKS], nusers = 0;
@@ -657,11 +692,11 @@ static void gen_body(cg_t *cg, int nu, int win)
             for (int u = 0; u < nu; u++) {
                 if (nusers == 1 && i == first_in[users[0]]) {
                     /* first touch, single user: load straight into acc */
-                    c_vle(cg, users[0] * U + u, T2);
+                    c_vle(cg, (users[0] * U + u) * cg->lmul, T2);
                 } else {
                     c_vle(cg, cg->vd0, T2);
                     for (int k = 0; k < nusers; k++) {
-                        int acc = users[k] * U + u;
+                        int acc = (users[k] * U + u) * cg->lmul;
                         if (i == first_in[users[k]])
                             c_vmv(cg, acc, cg->vd0);
                         else
@@ -684,7 +719,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 }
             if (first_col[j] < 0)
                 for (int u = 0; u < nu; u++)
-                    c_vzero(cg, j * U + u);
+                    c_vzero(cg, (j * U + u) * cg->lmul);
         }
         for (int i = 0; i < n_in; i++) {
             int any = 0;
@@ -697,7 +732,7 @@ static void gen_body(cg_t *cg, int nu, int win)
             em_add(e, T2, T2, T1);
             c_prefetch_in(cg, T2);
             for (int u = 0; u < nu; u++) {
-                c_vle(cg, cg->vd0 + u, T2);
+                c_vle(cg, cg->vd0 + u * cg->lmul, T2);
                 if (u < nu - 1)
                     em_add(e, T2, T2, T0);
             }
@@ -728,7 +763,7 @@ static void gen_body(cg_t *cg, int nu, int win)
             em_add(e, T2, T2, T1);
             c_prefetch_in(cg, T2);
             for (int u = 0; u < nu; u++) {
-                c_vle(cg, j * U + u, T2);
+                c_vle(cg, (j * U + u) * cg->lmul, T2);
                 if (u < nu - 1)
                     em_add(e, T2, T2, T0);
             }
@@ -750,7 +785,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 /* tlo/thi borrowed as delta temps (reused below) */
                 c_vle(cg, cg->tlo, T2);
                 c_vle(cg, cg->thi, T4);
-                c_vxor(cg, cg->vd0 + u, cg->tlo, cg->thi);
+                c_vxor(cg, cg->vd0 + u * cg->lmul, cg->tlo, cg->thi);
                 if (u < nu - 1) {
                     em_add(e, T2, T2, T0);
                     em_add(e, T4, T4, T0);
@@ -777,14 +812,14 @@ static void gen_body(cg_t *cg, int nu, int win)
             /* Degenerate: no inputs; accumulators stay zero. */
             for (int j = 0; j < n_out; j++)
                 for (int u = 0; u < nu; u++)
-                    c_vzero(cg, j * U + u);
+                    c_vzero(cg, (j * U + u) * cg->lmul);
         }
         for (int i = 0; i < n_in; i++) {
             c_ldptr(cg, T2, A0, i);
             em_add(e, T2, T2, T1);
             c_prefetch_in(cg, T2);
             for (int u = 0; u < nu; u++) {
-                c_vle(cg, cg->vd0 + u, T2);
+                c_vle(cg, cg->vd0 + u * cg->lmul, T2);
                 if (u < nu - 1)
                     em_add(e, T2, T2, T0);
             }
@@ -794,13 +829,13 @@ static void gen_body(cg_t *cg, int nu, int win)
                  * multiply-add. */
                 for (int j = 0; j < n_out; j++)
                     for (int u = 0; u < nu; u++)
-                        c_vmv(cg, j * U + u, cg->vd0 + u);
+                        c_vmv(cg, (j * U + u) * cg->lmul, cg->vd0 + u * cg->lmul);
                 continue;
             }
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->horner_c[j];
                 for (int u = 0; u < nu; u++) {
-                    int acc = j * U + u, vd = cg->vd0 + u;
+                    int acc = (j * U + u) * cg->lmul, vd = cg->vd0 + u * cg->lmul;
                     if (c == 1) {
                         c_vxor(cg, acc, acc, vd);
                     } else if (c == 0) {
@@ -862,7 +897,7 @@ static void gen_body(cg_t *cg, int nu, int win)
         c_ldptr(cg, T2, A1, j);
         em_add(e, T2, T2, T1);
         for (int u = 0; u < nu; u++) {
-            c_vse(cg, j * U + u, T2);
+            c_vse(cg, (j * U + u) * cg->lmul, T2);
             if (u < nu - 1)
                 em_add(e, T2, T2, T0);
         }
@@ -928,7 +963,7 @@ static void gen_function(cg_t *cg)
          * vsetivli-16 window here: vl == VLMAX >= 16 provably covers
          * the 16-byte loads (gen_body win=0). */
         /* T0 = vl = VLMAX (vsetvli with rs1 == x0 selects VLMAX) */
-        em_vsetvli(e, T0, X0, VSEW8, VLMUL_M1, 1, 1);
+        em_vsetvli(e, T0, X0, VSEW8, cg->vlmul, 1, 1);
         cg->uops += 1;
         if (use_shift) {
             em_slli(e, A3, T0, (unsigned)lgu); /* A3 = U * VLMAX */
@@ -974,7 +1009,7 @@ static void gen_function(cg_t *cg)
                 em_divu(e, T5, A2, T5);     /* T5 = remaining / U */
             }
             c_beq_long(cg, T5, X0, tail_lab);  /* spans the body */
-            em_vsetvli(e, T0, T5, VSEW8, VLMUL_M1, 1, 1); /* T0 = vl */
+            em_vsetvli(e, T0, T5, VSEW8, cg->vlmul, 1, 1); /* T0 = vl */
             cg->uops += 1;
             gen_body(cg, U, 1);
             if (use_shift) {
@@ -990,7 +1025,7 @@ static void gen_function(cg_t *cg)
             /* Use long branch: the tail body can exceed B-type ±4 KiB range
              * for wide topologies (e.g. 100+4 Cauchy needs ~24 KiB). */
             c_beq_long(cg, A2, X0, done_lab);
-            em_vsetvli(e, T0, A2, VSEW8, VLMUL_M1, 1, 1); /* T0 = vl = rem */
+            em_vsetvli(e, T0, A2, VSEW8, cg->vlmul, 1, 1); /* T0 = vl = rem */
             cg->uops += 1;
             gen_body(cg, 1, 1); /* vl == remaining < U <= 8 < 16: the table
                                  * loads need their vsetivli-16 window. */
@@ -1059,6 +1094,22 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     cg.opts = opts;
     cg.U = cand->U;
     cg.notail = cand->notail;
+    /* LMUL tuning axis (RVV only): validate and derive the vtype enum.
+     * 0 (zero-initialized candidate) means 1. */
+    {
+        int lmul = cand->lmul ? cand->lmul : 1;
+        if (lmul != 1 && lmul != 2 && lmul != 4 && lmul != 8) {
+            snprintf(err, errlen,
+                     "riscv backend: unsupported LMUL=%d (want 1/2/4/8)",
+                     lmul);
+            return -1;
+        }
+        cg.lmul = lmul;
+        cg.vlmul = lmul == 8   ? VLMUL_M8
+                   : lmul == 4 ? VLMUL_M4
+                   : lmul == 2 ? VLMUL_M2
+                               : VLMUL_M1;
+    }
     /* predtail is an SVE-only twin (track B1sve, aarch64 backend):
      * reject cleanly rather than silently building a general twin. */
     if (cand->predtail) {
@@ -1067,11 +1118,11 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         return -1;
     }
     cg.zvbc = (cand->mul == MUL_ZVBC);
-    /* True full-group size for the length dispatcher: U * VLMAX. vlenb
-     * is a hardware constant, so reading it once at build time is sound
-     * (also under QEMU: the C code sees the same VLEN as the JITed
-     * code's vsetvli). */
-    v->group_bytes = (size_t)cg.U * read_vlenb();
+    /* True full-group size for the length dispatcher: U * VLMAX * lmul.
+     * vlenb is a hardware constant, so reading it once at build time is
+     * sound (also under QEMU: the C code sees the same VLEN as the
+     * JITed code's vsetvli). */
+    v->group_bytes = (size_t)cg.U * read_vlenb() * (size_t)cg.lmul;
 
     /* cand->ternlog: not implemented for RVV; ignored.
      * cand->nt: honored (Zihintntl NTL.ALL before each output store;
@@ -1108,16 +1159,19 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         cg.need_mask = plan_any_nontrivial(pl);
 
     /* vector register assignment (v0..v31); fail the candidate cleanly if
-     * it does not fit -- the planner then tries a smaller unroll. */
+     * it does not fit -- the planner then tries a smaller unroll. All
+     * assigned numbers are PHYSICAL group heads: logical register r maps
+     * to r*L, so every head is L-aligned as LMUL>1 requires. */
     int n_out = pl->n_out, U = cand->U;
+    const int L = cg.lmul;
     if (pl->kind == P_XOR) {
-        cg.vd0 = n_out * U; /* single temp */
-        int vneed = cg.vd0 + 1;
+        cg.vd0 = n_out * U * L; /* single temp */
+        int vneed = cg.vd0 + L;
         if (cand->xorsched) {
             /* XOR-schedule twin: temp formation needs two live vector
              * temps (vd0, vd1); RVV has no vector XOR-with-memory. */
-            cg.vd1 = cg.vd0 + 1;
-            vneed = cg.vd0 + 2;
+            cg.vd1 = cg.vd0 + L;
+            vneed = cg.vd0 + 2 * L;
         }
         if (vneed > 32) {
             snprintf(err, errlen, "riscv backend: register pressure "
@@ -1128,9 +1182,9 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         int want_regs = cand->xorsched ? xorsched_need_regs(ISA_RVV, pl, U)
                                        : plan_need_regs(ISA_RVV, cand->mul,
                                                        pl, U, cand->remat);
-        assert(vneed == want_regs);
+        assert(vneed == want_regs * L);
     } else if (pl->kind == P_HORNER) {
-        cg.vd0 = n_out * U; /* U data regs */
+        cg.vd0 = n_out * U * L; /* U data group heads */
         cg.hreg = calloc((size_t)n_out * 2, sizeof(int));
         if (!cg.hreg) {
             snprintf(err, errlen, "out of memory");
@@ -1150,26 +1204,27 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 free(cg.hreg);
                 return -1;
             }
-            cg.r1 = cg.vd0 + U;
-            cg.r2 = cg.r1 + 1;
-            cg.r3 = cg.r2 + 1;
-            cg.kvec = cg.r3 + 1;
-            r = cg.kvec + 1;
+            cg.r1 = cg.vd0 + U * L;
+            cg.r2 = cg.r1 + L;
+            cg.r3 = cg.r2 + L;
+            cg.kvec = cg.r3 + L;
+            r = cg.kvec + L;
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->horner_c[j];
                 if (c == 0 || c == 1) {
                     cg.hreg[2 * j] = cg.hreg[2 * j + 1] = -1;
                     continue;
                 }
-                cg.hreg[2 * j] = r++;
+                cg.hreg[2 * j] = r;
+                r += L;
                 cg.hreg[2 * j + 1] = -1;
             }
         } else {
-            cg.tlo = cg.vd0 + U;
-            cg.thi = cg.tlo + 1;
-            cg.r1 = cg.thi + 1;
-            cg.r2 = cg.r1 + 1;
-            cg.mask = cg.r2 + 1;
+            cg.tlo = cg.vd0 + U * L;
+            cg.thi = cg.tlo + L;
+            cg.r1 = cg.thi + L;
+            cg.r2 = cg.r1 + L;
+            cg.mask = cg.r2 + L;
             if (cand->remat) {
                 /* Rematerialize: no persistent table regs; hreg[] stays
                  * -1 and is never read (gen_const_setup and the body
@@ -1182,21 +1237,23 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  * (vd0..vd0+U-1 = n_out*U..(n_out+1)*U-1), tlo, thi, r1,
                  * r2, mask, tbl: exactly (n_out+1)*U+6 vector regs,
                  * matching the plan_need_regs P_HORNER remat branch
-                 * (asserted below). */
+                 * (asserted below, scaled by L for physical heads). */
                 for (int j = 0; j < n_out; j++)
                     cg.hreg[2 * j] = cg.hreg[2 * j + 1] = -1;
-                cg.tbl = cg.mask + 1;
-                r = cg.tbl + 1;
+                cg.tbl = cg.mask + L;
+                r = cg.tbl + L;
             } else {
-                r = cg.mask + 1;
+                r = cg.mask + L;
                 for (int j = 0; j < n_out; j++) {
                     uint8_t c = pl->horner_c[j];
                     if (c == 0 || c == 1) {
                         cg.hreg[2 * j] = cg.hreg[2 * j + 1] = -1;
                         continue;
                     }
-                    cg.hreg[2 * j] = r++;
-                    cg.hreg[2 * j + 1] = r++;
+                    cg.hreg[2 * j] = r;
+                    r += L;
+                    cg.hreg[2 * j + 1] = r;
+                    r += L;
                 }
             }
         }
@@ -1207,26 +1264,26 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             free(cg.hreg);
             return -1;
         }
-        assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat));
+        assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) * L);
     } else { /* P_MULACC / P_DELTA */
-        cg.vd0 = n_out * U; /* U data regs */
+        cg.vd0 = n_out * U * L; /* U data group heads */
         if (cg.zvbc && plan_any_nontrivial(pl)) {
             /* Zvbc carryless path: r1/r2/r3 temps, one cvec coefficient
              * broadcast, kvec (0x1B reduction constant). P_DELTA
              * additionally keeps its tlo/thi delta-formation temps
              * (same role as in the nibble path). No tables, no mask. */
-            int r = cg.vd0 + U;
+            int r = cg.vd0 + U * L;
             if (pl->kind == P_DELTA) {
                 cg.tlo = r;
-                cg.thi = r + 1;
-                r += 2;
+                cg.thi = r + L;
+                r += 2 * L;
             }
             cg.r1 = r;
-            cg.r2 = r + 1;
-            cg.r3 = r + 2;
-            cg.cvec = r + 3;
-            cg.kvec = r + 4;
-            int vneed = cg.kvec + 1;
+            cg.r2 = r + L;
+            cg.r3 = r + 2 * L;
+            cg.cvec = r + 3 * L;
+            cg.kvec = r + 4 * L;
+            int vneed = cg.kvec + L;
             if (vneed > 32) {
                 snprintf(err, errlen, "riscv backend: register pressure "
                                       "(zvbc mulacc/delta needs %d regs)",
@@ -1234,16 +1291,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(vneed ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat));
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                       L);
         } else if (cg.zvbc) {
             /* All-trivial coefficients: no multiplies, no kvec/cvec.
              * P_DELTA still needs its tlo/thi delta-formation temps
              * (borrowed by the delta body). */
-            int vneed = cg.vd0 + U;
+            int vneed = cg.vd0 + U * L;
             if (pl->kind == P_DELTA) {
-                cg.tlo = cg.vd0 + U;
-                cg.thi = cg.tlo + 1;
-                vneed = cg.thi + 1;
+                cg.tlo = cg.vd0 + U * L;
+                cg.thi = cg.tlo + L;
+                vneed = cg.thi + L;
             }
             if (vneed > 32) {
                 snprintf(err, errlen, "riscv backend: register pressure "
@@ -1252,47 +1310,54 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(vneed ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat));
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                       L);
         } else if (cg.need_mask) {
-            cg.tlo = cg.vd0 + U;
-            cg.thi = cg.tlo + 1;
-            cg.r1 = cg.thi + 1;
-            cg.r2 = cg.r1 + 1;
-            cg.tbl_lo = cg.r2 + 1;
-            cg.tbl_hi = cg.tbl_lo + 1;
-            cg.mask = cg.tbl_hi + 1;
-            if (cg.mask + 1 > 32) {
+            cg.tlo = cg.vd0 + U * L;
+            cg.thi = cg.tlo + L;
+            cg.r1 = cg.thi + L;
+            cg.r2 = cg.r1 + L;
+            cg.tbl_lo = cg.r2 + L;
+            cg.tbl_hi = cg.tbl_lo + L;
+            cg.mask = cg.tbl_hi + L;
+            if (cg.mask + L > 32) {
                 snprintf(err, errlen, "riscv backend: register pressure "
                                       "(mulacc needs %d regs)",
-                         cg.mask + 1);
+                         cg.mask + L);
                 return -1;
             }
-            assert(cg.mask + 1 == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat));
+            assert(cg.mask + L ==
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                       L);
         } else if (pl->kind == P_DELTA) {
             /* All-{0,1} delta matrix: the nibble tables, r1/r2 and the
              * mask are dead and not allocated. tlo/thi stay live,
              * borrowed as the delta temps (the body loads old/new into
              * them for every column unconditionally). */
-            cg.tlo = cg.vd0 + U;
-            cg.thi = cg.tlo + 1;
-            if (cg.thi + 1 > 32) {
+            cg.tlo = cg.vd0 + U * L;
+            cg.thi = cg.tlo + L;
+            if (cg.thi + L > 32) {
                 snprintf(err, errlen, "riscv backend: register pressure "
                                       "(delta needs %d regs)",
-                         cg.thi + 1);
+                         cg.thi + L);
                 return -1;
             }
-            assert(cg.thi + 1 == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat));
+            assert(cg.thi + L ==
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                       L);
         } else {
             /* P_MULACC with all-{0,1} coefficients is unreachable from
              * the planner (it would be P_XOR); only the U data regs
              * survive. */
-            if (cg.vd0 + U > 32) {
+            if (cg.vd0 + U * L > 32) {
                 snprintf(err, errlen, "riscv backend: register pressure "
                                       "(mulacc needs %d regs)",
-                         cg.vd0 + U);
+                         cg.vd0 + U * L);
                 return -1;
             }
-            assert(cg.vd0 + U == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat));
+            assert(cg.vd0 + U * L ==
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                       L);
         }
     }
 
@@ -1346,9 +1411,12 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     v->mem = mem;
     v->memsz = memsz;
     v->fn = (rj_fn)mem;
-    v->vl = NOMVL;  /* nominal VL for strip-mining seam validation in bench */
-    v->uops_per_byte = cg.uops / (double)(cg.U * NOMVL);
-    v->mem_per_byte = cg.mem / (double)(cg.U * NOMVL);
+    /* Nominal strip length scales with LMUL: each vector instruction
+     * processes lmul*NOMVL bytes (SEW=8). uops/mem are counted per
+     * instruction, so the per-byte model divides by the widened strip. */
+    v->vl = NOMVL * cg.lmul; /* nominal VL for strip-mining seam validation in bench */
+    v->uops_per_byte = cg.uops / (double)(cg.U * NOMVL * cg.lmul);
+    v->mem_per_byte = cg.mem / (double)(cg.U * NOMVL * cg.lmul);
     v->code_size = code_size;
     v->const_size = cg.pool_len;
 
@@ -1356,21 +1424,28 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                         : pl->kind == P_HORNER ? "horner"
                         : pl->kind == P_DELTA  ? "delta"
                                                : "mulacc";
+    char lmuls[16];
+    /* LMUL marker: only shown when >1 (lmul=1 is the historical default
+     * and keeps existing descs byte-identical). */
+    if (cg.lmul > 1)
+        snprintf(lmuls, sizeof(lmuls), " lmul%d", cg.lmul);
+    else
+        lmuls[0] = '\0';
     if (pl->kind == P_XOR)
     /* %.65s on the plan name: the provable -Wformat-truncation bound
      * for the 128B desc (fixed suffix <= 63B; plan names can reach
      * 127B since the A5 "[rows ...]" suffix). The old name[64]
      * already truncated names at 63B, so this preserves strictly
      * more, never less. */
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s", pl->name,
-                 strat, isa_name(cand->isa), cand->U,
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s",
+                 pl->name, strat, isa_name(cand->isa), cand->U, lmuls,
                  cand->xorsched ? "+xsched" : "",
                  cand->nt ? "+nt" : "", cg.emit_pf ? "+pf" : "",
                  cand->notail ? " notail" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+%s U=%d%s%s%s%s",
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+%s U=%d%s%s%s%s%s",
                  pl->name, strat, isa_name(cand->isa),
-                 cg.zvbc ? "zbc" : "nibble", cand->U,
+                 cg.zvbc ? "zbc" : "nibble", cand->U, lmuls,
                  cand->remat ? "+remat" : "", cand->nt ? "+nt" : "",
                  cg.emit_pf ? "+pf" : "",
                  cand->notail ? " notail" : "");

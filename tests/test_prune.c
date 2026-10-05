@@ -1179,8 +1179,9 @@ static void replay_agreement(void)
  *     (the dirty-sharing double-load case: mem_sched > mem_naive) must
  *     not prune the plain counterpart -- pareto requires mem not-worse
  *     (PRUNE_EPS), independent of the kind guard.
- *  3. Hardening: notail/xorsched mismatched pairs never satisfy the twin
- *     relation (pins the C13 field-comparison addition in twin_dominates).
+ *  3. Hardening: notail/xorsched/lmul mismatched pairs never satisfy
+ *     the twin relation (pins the C13 field-comparison additions in
+ *     twin_dominates).
  * Positive control (P_MULACC +ternlog pair still prunes) is covered by
  * Part 1's unit_twin_prunes_plain. */
 
@@ -1276,6 +1277,23 @@ static void unit_twin_axes_pinned(void)
         int n = prune_versions(vs, 2, 0);
         CHECK(n == 2, "P_XOR naive/xsched pair must not prune, got %d",
               n);
+    }
+    /* lmul mismatch: a=(tl=1,lmul=2) vs b=(tl=0,lmul=1) on RVV must
+     * never satisfy the twin relation, even when the triple would
+     * dominate. Pins the lmul field-comparison in twin_dominates. */
+    {
+        version_t vs[2];
+        mkvx(&vs[0], P_MULACC, ISA_RVV, MUL_NIBBLE, 2, 0, 0, 0, 0, 0,
+             1.502, 32.016, 5824, "plain-lmul1");
+        mkvx(&vs[1], P_MULACC, ISA_RVV, MUL_NIBBLE, 2, 0, 0, 1, 0, 0,
+             0.751, 16.008, 5440, "twin-lmul2");
+        vs[0].cand.lmul = 1;
+        vs[1].cand.lmul = 2;
+        int n = prune_versions(vs, 2, 0);
+        CHECK(n == 2, "lmul-mismatched pair must not prune, got %d", n);
+        CHECK(find_desc(vs, n, "plain-lmul1") >= 0,
+              "plain must survive");
+        CHECK(find_desc(vs, n, "twin-lmul2") >= 0, "twin must survive");
     }
 }
 

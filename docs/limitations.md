@@ -91,8 +91,11 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
   VL-agnostic (runtime `cntb`, never hardcoded width) and execution-tested
   under qemu-aarch64 8.2.2 `-cpu max,sve-default-vector-length=128/256`
   (128k+ matrix runs each, 0 failures).
-- **RISC-V** (added 2026-10-01): RVV backend (`src/riscv/`), LMUL=1,
+- **RISC-V** (added 2026-10-01): RVV backend (`src/riscv/`),
   `vsetvli` strip-mining, nibble-shuffle multiply via `vrgather`.
+  LMUL is a planner tuning axis (`cand_t.lmul` ∈ {1,2,4,8}; logical
+  vector register *r* maps to the LMUL-aligned physical group head
+  *r*·LMUL, per-byte costs amortize over LMUL·NOMVL bytes).
   Tested under qemu-riscv64 `-cpu max` (10326 matrix runs, 0 failures).
   The P-extension (packed SIMD) is explicitly not implemented.
 - **x86-64 details.** Requires CPUID; ISA levels are
