@@ -378,6 +378,14 @@ void em_vand_vx(em_t *e, int vd, int vs2, int rs1)
     em_opv(e, 0x09 /*001001*/, vs2, rs1, 0x4 /*OPIVX*/, vd);
 }
 
+/* vd[i] = vs2[i] & sext(imm): the 5-bit immediate is sign-extended to
+ * SEW, so imm=15 is the 0x0F nibble mask for SEW=8. OPIVI class. */
+void em_vand_vi(em_t *e, int vd, int vs2, unsigned uimm)
+{
+    assert(uimm < 32);
+    em_opv(e, 0x09 /*001001*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
+}
+
 void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm)
 {
     assert(uimm < 32);

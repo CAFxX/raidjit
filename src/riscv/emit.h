@@ -5,8 +5,8 @@
  * (beq/bne), lui/auipc/jalr, vsetvli/vsetivli, unit-stride byte vector
  * loads/stores (vle8.v/vse8.v), and the integer vector ALU subset used
  * for nibble-table GF(2^8) multiplies: vxor.vv, vand.vv, vand.vx,
- * vsrl.vi, vrgather.vv, vmv.v.v, vmv.v.x; plus the Zvbc/Zvkg carryless
- * multiplies vclmul.vv/vclmulh.vv used by the MUL_ZVBC twin.
+ * vand.vi, vsrl.vi, vrgather.vv, vmv.v.v, vmv.v.x; plus the Zvbc/Zvkg
+ * carryless multiplies vclmul.vv/vclmulh.vv used by the MUL_ZVBC twin.
  *
  * Labels with fixups (B-type branches, J-type jumps, PC-relative
  * auipc+addi pairs for
@@ -105,6 +105,7 @@ void em_prefetch_r(em_t *e, int rs1, unsigned off);
 void em_vxor_vv(em_t *e, int vd, int vs1, int vs2);
 void em_vand_vv(em_t *e, int vd, int vs1, int vs2);
 void em_vand_vx(em_t *e, int vd, int vs2, int rs1);
+void em_vand_vi(em_t *e, int vd, int vs2, unsigned uimm);
 void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm);
 void em_vrgather_vv(em_t *e, int vd, int vtab, int vidx); /* vd[i] =
                           vtab[vidx[i]]; table reg in vs2 field, index

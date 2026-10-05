@@ -259,6 +259,15 @@ static void c_vand(cg_t *cg, int vd, int vs1, int vs2)
     cg->uops += 1;
 }
 
+/* vd = vs2 & 0x0f via the immediate form (SEW=8): replaces the
+ * vand.vv with the broadcast 0x0F mask register wherever the mask
+ * has no other use, freeing that register. */
+static void c_vand_vi(cg_t *cg, int vd, int vs2, unsigned uimm)
+{
+    em_vand_vi(&cg->em, vd, vs2, uimm);
+    cg->uops += 1;
+}
+
 static void c_vsrl4(cg_t *cg, int vd, int vs)
 {
     em_vsrl_vi(&cg->em, vd, vs, 4);
@@ -448,7 +457,10 @@ static void gen_const_setup(cg_t *cg)
      * the replicated pool entries (see pool_get) are exactly VLMAX
      * bytes, so the loads need no narrowing. */
     em_vsetvli(e, T5, X0, VSEW8, cg->vlmul, 1, 1);
-    if (cg->need_mask) {
+    /* The 0x0F mask broadcast is dead in HORNER remat mode: that path
+     * uses vand.vi with the immediate and repurposes the mask register
+     * as the NIBHI table scratch (see gen_body). */
+    if (cg->need_mask && !(pl->kind == P_HORNER && cg->cand.remat)) {
         em_addi(e, T3, X0, 0x0f);
         em_vmv_v_x(e, cg->mask, T3);
     }
@@ -839,6 +851,22 @@ static void gen_body(cg_t *cg, int nu, int win)
             }
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->horner_c[j];
+                if (cg->cand.remat && c >= 2) {
+                    /* Table-load hoisting: both nibble tables depend
+                     * only on the row coefficient c, so they are loaded
+                     * once per (i,j) -- not once per (i,j,u). The u-loop
+                     * below runs inside the tables' live scope: NIBLO
+                     * in tbl, NIBHI in the mask register repurposed as
+                     * the second table scratch (the mask itself is dead
+                     * here -- the u-loop uses vand.vi with the 0x0F
+                     * immediate -- so the proven (n_out+1)*U+6 pressure
+                     * formula is unchanged). The old comment claiming
+                     * "2 loads per use are inherent" was wrong about
+                     * the per-u factor: the per-u reloads were never
+                     * inherent, only the single extra live table. */
+                    c_ldtab1(cg, cg->tbl, CK_NIBLO, c, win);
+                    c_ldtab1(cg, cg->mask, CK_NIBHI, c, win);
+                }
                 for (int u = 0; u < nu; u++) {
                     int acc = (j * U + u) * cg->lmul, vd = cg->vd0 + u * cg->lmul;
                     if (c == 1) {
@@ -861,25 +889,20 @@ static void gen_body(cg_t *cg, int nu, int win)
                         c_gfmul_acc_zvbc(cg, acc, acc, cv, 1);
                         c_vxor(cg, acc, acc, vd);
                     } else {
-                        c_vand(cg, cg->tlo, acc, cg->mask);
-                        c_vsrl4(cg, cg->thi, acc);
                         if (cg->cand.remat) {
-                            /* NIBLO/NIBHI ping-pong through the single
-                             * tbl scratch: every (i,j,u) needs both
-                             * tables, and a second scratch would change
-                             * the proven (n_out+1)*U+6 pressure formula,
-                             * so the 2 loads per use are inherent --
-                             * no cross-u dedup (same tradeoff as the
-                             * aarch64/x86 backends). The vsetivli-16
-                             * window around each load is elided in the
-                             * counted full-group loop (win=0: vl ==
-                             * VLMAX >= 16 there) but kept in the
-                             * remainder/tail bodies. */
-                            c_ldtab1(cg, cg->tbl, CK_NIBLO, c, win);
+                            /* Tables are already live from the per-(i,j)
+                             * hoist above (NIBLO in tbl, NIBHI in the
+                             * repurposed mask register); the u-loop does
+                             * the two gathers and combines. vand.vi
+                             * carries the 0x0F mask as an immediate, so
+                             * no mask register is needed. */
+                            c_vand_vi(cg, cg->tlo, acc, 15);
+                            c_vsrl4(cg, cg->thi, acc);
                             c_vrg(cg, cg->r1, cg->tbl, cg->tlo);
-                            c_ldtab1(cg, cg->tbl, CK_NIBHI, c, win);
-                            c_vrg(cg, cg->r2, cg->tbl, cg->thi);
+                            c_vrg(cg, cg->r2, cg->mask, cg->thi);
                         } else {
+                            c_vand(cg, cg->tlo, acc, cg->mask);
+                            c_vsrl4(cg, cg->thi, acc);
                             /* -1 tripwire: the remat branch above is the
                              * only other user of this path; here the
                              * slots must hold assigned table regs. */
@@ -1214,8 +1237,12 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  * -1 and is never read (gen_const_setup and the body
                  * both branch on cand.remat, and the asserts at the
                  * hreg[] read sites trip if a -1 ever reached the
-                 * emitter). Tables are reloaded from the pool into tbl
-                 * on each use.
+                 * emitter). Tables are reloaded from the pool once per
+                 * (i,j) into tbl (NIBLO) and the mask register,
+                 * repurposed as the NIBHI table scratch (the mask
+                 * itself is dead in remat mode: the body uses vand.vi
+                 * with the 0x0F immediate, so no extra register is
+                 * needed and the allocation below is unchanged).
                  * Pressure proof: n_out*U accumulators
                  * (v0..n_out*U-1), U data regs
                  * (vd0..vd0+U-1 = n_out*U..(n_out+1)*U-1), tlo, thi, r1,

@@ -145,18 +145,21 @@ scratch, 2 pool loads per nontrivial use), planner twin enumeration in
 force-builds 4 remat cases (NEON headline twin, all-trivial, ntriv=1
 boundary, SVE) plus planner twin-policy checks. RVV backend implements
 nibble remat (nibble is the only multiply method on this ISA): codegen
-in `src/riscv/jit.c` (prologue skips table preloads, u-loop reloads
-tables into the `tbl` scratch via a new single-table `c_ldtab1` helper
--- the MULACC/DELTA pair loader's fixed `(tbl_lo, tbl_hi)` registers are
-not assigned in the HORNER map -- 2 pool loads per nontrivial use, no
-cross-u dedup since a second scratch would change the proven
-`(n_out+1)*U+6` formula), planner twin enumeration in `src/plan.c` under
-the same dominance policy, register-count assert (`(n_out+1)*U+6`) at the
-allocation site, and `tests/test_riscv_remat.c` force-builds 3 remat
-cases (RS(6,3) U=6 headline twin: persistent 33 > 32 >= remat 30;
-all-trivial; custom n_out=4/ntriv=4 Vandermonde) plus planner
-twin-policy checks plus an over-pressure rejection check (U=8 remat
-needs 38 regs > 32, must fail cleanly), run under QEMU at VLEN
+in `src/riscv/jit.c` (prologue skips table preloads; the body hoists
+both table loads per (i,j) -- NIBLO into the `tbl` scratch, NIBHI into
+the mask register repurposed as the second table scratch via a new
+single-table `c_ldtab1` helper -- the MULACC/DELTA pair loader's fixed
+`(tbl_lo, tbl_hi)` registers are not assigned in the HORNER map -- so
+the u-loop runs inside the tables' live scope: 2 pool loads per
+nontrivial (i,j) instead of per (i,j,u); the mask itself is dead there
+because the body uses `vand.vi` with the 0x0F immediate, so the proven
+`(n_out+1)*U+6` formula is unchanged), planner twin enumeration in
+`src/plan.c` under the same dominance policy, register-count assert
+(`(n_out+1)*U+6`) at the allocation site, and `tests/test_riscv_remat.c`
+force-builds 3 remat cases (RS(6,3) U=6 headline twin: persistent 33 >
+32 >= remat 30; all-trivial; custom n_out=4/ntriv=4 Vandermonde) plus
+planner twin-policy checks plus an over-pressure rejection check (U=8
+remat needs 38 regs > 32, must fail cleanly), run under QEMU at VLEN
 128/256/512. Note: with the
 current RVV unroll cap (U <= 5) and n_out <= 3 from the standard
 constructors, the twin is unreachable by the planner (persistent always

@@ -9,11 +9,12 @@
  *
  * RVV implements remat for the nibble method only (the sole multiply
  * method on this ISA). In remat mode the prologue does not preload table
- * registers (hreg[] stays -1); the u-loop reloads each needed table from
- * the constant pool into the tbl scratch on every use (NIBLO/NIBHI
- * ping-pong; a second scratch would change the proven
- * (n_out+1)*U+6 pressure formula, so no cross-u dedup -- the same
- * tradeoff as the aarch64/x86 backends).
+ * registers (hreg[] stays -1); the body hoists both table loads per
+ * (i,j) -- NIBLO into the tbl scratch, NIBHI into the mask register
+ * repurposed as the second table scratch (the mask itself is dead: the
+ * body uses vand.vi with the 0x0F immediate), so the u-loop runs inside
+ * the tables' live scope with no extra register and the proven
+ * (n_out+1)*U+6 pressure formula is unchanged.
  *
  * Cases (RVV, 32 vector regs; remat need = (n_out+1)*U+6):
  *   - RS(6,3) encode, RVV nibble, U=6, remat: the headline twin
