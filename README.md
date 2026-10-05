@@ -1,11 +1,13 @@
 # raidjit
 
 JIT compiler for RAID encode / erasure-recovery kernels. Given a topology
-(RAID-0/1/5/6, generic Reed-Solomon, or a custom parity matrix) and an
-operation (encode, recover N failed disks, decode-and-encode), raidjit
-generates specialized x86-64 machine code for the exact matrix at hand,
-benchmarks every legal codegen candidate on the host CPU, and keeps the
-winner. No external dependencies; C11, `-Wall -Wextra -Werror` clean.
+(RAID-0/1/5/6, generic Reed-Solomon, XOR array codes, or a custom parity
+matrix) and an operation (encode, recover N failed disks, parity update,
+decode-and-encode), raidjit generates specialized machine code for the
+exact matrix at hand, benchmarks every legal codegen candidate on the
+host CPU, and keeps the winner. Three backends: x86-64 (SSE/AVX2/AVX-512),
+AArch64 (NEON/SVE/SVE2), RISC-V (RVV 1.0). No external dependencies;
+C11, `-Wall -Wextra -Werror` clean.
 
 ## Quick start
 
@@ -70,17 +72,69 @@ ASan+UBSan. `make test-qemu` runs the ISA matrix under qemu-user.
 - **Compile**: `rj_compile(topo, op, opts, err, errlen)` → `rj_jit *`
   (NULL + message on failure). `rj_get_fn()` returns
   `void fn(const void *in[], void *out[], size_t len)`. `rj_get_info()`
-  reports the chosen implementation, measured GB/s, and static cost
-  model. `rj_free()` releases everything.
+  reports the chosen implementation, measured GB/s, static cost model,
+  and (RISC-V) the selected LMUL. `rj_free()` releases everything.
 - **Calling convention of generated code**: `in[]`/`out[]` pointer arrays
-  in RDI/RSI, byte length in RDX. Encode: `in` = data ptrs, `out` = parity
-  ptrs (`out` may be NULL when `npar == 0`). Recover: `in` = surviving
-  disk ptrs in increasing disk-index order, `out` = one ptr per failed
-  disk in increasing failed-index order. Any `len`; every buffer must be
-  64-byte aligned and no two buffers may overlap or alias (unchecked);
-  all vector memory ops are unaligned-safe. Generated code makes no calls,
-  touches no callee-saved registers except RBX/R12–R14/R15 (saved/restored), and
-  never reads/writes outside `[0, len)` of the given buffers.
+  in the platform ABI registers (RDI/RSI/RDX on x86-64, x0/x1/x2 on
+  AArch64/RISC-V), byte length in the third argument. Encode: `in` = data
+  ptrs, `out` = parity ptrs (`out` may be NULL when `npar == 0`). Recover:
+  `in` = surviving disk ptrs in increasing disk-index order, `out` = one
+  ptr per failed disk in increasing failed-index order. Any `len`; every
+  buffer must be 64-byte aligned and no two buffers may overlap or alias
+  (unchecked); all vector memory ops are unaligned-safe. Generated code
+  makes no calls, touches no callee-saved registers except those
+  documented per backend below, and never reads/writes outside `[0, len)`
+  of the given buffers.
+
+## Backends
+
+### x86-64 (SSE / AVX2 / AVX-512)
+
+- **ISA levels**: SSE2 baseline (16 vector regs), AVX2 (16), AVX-512
+  (32). CPUID + OS state (XCR0) gating; AVX512BW required for 512-bit
+  byte shuffles; GFNI for `VGF2P8AFFINEQB`.
+- **Multiply methods**: nibble-shuffle tables (`pshufb`/`vpshufb`) or
+  GFNI affine (`VGF2P8AFFINEQB`).
+- **Special twins**: `+ternlog` (VPTERNLOGD folds XOR pairs),
+  `+xsched` (XOR-schedule CSE), `+nt` (non-temporal stores),
+  `+permi2b` (VPERMI2B for wide multiplies, stage-2 duel).
+- **Tails**: scalar byte tail; `+notail` (length-specialized dispatch);
+  `+maskedtail` (AVX-512 masked vector tail, stage-2 duel).
+- **Callee-saved**: RBX, R12–R15 (saved/restored).
+
+### AArch64 (NEON / SVE / SVE2)
+
+- **ISA levels**: NEON baseline (16 vector regs v0–v15), SVE (VL-agnostic,
+  16 regs z16–z31, p0 only), SVE2 (adds EOR3).
+- **Multiply methods**: nibble-shuffle tables (`TBL`); SVE2 uses `EOR3`
+  to fold the nibble-multiply reduction (one instruction instead of
+  MOV + 2×EOR).
+- **Special twins**: `+xsched` (XOR-schedule CSE), `+nt` (STNP/STNT1B),
+  `+remat` (table rematerialization — reload tables per use instead of
+  holding them in registers, for high-pressure plans).
+- **Tails**: scalar byte tail; `+notail` (length-specialized dispatch);
+  `+predtail` (fully-predicated SVE vector tail under `whilelt`,
+  stage-2 duel).
+- **Callee-saved**: x19 (Horner tail only), v8–v15 (NEON, when used).
+  SVE uses only caller-saved z16–z31 and p0/p1.
+
+### RISC-V (RVV 1.0)
+
+- **ISA**: RVV 1.0, VLEN ≥ 128. SEW=8, LMUL ∈ {1,2,4,8}.
+- **LMUL tuning axis**: the planner enumerates LMUL 1/2/4/8 as an
+  empirical dimension — wider LMUL amortizes table-reload overhead across
+  more data. Register groups are LMUL-aligned; the benchmark picks the
+  winner. Reported in `rj_info.lmul`.
+- **Multiply methods**: nibble-shuffle tables (`vrgather.vv`); Zvbc
+  carryless multiply (`vclmul.vv`, when available).
+- **Special twins**: `+xsched` (XOR-schedule CSE), `+nt` (Zihintntl
+  `NTL.ALL` hint), `+remat` (table rematerialization),
+  `+prefetch` (Zicbop prefetch hints).
+- **Tails**: scalar byte tail; `+notail` (length-specialized dispatch).
+- **Table-load safety**: 16-byte table loads are VL-narrowed to exactly
+  16 elements at LMUL>1 (verified in machine code); at LMUL=1 the
+  VLMAX load is safe (contiguous pool).
+- **Callee-saved**: s0–s11, as per RISC-V ABI (saved/restored when used).
 
 ## Code generation
 
@@ -90,36 +144,20 @@ Three plan kinds, picked per matrix row by inspection:
 - `P_HORNER` — row is geometric `[c^{n-1}..c^0]`: Horner accumulation
   `acc = acc*c ^ in[i]` (one multiply per input, the optimal schedule).
 - `P_MULACC` — general row: multiply-accumulate per input.
+- `P_DELTA` — parity update: delta accumulation from old/new parity.
 
-Multiply methods: nibble-shuffle tables (SSSE3/AVX2/AVX-512; needs
-AVX512BW on the 512-bit path) or `VGF2P8AFFINEQB` (GFNI). ISA levels:
-SSE (2 regs… 16), AVX2 (16), AVX-512 (32). Candidates span unroll
-factors 8 down to 1, filtered by exact register-pressure formulas, so every
-generated candidate is encodable. On AVX-512, `P_XOR` plans with
-`n_out >= 2` additionally get a VPTERNLOGD twin that folds each column
-pair's two per-row XORs into one ternary-logic uop (`+ternlog` in the
-candidate desc). `P_XOR` plans with cross-row shared subexpressions get
-an XOR-schedule twin (`+xsched`): a plan-time greedy CSE builds a
-straight-line program of shared `t = a^b` temps, and the twin's body
-computes each temp once and fans it out (see docs/xor_schedule.md).
+Candidates span unroll factors (8 down to 1 on x86, 5 down to 1 on
+SVE/RVV) and, on RISC-V, LMUL 1/2/4/8 — filtered by exact
+register-pressure formulas, so every generated candidate is encodable.
 The twin is enumerated only on a strict static uop win and the benchmark
-picks empirically. With `nt_threshold > 0`, every
-candidate additionally gets a non-temporal twin that stores outputs
-with `MOVNTDQ`/`VMOVNTDQ` (x86), `STNP`/`STNT1B` (AArch64), or the
-Zihintntl `NTL.ALL` hint before each vector store (RISC-V). The jitted
-code executes no fence: a caller that reads NT-written data must fence
-itself afterwards on x86 (`SFENCE`) and AArch64 (`DMB ISHST`); no
-caller fence is needed on RISC-V, where the hint does not change
-memory ordering. The benchmark picks the twin
-empirically, so NT stores are only used where they win. Hot loops are
-aligned (`loop_align`, default 64/32/16 by vector width, must be 0 or a
-power of two); scalar tails handle any `len`, including 0. Constant
-pools are 64-aligned, RIP-relative; code is mapped RW, filled, then
-`mprotect`ed RX (no RWX window). Optional hardening: `endbr64` at entry,
-shadow-stack `setssbsy`/`clrssbsy` (needs OS-enabled CET). Trap sleds
-after `ret` (`ud2` on x86-64, `udf #0` on AArch64, `unimp` on RISC-V)
-are always emitted, and the dead space before the const pool is
-trap-filled, so a fall-through past `ret` faults immediately.
+picks empirically. With `nt_threshold > 0`, every candidate additionally
+gets a non-temporal twin. Hot loops are aligned (`loop_align`, default
+by vector width, must be 0 or a power of two); scalar tails handle any
+`len`, including 0. Constant pools are 64-aligned, PC-relative; code is
+mapped RW, filled, then `mprotect`ed RX (no RWX window). Optional
+hardening: `endbr64` at entry (x86), shadow-stack (needs OS-enabled
+CET). Trap sleds after `ret` (`ud2`/`udf #0`/`unimp`) are always
+emitted, and the dead space before the const pool is trap-filled.
 
 Length-specialized dispatch: after the benchmark picks the winning
 candidate, `rj_compile` also builds its notail twin (same loop, tail
@@ -128,10 +166,8 @@ the returned `rj_fn` is a dispatcher (shown as `+notail` in the info
 desc) that routes `len % group == 0` to the twin and every other length
 to the general version; if the twin loses, nothing changes. The twin is
 validated at group multiples before it is allowed to win, so a wrong
-twin fails compilation instead of shipping. The dispatcher costs one
-admission test plus one indirect call per invocation (a few ns,
-unmeasurable above VM noise). Details and the falsifiable ship
-criterion: `docs/length_dispatch.md`.
+twin fails compilation instead of shipping. Details and the falsifiable
+ship criterion: `docs/length_dispatch.md`.
 
 ## Correctness limits (hard guarantees)
 
@@ -143,21 +179,21 @@ criterion: `docs/length_dispatch.md`.
   set recoverable) only for `npar ≤ 3` and `ndata ≤ 51` (`npar ≤ 1` has
   no basis limit). They return NULL outside this envelope. Wider MDS
   topologies (e.g. Cauchy, MDS for `ndata+npar ≤ 255`) via
-  `rj_topo_custom()`. Out-of-envelope or
-  singular custom matrices fail `rj_compile` with a clean error — never
-  silently wrong parities.
+  `rj_topo_custom()`. Out-of-envelope or singular custom matrices fail
+  `rj_compile` with a clean error — never silently wrong parities.
 - **Parity-count codegen ceilings.** All accumulators stay in vector
   registers; beyond the ceiling `rj_compile` fails cleanly with
   "no candidates for this CPU/plan". At U=1: Horner/nibble needs
   `3*n+6 ≤ nregs` (n ≤ 3 SSE/AVX2, ≤ 8 AVX-512), Horner/GFNI needs
   `2*n+2 ≤ nregs` (≤ 7 / ≤ 15), mulacc/nibble needs `n+7 ≤ nregs`
-  (≤ 9 / ≤ 25). Recovery of `nf` failures uses `nf` in place of `n`.
-- **ISA gating** is by CPUID + OS state: AVX/AVX-512 need the XCR0 bits,
-  GFNI needs AVX512F hardware + OS state, AVX512BW-gated paths need the
-  BW bit. 512-bit loads use `VMOVDQU32` (AVX512F-only), so AVX512F-without-BW
-  CPUs (e.g. Xeon Phi) are supported.
+  (≤ 9 / ≤ 25). On RISC-V the ceiling scales by LMUL
+  (`need_regs * lmul ≤ 32`). Recovery of `nf` failures uses `nf` in
+  place of `n`.
+- **ISA gating** is by CPUID/HWCAP + OS state. 512-bit loads use
+  `VMOVDQU32` (AVX512F-only), so AVX512F-without-BW CPUs are supported.
+  SVE requires HWCAP_SVE; RVV requires the V extension.
 - Thread-safe: `rj_compile` shares one piece of process-wide mutable
-  state -- the generator-matrix search cache in `src/matrix_search.c`
+  state — the generator-matrix search cache in `src/matrix_search.c`
   (one entry per (ndata, npar), written once per shape). It is guarded
   by a C11 `atomic_flag` spinlock and the search itself is deterministic,
   so concurrent first-calls compute identical bytes. Generated code
@@ -183,7 +219,7 @@ absolute claim. Set `benchmark = 0` for a heuristic pick without timing.
 
 Before benchmarking, statically-dominated candidates are pruned: the
 plain member of a `+ternlog` twin pair is dropped when the twin (same
-plan kind, ISA, mul, unroll, NT, prefetch; only the multiply
+plan kind, ISA, mul, unroll, LMUL, NT, prefetch; only the multiply
 instruction differs) is no-worse on µops/byte, memory/byte, and code
 size and strictly better on at least one — and only for plan kinds
 `P_MULACC`/`P_DELTA`, where the twin direction is validated (see
@@ -215,11 +251,12 @@ Set `RJ_NO_PRUNE=1` to disable pruning entirely.
 - `test_cet`: `endbr64`/`ud2`/shadow-stack behavior, CPUID/XCR0 gating.
 - `make test-asan`: full suite under ASan+UBSan. `make test-qemu`:
   matrix under qemu-user for qemu64/+ssse3, Haswell, Skylake-Server,
-  Icelake-Server (QEMU 8.2 TCG lacks AVX-512/GFNI execution; those paths
-  are covered natively).
-- Four independent peer reviews (emitter, GF/planner, JIT backend,
-  benchmark methodology) audited the implementation; all findings were
-  addressed and re-tested.
+  Icelake-Server, aarch64, riscv64 (QEMU 8.2 TCG lacks AVX-512/GFNI
+  execution; those paths are covered natively).
+- Seven independent peer reviews (core planner, x86-64 backend, AArch64
+  backend, RISC-V backend, and generated-code audits for all three ISAs
+  covering 415 disassembled kernels) audited the implementation; all
+  findings were addressed and re-tested.
 - `test_codegen_shape`: generated-code shape assertions (duplicate-load
   elimination, table dedup, `vzeroupper`, VPTERNLOGD, pointer hoisting,
   coefficient-aware allocation) — every assertion red-green verified.
@@ -228,12 +265,14 @@ Set `RJ_NO_PRUNE=1` to disable pruning entirely.
 - `test_pdelta_edge`: P_DELTA adversarial coverage — max-width updates,
   200-disk topologies, guard pages, input immutability, aliasing, NT+fence.
 - `test_boundaries`: systematic 0/1/VL−1/VL/VL+1 main/tail seam tests.
+- `test_rvv_lmul`: RVV LMUL axis — enumeration, register alignment,
+  group scaling, table-load narrowing, empirical selection.
 - `test_rvv_f6`, `test_pxor_ternlog`: RVV counted-loop and VPTERNLOGD
   shape + differential tests.
 - `test_aarch64_emit`, `test_aarch64_remat`, `test_riscv_remat`,
   `test_riscv_prefetch`, `test_sve_eor3`, `test_sve_pdelta`,
-  `test_scan_align`, `test_remat`: backend-specific emitter, rematerialization,
-  prefetch, and alignment tests.
+  `test_scan_align`, `test_remat`: backend-specific emitter,
+  rematerialization, prefetch, LMUL, and alignment tests.
 
 ## Known limitations
 
