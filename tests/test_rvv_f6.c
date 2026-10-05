@@ -143,6 +143,19 @@ static int32_t jal_off(uint32_t w)
                           ((w >> 12) & 0xffu) << 12);
     return (o << 11) >> 11; /* sign-extend bit 20 */
 }
+/* B-type branch, opcode=1100011. */
+static int is_branch(uint32_t w)
+{
+    return (w & 0x7fu) == 0x63u;
+}
+static int32_t branch_off(uint32_t w)
+{
+    int32_t o = (int32_t)(((w >> 31) & 1u) << 12 |
+                          ((w >> 7) & 1u) << 11 |
+                          ((w >> 25) & 0x3fu) << 5 |
+                          ((w >> 8) & 0xfu) << 1);
+    return (o << 19) >> 19; /* sign-extend bit 12 */
+}
 
 /* Build one RVV candidate directly, bypassing the planner's twin
  * policy (mirrors tests/test_riscv_prefetch.c). Temporal, no
@@ -165,12 +178,17 @@ static int build_cand(const plan_t *pl, const rj_cpu_info *cpu, int U,
     return jit_build_version(pl, &cand, cpu, &o, v, err, errlen);
 }
 
-/* Index of the first backward jal (a loop back edge), or -1. */
-static long first_backward_jal(const version_t *v)
+/* Index of the first backward control transfer (the counted loop's
+ * back edge), or -1. Since the single-bne fix the counted loop uses a
+ * lone bne when the body is in B-type range (fallback: beq+jal); the
+ * first backward branch or jal is the counted loop's back edge either
+ * way. All prologue branches are forward. */
+static long first_backward_branch(const version_t *v)
 {
     for (size_t i = 0; i + 4 <= v->code_size; i += 4) {
         uint32_t w = word_at(v->mem + i);
-        if (is_jal(w) && jal_off(w) < 0)
+        if ((is_jal(w) && jal_off(w) < 0) ||
+            (is_branch(w) && branch_off(w) < 0))
             return (long)(i / 4);
     }
     return -1;
@@ -201,7 +219,7 @@ static void test_shape_tabwin(const plan_t *pl, const rj_cpu_info *cpu,
           "tabwin %s U=%d: build: %s", what, U, err);
     if (failures)
         return;
-    long back = first_backward_jal(&v);
+    long back = first_backward_branch(&v);
     CHECK(back >= 0, "tabwin %s U=%d [%s]: no backward jal", what, U,
           v.desc);
     long before = 0, after = 0;
@@ -222,7 +240,10 @@ static void test_shape_tabwin(const plan_t *pl, const rj_cpu_info *cpu,
     jit_free_version(&v);
 }
 
-/* A. divu path (U=3): the trip-count divu is hoisted to the prologue. */
+/* A. divu path (U=3): the trip-count divu is hoisted to the prologue;
+ * the remainder loop is divu-free: vsetvli computes vl =
+ * min(VLMAX, remaining) in hardware, so no divu/mul is needed there
+ * (81738ec eliminated the old strip-mining remainder). */
 static void test_shape_divu_path(const plan_t *pl, const rj_cpu_info *cpu)
 {
     char err[256];
@@ -256,38 +277,36 @@ static void test_shape_divu_path(const plan_t *pl, const rj_cpu_info *cpu)
                 remainder_mul = idx;
         }
     }
-    CHECK(n_divu == 2, "U=3 [%s]: n_divu=%d, want 2", v.desc, n_divu);
-    CHECK(n_mul == 2, "U=3 [%s]: n_mul=%d, want 2", v.desc, n_mul);
+    CHECK(n_divu == 1, "U=3 [%s]: n_divu=%d, want 1 (prologue only)",
+          v.desc, n_divu);
+    CHECK(n_mul == 1, "U=3 [%s]: n_mul=%d, want 1 (prologue only)",
+          v.desc, n_mul);
     CHECK(prologue_divu >= 0,
           "U=3 [%s]: no prologue divu A4,A2,A3", v.desc);
-    CHECK(remainder_divu >= 0,
-          "U=3 [%s]: no remainder divu T5,A2,T5", v.desc);
+    CHECK(remainder_divu < 0,
+          "U=3 [%s]: remainder divu T5,A2,T5 present at %ld -- "
+          "divu elimination regressed", v.desc, remainder_divu);
     CHECK(prologue_mul >= 0,
           "U=3 [%s]: no prologue mul A3,T0,A3", v.desc);
-    CHECK(remainder_mul >= 0,
-          "U=3 [%s]: no remainder mul T5,T0,T5", v.desc);
-    long back = first_backward_jal(&v);
+    CHECK(remainder_mul < 0,
+          "U=3 [%s]: remainder mul T5,T0,T5 present at %ld -- "
+          "remainder should use vsetvli, not mul", v.desc, remainder_mul);
+    long back = first_backward_branch(&v);
     CHECK(back >= 0, "U=3 [%s]: no backward jal", v.desc);
     if (prologue_divu >= 0 && back >= 0)
         CHECK(prologue_divu < back,
               "U=3 [%s]: prologue divu at %ld not before first back "
               "edge at %ld", v.desc, prologue_divu, back);
-    /* the remainder loop's divu/mul must sit after the counted loop's
-     * back edge: a per-iteration divu with the remainder register
-     * pattern inside the counted loop would otherwise pass shape
-     * (functionally correct, just slow -- the F6 defect). */
-    if (remainder_divu >= 0 && back >= 0)
-        CHECK(remainder_divu > back,
-              "U=3 [%s]: remainder divu at %ld not after back edge "
-              "at %ld", v.desc, remainder_divu, back);
-    if (remainder_mul >= 0 && back >= 0)
-        CHECK(remainder_mul > back,
-              "U=3 [%s]: remainder mul at %ld not after back edge "
-              "at %ld", v.desc, remainder_mul, back);
+    /* The old strip-mining remainder (divu+mul after the counted loop's
+     * back edge) is gone: the vsetvli-based remainder needs neither.
+     * The absence checks above lock the divu-free shape in. */
     jit_free_version(&v);
 }
 
-/* B. shift path (U=4): the group-size shift is hoisted to the prologue. */
+/* B. shift path (U=4): the group-size shift is hoisted to the prologue;
+ * the remainder loop is shift-free: vsetvli computes vl =
+ * min(VLMAX, remaining) in hardware (81738ec eliminated the old
+ * strip-mining remainder for all U, not just the divu path). */
 static void test_shape_shift_path(const plan_t *pl,
                                   const rj_cpu_info *cpu)
 {
@@ -323,30 +342,26 @@ static void test_shape_shift_path(const plan_t *pl,
                 remainder_srli = idx;
         }
     }
-    CHECK(n_slli == 2, "U=4 [%s]: n_slli=%d, want 2", v.desc, n_slli);
-    CHECK(n_srli == 1, "U=4 [%s]: n_srli=%d, want 1", v.desc, n_srli);
+    CHECK(n_slli == 1, "U=4 [%s]: n_slli=%d, want 1 (prologue only)",
+          v.desc, n_slli);
+    CHECK(n_srli == 0, "U=4 [%s]: n_srli=%d, want 0", v.desc, n_srli);
     CHECK(prologue_slli >= 0,
           "U=4 [%s]: no prologue slli A3,T0", v.desc);
-    CHECK(remainder_slli >= 0,
-          "U=4 [%s]: no remainder slli T5,T0", v.desc);
-    CHECK(remainder_srli >= 0,
-          "U=4 [%s]: no remainder srli T5,A2", v.desc);
-    long back = first_backward_jal(&v);
+    CHECK(remainder_slli < 0,
+          "U=4 [%s]: remainder slli T5,T0 present at %ld -- "
+          "remainder should use vsetvli, not slli", v.desc, remainder_slli);
+    CHECK(remainder_srli < 0,
+          "U=4 [%s]: remainder srli T5,A2 present at %ld -- "
+          "remainder should use vsetvli, not srli", v.desc, remainder_srli);
+    long back = first_backward_branch(&v);
     CHECK(back >= 0, "U=4 [%s]: no backward jal", v.desc);
     if (prologue_slli >= 0 && back >= 0)
         CHECK(prologue_slli < back,
               "U=4 [%s]: prologue slli at %ld not before first back "
               "edge at %ld", v.desc, prologue_slli, back);
-    /* same anti-regression as the divu path: the remainder loop's
-     * shifts must sit after the counted loop's back edge. */
-    if (remainder_slli >= 0 && back >= 0)
-        CHECK(remainder_slli > back,
-              "U=4 [%s]: remainder slli at %ld not after back edge "
-              "at %ld", v.desc, remainder_slli, back);
-    if (remainder_srli >= 0 && back >= 0)
-        CHECK(remainder_srli > back,
-              "U=4 [%s]: remainder srli at %ld not after back edge "
-              "at %ld", v.desc, remainder_srli, back);
+    /* The old strip-mining remainder (srli+slli after the counted loop's
+     * back edge) is gone: the vsetvli-based remainder needs neither.
+     * The absence checks above lock the shift-free shape in. */
     jit_free_version(&v);
 }
 
