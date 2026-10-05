@@ -280,8 +280,11 @@ fault (verified empirically with a guard-page probe on AMD EPYC 9D25,
 `need_r15` is ORed with `maskedtail` (the mask table needs the pool
 base; P_XOR otherwise never uses r15 — a missing OR segfaulted during
 development). `need_logexp` is forced to 0 for the twin (no scalar
-tail), like `notail`. Only P_XOR is implemented; nibble/GFNI masked
-tails are separate benchmark gates (not implemented).
+tail), like `notail`. P_XOR and GFNI multiply tails (P_MULACC/P_DELTA/
+P_HORNER with MUL_GFNI) are implemented; nibble masked tails are a
+separate benchmark gate (not implemented -- the nibble split needs
+tlo/thi plus dual table lookups live in the tail, a larger register
+and code change than the GFNI affine).
 
 ## 7. Benchmark integration (src/bench.c, src/api.c)
 

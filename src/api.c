@@ -429,12 +429,20 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
                         e3);
             }
         }
+        /* Masked-tail twin (track B1x86): eligible for P_XOR (plain body)
+         * and for GFNI multiply tails (P_MULACC/P_DELTA/P_HORNER with
+         * mul == MUL_GFNI). Nibble masked tails are not implemented.
+         * The tail duel (bench_tail_duel) validates correctness and
+         * requires a measured win before installing. */
         if (vs[winner].cand.isa == ISA_AVX512 &&
-            wpl->kind == P_XOR &&
-            !vs[winner].cand.ternlog &&
-            !vs[winner].cand.xorsched &&
             !vs[winner].cand.nt &&
-            cpu.avx512f && cpu.avx512bw) {
+            cpu.avx512f && cpu.avx512bw &&
+            ((wpl->kind == P_XOR &&
+              !vs[winner].cand.ternlog &&
+              !vs[winner].cand.xorsched) ||
+             (vs[winner].cand.mul == MUL_GFNI && cpu.gfni &&
+              (wpl->kind == P_MULACC || wpl->kind == P_DELTA ||
+               wpl->kind == P_HORNER)))) {
             cand_t mtwinc = vs[winner].cand;
             mtwinc.maskedtail = 1;
             version_t mtwin;

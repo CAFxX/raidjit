@@ -1277,9 +1277,9 @@ static void gen_tail(cg_t *cg)
  * the tail (rcx - r11 bytes) is in 1..group-1.
  *
  * The tail is processed in 64-byte masked chunks reusing the u=0
- * accumulator slots (cg->t + j*U). Per chunk:
+ * accumulator slots (j*U). Per chunk:
  *   rdx = min(r10, 64); k1 = mask[rdx] (KMOVQ from the CK_TAILMASK pool);
- *   zero the accumulators; masked body; masked stores;
+ *   zero/seed the accumulators; masked body; masked stores;
  *   r11 += rdx; r10 -= rdx.
  * Chunk starts are always 64-byte aligned (r11 starts group-aligned and
  * only the last chunk is short), so the aligned masked forms are safe.
@@ -1287,9 +1287,188 @@ static void gen_tail(cg_t *cg)
  * see the maskfault probe, track Bx86); loads use {k1}{z} (zeroing) and
  * stores use {k1} (merging), so bytes past the tail are bit-exact.
  *
- * Evaluation order (each its own benchmark gate): P_XOR, then nibble,
- * then GFNI. Only P_XOR is implemented here; the other kinds fall back
- * to the scalar tail until their gate is evaluated. */
+ * The arithmetic (xor / gfni affine / nibble shuffle) runs UNMASKED on
+ * the zero-padded masked loads: masked-off lanes compute garbage, but
+ * the masked store never writes them, so the result is bit-exact. (For
+ * GFNI this relies on the store mask, not on masking the affine: the
+ * affine's constant term b lands in masked-off lanes of the accumulator
+ * but is never stored.)
+ *
+ * Evaluation order (each its own benchmark gate): P_XOR, then GFNI,
+ * then nibble. Nibble masked tails are not implemented (the split +
+ * dual-table lookup needs tlo/thi/r1/r2 live in the tail; see the gap
+ * note in gen_tail_masked). */
+
+/* Masked load of in[i] (or R8[idx*8] for P_DELTA's computed indices)
+ * into cg->t, {k1}{z}. */
+static void tail_masked_ld(cg_t *cg, int idx)
+{
+    em_t *e = &cg->em;
+    int pr = hoist_inptr(cg, idx);
+    if (pr >= 0) {
+        em_vmovdqu8_ld_masked(e, cg->t, pr, R11, 0, 0, VL64, 1, 1);
+    } else {
+        em_mov_rm(e, RAX, R8, -1, 0, idx * 8);
+        em_vmovdqu8_ld_masked(e, cg->t, RAX, R11, 0, 0, VL64, 1, 1);
+    }
+}
+
+/* GFNI masked-tail multiply-accumulate for one matrix column:
+ * acc[j] ^= t * mat[j][col] (c==1: plain xor; else affine via tbl).
+ * Tables come from the pool (raw_ldpool, uncounted) with last-value
+ * dedup tracked in tbl_off/tbl_valid. t2 is the affine temp. Raw em_
+ * calls only: the tail is not part of the per-group static model. */
+static void tail_gfni_mulacc(cg_t *cg, int col, int ncols,
+                             size_t *tbl_off, int *tbl_valid)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_out = pl->n_out;
+    for (int j = 0; j < n_out; j++) {
+        uint8_t c = pl->mat[(size_t)j * (size_t)ncols + (size_t)col];
+        if (!c)
+            continue;
+        int acc = j * cg->U;
+        if (c == 1) {
+            em_vpxor(e, acc, acc, cg->t, VL64);
+        } else {
+            size_t poff = pool_get(cg, CK_AFF, c);
+            if (!*tbl_valid || *tbl_off != poff) {
+                raw_ldpool(cg, cg->tbl, poff);
+                *tbl_off = poff;
+                *tbl_valid = 1;
+            }
+            em_vgf2p8affineqb(e, cg->t2, cg->t, cg->tbl, 0, VL64);
+            em_vpxor(e, acc, acc, cg->t2, VL64);
+        }
+    }
+}
+
+/* P_MULACC GFNI masked tail body (one 64-byte chunk). */
+static void gen_tail_masked_mulacc_gfni(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_in = pl->n_in, n_out = pl->n_out;
+    for (int j = 0; j < n_out; j++)
+        em_vzero(e, j * cg->U, VL64);
+    size_t tbl_off = 0;
+    int tbl_valid = 0;
+    for (int i = 0; i < n_in; i++) {
+        int any = 0;
+        for (int j = 0; j < n_out; j++)
+            if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
+                any = 1;
+                break;
+            }
+        if (!any)
+            continue;
+        tail_masked_ld(cg, i);
+        tail_gfni_mulacc(cg, i, n_in, &tbl_off, &tbl_valid);
+    }
+}
+
+/* P_DELTA GFNI masked tail body (one 64-byte chunk). Accumulators are
+ * seeded from oldpar (masked loads); per changed disk the delta
+ * old[i]^new[i] is formed in t (via t2 when a nontrivial coefficient
+ * needs the affine temp; t2/tbl are only assigned then) and
+ * multiply-accumulated. */
+static void gen_tail_masked_delta_gfni(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_out = pl->n_out, nc = pl->nchanged;
+    for (int j = 0; j < n_out; j++) {
+        em_mov_rm(e, RAX, R8, -1, 0, (2 * nc + j) * 8);
+        em_vmovdqu8_ld_masked(e, j * cg->U, RAX, R11, 0, 0, VL64, 1, 1);
+    }
+    size_t tbl_off = 0;
+    int tbl_valid = 0;
+    for (int i = 0; i < nc; i++) {
+        int any1 = 0, anyn = 0;
+        for (int j = 0; j < n_out; j++) {
+            uint8_t c = pl->mat[(size_t)j * (size_t)nc + (size_t)i];
+            if (c == 1)
+                any1 = 1;
+            else if (c)
+                anyn = 1;
+        }
+        if (!any1 && !anyn)
+            continue;
+        if (anyn) {
+            /* Nontrivial coefficient: form the delta in t via t2
+             * (assigned: anyn implies plan_any_nontrivial). */
+            em_mov_rm(e, RAX, R8, -1, 0, i * 8);
+            em_vmovdqu8_ld_masked(e, cg->t, RAX, R11, 0, 0, VL64, 1, 1);
+            em_mov_rm(e, RAX, R8, -1, 0, (nc + i) * 8);
+            em_vmovdqu8_ld_masked(e, cg->t2, RAX, R11, 0, 0, VL64, 1, 1);
+            em_vpxor(e, cg->t, cg->t, cg->t2, VL64);
+            tail_gfni_mulacc(cg, i, nc, &tbl_off, &tbl_valid);
+        } else {
+            /* All-trivial column: acc ^= old[i] ^ new[i] via two
+             * masked loads and XORs; no t2 (unassigned here). */
+            em_mov_rm(e, RAX, R8, -1, 0, i * 8);
+            em_vmovdqu8_ld_masked(e, cg->t, RAX, R11, 0, 0, VL64, 1, 1);
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)nc + (size_t)i] == 1)
+                    em_vpxor(e, j * cg->U, j * cg->U, cg->t, VL64);
+            em_mov_rm(e, RAX, R8, -1, 0, (nc + i) * 8);
+            em_vmovdqu8_ld_masked(e, cg->t, RAX, R11, 0, 0, VL64, 1, 1);
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)nc + (size_t)i] == 1)
+                    em_vpxor(e, j * cg->U, j * cg->U, cg->t, VL64);
+        }
+    }
+}
+
+/* P_HORNER GFNI masked tail body (one 64-byte chunk). Horner recurrence
+ * with masked input loads; tables from hreg (non-remat) or the pool
+ * (remat, last-value dedup). acc=0 ^ t = t, so no i==0 special case is
+ * needed (the affine's constant term is 0 for GF multiplies). */
+static void gen_tail_masked_horner_gfni(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_in = pl->n_in, n_out = pl->n_out;
+    for (int j = 0; j < n_out; j++)
+        em_vzero(e, j * cg->U, VL64);
+    size_t tbl_off = 0;
+    int tbl_valid = 0;
+    for (int i = 0; i < n_in; i++) {
+        tail_masked_ld(cg, i);
+        for (int j = 0; j < n_out; j++) {
+            uint8_t c = pl->horner_c[j];
+            int acc = j * cg->U;
+            if (c == 1) {
+                em_vpxor(e, acc, acc, cg->t, VL64);
+            } else if (c == 0) {
+                em_vmovdqa_rr(e, acc, cg->t, VL64);
+            } else {
+                int treg;
+                if (cg->cand.remat) {
+                    size_t poff = pool_get(cg, CK_AFF, c);
+                    if (!tbl_valid || tbl_off != poff) {
+                        raw_ldpool(cg, cg->tbl, poff);
+                        tbl_off = poff;
+                        tbl_valid = 1;
+                    }
+                    treg = cg->tbl;
+                } else {
+                    treg = cg->hreg[2 * j];
+                }
+                em_vgf2p8affineqb(e, cg->t2, acc, treg, 0, VL64);
+                em_vpxor(e, acc, cg->t2, cg->t, VL64);
+            }
+        }
+    }
+}
+
+/* Masked tail dispatcher: P_XOR and GFNI multiply tails share the
+ * chunk loop (r10/rdx/k1 setup and masked stores); the per-chunk body
+ * is kind-specific above. Masked-off lanes never fault (verified
+ * empirically on AMD EPYC 9D25, track Bx86); loads use {k1}{z}
+ * (zeroing) and stores use {k1} (merging), so bytes past the tail are
+ * bit-exact. */
 static void gen_tail_masked(cg_t *cg)
 {
     em_t *e = &cg->em;
@@ -1298,8 +1477,13 @@ static void gen_tail_masked(cg_t *cg)
 
     assert(cg->cand.isa == ISA_AVX512);
     assert(cg->vl == 64);
-    /* Gate 1: P_XOR only. Nibble/GFNI masked tails are separate gates. */
-    assert(pl->kind == P_XOR && !cg->cand.xorsched && !cg->cand.ternlog);
+    int gfni = cg->cand.mul == MUL_GFNI;
+    /* Gate: P_XOR (plain body), or GFNI multiply tails. Nibble masked
+     * tails are a separate, not-yet-implemented gate. */
+    assert((pl->kind == P_XOR && !cg->cand.xorsched && !cg->cand.ternlog) ||
+           (gfni && !cg->cand.permi2b &&
+            (pl->kind == P_MULACC || pl->kind == P_DELTA ||
+             pl->kind == P_HORNER)));
 
     size_t moff = pool_get(cg, CK_TAILMASK, 0);
 
@@ -1319,32 +1503,36 @@ static void gen_tail_masked(cg_t *cg)
     em_bind(e, full_lab);
     /* k1 = mask[rdx]: the low rdx bits set */
     em_kmovq_km(e, 1, R15, RDX, 3, (int)moff);
-    /* zero the u=0 accumulators (registers j*U; masked-off lanes stay
-     * zero through the unmasked XORs below). cg->t is the temp. */
-    for (int j = 0; j < n_out; j++)
-        em_vzero(e, j * cg->U, VL64);
-    /* per input column: masked load, xor into contributing rows */
-    for (int i = 0; i < n_in; i++) {
-        int any = 0;
+
+    if (pl->kind == P_XOR) {
+        /* zero the u=0 accumulators (registers j*U; masked-off lanes
+         * stay zero through the unmasked XORs below). cg->t is the
+         * temp. */
         for (int j = 0; j < n_out; j++)
-            if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
-                any = 1;
-                break;
-            }
-        if (!any)
-            continue;
-        int pr = hoist_inptr(cg, i);
-        if (pr >= 0) {
-            em_vmovdqu8_ld_masked(e, cg->t, pr, R11, 0, 0, VL64, 1, 1);
-        } else {
-            em_mov_rm(e, RAX, R8, -1, 0, i * 8);
-            em_vmovdqu8_ld_masked(e, cg->t, RAX, R11, 0, 0, VL64, 1, 1);
-        }
-        for (int j = 0; j < n_out; j++) {
-            if (!pl->mat[(size_t)j * (size_t)n_in + (size_t)i])
+            em_vzero(e, j * cg->U, VL64);
+        /* per input column: masked load, xor into contributing rows */
+        for (int i = 0; i < n_in; i++) {
+            int any = 0;
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
+                    any = 1;
+                    break;
+                }
+            if (!any)
                 continue;
-            em_vpxor(e, j * cg->U, j * cg->U, cg->t, VL64);
+            tail_masked_ld(cg, i);
+            for (int j = 0; j < n_out; j++) {
+                if (!pl->mat[(size_t)j * (size_t)n_in + (size_t)i])
+                    continue;
+                em_vpxor(e, j * cg->U, j * cg->U, cg->t, VL64);
+            }
         }
+    } else if (pl->kind == P_MULACC) {
+        gen_tail_masked_mulacc_gfni(cg);
+    } else if (pl->kind == P_DELTA) {
+        gen_tail_masked_delta_gfni(cg);
+    } else { /* P_HORNER */
+        gen_tail_masked_horner_gfni(cg);
     }
     /* masked (merging) stores */
     for (int j = 0; j < n_out; j++) {
