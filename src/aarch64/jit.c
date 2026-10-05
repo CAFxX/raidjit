@@ -847,8 +847,13 @@ static void gen_tail(cg_t *cg)
         } else if (pl->kind == P_HORNER && n_in > 0) {
             em_bind(e, lj);       /* i == 0 overwrites w12 below */
         } else {
-            em_mov_wi(e, 12, 0);
+            /* P_MULACC (and P_HORNER with n_in == 0): the accumulator
+             * must be re-zeroed for EVERY tail byte, so the zeroing is
+             * inside the loop (bind first). The old order (mov before
+             * bind) zeroed w12 only for the first tail byte; bytes 1..
+             * accumulated onto the previous byte's result. */
             em_bind(e, lj);
+            em_mov_wi(e, 12, 0);
         }
         if (pl->kind == P_XOR) {
             int first = 1;
