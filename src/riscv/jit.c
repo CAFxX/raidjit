@@ -11,13 +11,14 @@
  * exactly one group with vl pinned at VLMAX, so the per-iteration vl
  * computation (divu+mul, or srli+slli for U in {1,2,4}) collapses into
  * a single prologue divu for the trip count plus one mul/shift for the
- * group size. A sub-group remainder (remaining < U * VLMAX) falls
- * through to a strip-mining loop that runs at most once
- * (vl = remaining / U < VLMAX), then a single-chunk tail
- * (vl == remaining, valid because U <= 8 < VLMAX) -- there is NO scalar
- * tail. Arbitrary lengths work, including len < VL and (via an entry
- * branch) len == 0. Note that vsetvli with rs1 == x0 selects VLMAX
- * rather than 0, hence the explicit len == 0 guard at entry.
+ * group size. A sub-group remainder (remaining < U * VLMAX) is handled
+ * by a simple loop that processes up to VLMAX bytes per iteration
+ * using the single-unroll body; vsetvli computes vl =
+ * min(VLMAX, remaining) in hardware, so no division is needed -- there
+ * is NO scalar tail. Arbitrary lengths work, including len < VL and
+ * (via an entry branch) len == 0. Note that vsetvli with rs1 == x0
+ * selects VLMAX rather than 0, hence the explicit len == 0 guard at
+ * entry.
  *
  * GF(2^8) multiplies use the nibble method:
  *   lo = x & 0x0f; hi = x >> 4;
@@ -935,7 +936,7 @@ static void gen_function(cg_t *cg)
     int lgu = U == 4 ? 2 : U == 2 ? 1 : 0;
     int use_shift = (U == 1 || U == 2 || U == 4);
     int cnt_lab = em_label(e), loop_lab = em_label(e),
-        tail_lab = em_label(e), done_lab = em_label(e);
+        done_lab = em_label(e);
 
     /* len == 0 guard: vsetvli with rs1 == x0 selects VLMAX, not 0. */
     c_beq_long(cg, A2, X0, done_lab); /* spans the whole function */
@@ -987,46 +988,22 @@ static void gen_function(cg_t *cg)
          * not emitted at all. */
         if (!cg->notail) {
             em_sub(e, A2, A2, T1);            /* A2 = remaining */
-            /* Partial-group remainder: remaining < U * VLMAX, so the
-             * strip-mining loop below runs at most once (remaining / U <
-             * VLMAX, hence one iteration consumes all but remaining % U
-             * bytes) before the single-chunk tail. */
+            /* Remainder: remaining < U * VLMAX.
+             * Process in chunks of up to VLMAX bytes using the
+             * single-unroll body. vsetvli computes vl =
+             * min(VLMAX, remaining) in hardware, so no division is
+             * needed (the old strip-mining approach used divu for
+             * non-power-of-two U, and ran at degraded vl =
+             * remaining / U). vl can be < 16 here, so table loads
+             * keep their vsetivli-16 window (gen_body win=1). */
             em_bind(e, loop_lab);
-            /* Strip-mining with U unrolls per iteration. vl is chosen as
-             * min(VLMAX, remaining / U) so that the U chunks of vl bytes
-             * always fit inside the remaining length:
-             * U * vl <= U * (remaining / U) <= remaining. The loop runs
-             * while remaining >= U; the tail (0 <= remaining < U <=
-             * VLMAX) is a single chunk with vl == remaining. vl can be
-             * < 16 here, so table loads keep their vsetivli-16 window
-             * (gen_body win=1). */
-            if (use_shift) {
-                em_srli(e, T5, A2, (unsigned)lgu); /* T5 = remaining / U */
-            } else {
-                em_addi(e, T5, X0, U);      /* T5 = U */
-                em_divu(e, T5, A2, T5);     /* T5 = remaining / U */
-            }
-            c_beq_long(cg, T5, X0, tail_lab);  /* spans the body */
-            em_vsetvli(e, T0, T5, VSEW8, cg->vlmul, 1, 1); /* T0 = vl */
+            em_vsetvli(e, T0, A2, VSEW8, cg->vlmul, 1, 1); /* T0 = vl */
             cg->uops += 1;
-            gen_body(cg, U, 1);
-            if (use_shift) {
-                em_slli(e, T5, T0, (unsigned)lgu); /* T5 = U * vl (consumed) */
-            } else {
-                em_addi(e, T5, X0, U);      /* T5 = U */
-                em_mul(e, T5, T0, T5);      /* T5 = vl * U (consumed) */
-            }
-            em_add(e, T1, T1, T5);             /* offset += consumed */
-            em_sub(e, A2, A2, T5);             /* remaining -= consumed */
-            em_jal(e, X0, loop_lab);           /* back over the body */
-            em_bind(e, tail_lab);
-            /* Use long branch: the tail body can exceed B-type ±4 KiB range
-             * for wide topologies (e.g. 100+4 Cauchy needs ~24 KiB). */
-            c_beq_long(cg, A2, X0, done_lab);
-            em_vsetvli(e, T0, A2, VSEW8, cg->vlmul, 1, 1); /* T0 = vl = rem */
-            cg->uops += 1;
-            gen_body(cg, 1, 1); /* vl == remaining < U <= 8 < 16: the table
-                                 * loads need their vsetivli-16 window. */
+            c_beq_long(cg, T0, X0, done_lab); /* vl == 0 => done */
+            gen_body(cg, 1, 1);
+            em_add(e, T1, T1, T0);             /* offset += vl */
+            em_sub(e, A2, A2, T0);            /* remaining -= vl */
+            em_jal(e, X0, loop_lab);          /* loop while remaining > 0 */
         }
     }
     em_bind(e, done_lab);
