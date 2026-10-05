@@ -323,11 +323,11 @@ static void c_vpxor_mem(cg_t *cg, int vd, int vs1, int b, int x, int sc,
 {
     assert(vd == vs1); /* all our uses accumulate */
     if (is_sse(cg)) {
-        /* Legacy SSE has no PXOR-with-memory form, so emit an aligned
-         * MOVDQA into the temp register followed by a register XOR.
-         * (c_ld/c_vpxor do their own uop/mem accounting.) */
-        c_ld(cg, cg->t, b, x, sc, disp);
-        c_vpxor(cg, vd, vs1, cg->t);
+        /* PXOR-with-memory is valid legacy SSE (66 0F EF /r): fold the
+         * load into the xor, one uop instead of movdqa+pxor's two. */
+        em_pxor_mem_sse(&cg->em, vd, b, x, sc, disp);
+        cg->uops += 1;
+        cg->mem += cg->vl;
     } else {
         em_t *e = &cg->em;
         em_vpxor_mem(e, vd, vs1, b, x, sc, disp, cg->vl);
@@ -676,15 +676,13 @@ static void gen_body(cg_t *cg)
          * direct load) on first touch, never XORed with zero; each
          * shared subexpression is computed once. Dead rows were zeroed
          * by the prologue above (shared with the naive body).
-         * AVX forms the temp with a folded memory XOR (one live temp);
-         * SSE uses two temps (t, t2): the mem-XOR form would clobber t
-         * via its internal load. RDX is dead here (len was moved to
-         * RCX in the prologue; the ternlog branch that uses RDX as prb
-         * is not taken). */
+         * Every ISA forms the temp with a folded memory XOR (SSE: pxor
+         * m128, one uop); only one live temp is needed. RDX is dead
+         * here (len was moved to RCX in the prologue; the ternlog
+         * branch that uses RDX as prb is not taken). */
         {
             const xorsched_t *xs = pl->xor_sched;
             assert(xs && xs->ntemps > 0);
-            int sse = is_sse(cg);
             int pf_done[RJ_MAX_DISKS];
             for (int i = 0; i < n_in; i++)
                 pf_done[i] = 0;
@@ -703,12 +701,7 @@ static void gen_body(cg_t *cg)
                 }
                 for (int u = 0; u < U; u++) {
                     c_ld(cg, cg->t, pra, R11, 0, u * vl);
-                    if (sse) {
-                        c_ld(cg, cg->t2, prb, R11, 0, u * vl);
-                        c_vpxor(cg, cg->t, cg->t, cg->t2);
-                    } else {
-                        c_vpxor_mem(cg, cg->t, cg->t, prb, R11, 0, u * vl);
-                    }
+                    c_vpxor_mem(cg, cg->t, cg->t, prb, R11, 0, u * vl);
                     for (int wi = 0; wi < xs->temps[k].nusers; wi++) {
                         int uw = xs->temps[k].users[wi];
                         int acc = xs->first_row[uw] * U + u;
@@ -739,8 +732,7 @@ static void gen_body(cg_t *cg)
                         c_ld(cg, acc, pr, R11, 0, u * vl);
                     } else if (nusers == 1) {
                         /* acc live, single user: folded memory XOR
-                         * (1 uop AVX; SSE degrades to 2 via t, which is
-                         * dead here) */
+                         * (1 uop on every ISA) */
                         int acc = xs->first_row[uw0] * U + u;
                         c_vpxor_mem(cg, acc, acc, pr, R11, 0, u * vl);
                     } else {
@@ -894,14 +886,14 @@ static void gen_body(cg_t *cg)
             for (int u = 0; u < U; u++) {
                 if (i == 0) {
                     /* Accumulators are provably zero: acc = 0*c + t = t
-                     * for any c. Load once into t and move per row (the
-                     * P_MULACC idiom); t = n_out*U never aliases an acc,
-                     * and the `continue` keeps it dead after the moves.
-                     * The single c_ld accounts the load once per (i,u)
-                     * instead of once per (j,u). */
-                    c_ld(cg, cg->t, pr, R11, 0, u * vl);
-                    for (int j = 0; j < n_out; j++)
-                        c_vmov(cg, j * U + u, cg->t);
+                     * for any c. Load directly into acc[0] and move to
+                     * the remaining rows: one load + (n_out-1) moves per
+                     * u instead of load-to-t + n_out moves, saving one
+                     * uop per u. acc[0] = u never aliases t (= n_out*U),
+                     * and the `continue` keeps t dead. */
+                    c_ld(cg, 0 * U + u, pr, R11, 0, u * vl);
+                    for (int j = 1; j < n_out; j++)
+                        c_vmov(cg, j * U + u, 0 * U + u);
                     continue;
                 }
                 c_ld(cg, cg->t, pr, R11, 0, u * vl);
@@ -1266,23 +1258,30 @@ static void gen_function(cg_t *cg)
             em_mov_rm(e, HH[k], R8, -1, 0, k * 8);
         em_xor_rr(e, R11, R11); /* byte offset (before branch: tail needs it) */
         gen_const_setup(cg);
-        int al = o->loop_align ? o->loop_align
-                               : (cg->vl == 64 ? 64 : cg->vl == 32 ? 32 : 16);
-        em_align(e, (unsigned)al);
-        em_bind(e, loop_lab);
-        /* Loop while a full group fits: offset + group <= len.
-         * Compare-based (no len/group division), so group = U*VL need
-         * not be a power of two. */
-        em_lea(e, RAX, R11, -1, 0, cg->group); /* rax = offset + group */
-        em_cmp_rr(e, RAX, RCX);                /* vs len */
+        /* Hoisted loop bound: rax = len - group, with CF set iff
+         * len < group (no full group fits). The main loop is then a
+         * do-while: body; r11 += group; cmp r11, rax; jbe loop. Per
+         * iteration this is add + fused cmp/jcc = 2 uops, vs lea +
+         * fused cmp/jcc + add + jmp = 4 uops for the old test-at-top
+         * form. The bound is compare-based (no len/group division), so
+         * group = U*VL need not be a power of two. RAX is dead in
+         * gen_body (only the scalar tail uses it), so the bound
+         * survives the loop. */
+        em_mov_rr(e, RAX, RCX);       /* rax = len */
+        em_sub_ri(e, RAX, cg->group); /* rax = len - group; CF iff len < group */
         /* A notail twin is only ever called with len % group == 0 (the
          * dispatcher guarantees it), so the loop always exits with
          * offset == len: route the exit straight to done_lab. The tail
          * path is not emitted. */
-        em_jcc(e, CC_A, cg->notail ? done_lab : tail_lab);
+        em_jcc(e, CC_B, cg->notail ? done_lab : tail_lab);
+        int al = o->loop_align ? o->loop_align
+                               : (cg->vl == 64 ? 64 : cg->vl == 32 ? 32 : 16);
+        em_align(e, (unsigned)al);
+        em_bind(e, loop_lab);
         gen_body(cg);
-        em_add_ri(e, R11, cg->group);          /* offset += group */
-        em_jmp(e, loop_lab);
+        em_add_ri(e, R11, cg->group); /* offset += group */
+        em_cmp_rr(e, R11, RAX);       /* vs len - group */
+        em_jcc(e, CC_BE, loop_lab);   /* while offset <= len - group */
         /* No SFENCE here: NT stores are weakly ordered and the jitted
          * code deliberately emits no fence. Callers that need the NT
          * data to be globally visible before subsequent reads must
@@ -1405,8 +1404,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     cg.t = n_out * U;
     int vmax = cg.t; /* highest assigned vector register index */
     if (pl->kind == P_XOR && cand->xorsched && is_sse(&cg)) {
-        /* XOR-schedule twin on SSE: temp formation needs two live
-         * vector temps (t, t2); the mem-XOR form is unavailable. */
+        /* XOR-schedule twin on SSE: t2 is allocated (the pressure
+         * formula in xorsched.c counts it) but currently unused -- the
+         * folded pxor-m128 form needs only the single temp t. Kept to
+         * keep the backend's vmax in lockstep with plan_need_regs. */
         cg.t2 = cg.t + 1;
         vmax = cg.t2;
     }

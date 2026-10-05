@@ -84,25 +84,26 @@ typedef struct {
  * TAIL_SCALAR admits everything (legacy). */
 static inline int rj_variant_admits(const rj_variant *v, size_t len)
 {
-    int mult; /* len % group == 0 */
     if (v->group == 0) {
         /* Degenerate group: the multiple/tail tests are meaningless.
          * TAIL_SCALAR still admits everything (its scalar tail needs no
          * group); every other policy admits nothing. */
         return v->tail == TAIL_SCALAR;
     }
-    if (v->group_pow2)
-        mult = (len & v->group_mask) == 0;
-    else
-        mult = len % v->group == 0;
     switch (v->tail) {
     case TAIL_SCALAR:
         return 1;
     case TAIL_SCALAR_MULT:
     case TAIL_NONE:
-        return mult;
-    case TAIL_MASKED:
-        return !mult;
+    case TAIL_MASKED: {
+        /* The multiple test needs a hardware DIV for non-power-of-2
+         * groups (25-90 cycles). Compute it lazily: TAIL_SCALAR (the
+         * common general variant) returns above without paying for a
+         * result it discards. */
+        int mult = v->group_pow2 ? (len & v->group_mask) == 0
+                                 : len % v->group == 0;
+        return v->tail == TAIL_MASKED ? !mult : mult;
+    }
     }
     return 0; /* unknown future policy: conservative */
 }
