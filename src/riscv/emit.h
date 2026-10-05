@@ -31,7 +31,8 @@ enum {
     T3 = 28, T4 = 29, T5 = 30, T6 = 31
 };
 
-/* SEW / LMUL selectors for vsetvli/vsetivli (the JIT only uses e8/m1) */
+/* SEW / LMUL selectors for vsetvli/vsetivli (the JIT uses e8 with
+ * m1/m2/m4/m8 per the LMUL tuning axis) */
 enum { VSEW8 = 0, VSEW16 = 1, VSEW32 = 2, VSEW64 = 3 };
 enum { VLMUL_M1 = 0, VLMUL_M2 = 1, VLMUL_M4 = 2, VLMUL_M8 = 3 };
 

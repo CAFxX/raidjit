@@ -26,7 +26,7 @@ typedef struct {
                            * Set only by api.c from the winning candidate
                            * (never by plan_candidates). */
     size_t group_bytes;   /* true full-iteration group bytes (U*VL; on
-                           * RISC-V U*vlenb read at build time) */
+                           * RISC-V U*vlenb*lmul read at build time) */
     char desc[192];
     const plan_t *plan; /* borrowed reference to the plan this version
                          * was built from, set by jit_build_version.

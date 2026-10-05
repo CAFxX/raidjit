@@ -762,9 +762,11 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             isa_t isa = out[i].isa;
             int U = out[i].U;
             /* RVV: xorsched_need_regs counts logical registers; the
-             * twin inherits out[i].lmul, so scale to physical. */
-            int lmul = (isa == ISA_RVV && out[i].lmul > 1) ? out[i].lmul
-                                                           : 1;
+             * twin inherits out[i].lmul, so scale to physical.
+             * lmul=0 (zero-initialized) means 1. */
+            int lmul = 1;
+            if (isa == ISA_RVV && out[i].lmul)
+                lmul = out[i].lmul;
             if (xorsched_need_regs(isa, pl, U) * lmul > isa_nregs(isa))
                 continue;
             long u_naive =

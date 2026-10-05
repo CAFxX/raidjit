@@ -97,9 +97,16 @@ static int validate_versions(version_t *vs, int nv, const plan_t *pl,
      * largest length any version will actually touch. */
     size_t vbuf = vmax;
     for (int vi = 0; vi < nv; vi++) {
-        size_t gb0 = vs[vi].group_bytes
-                         ? vs[vi].group_bytes
-                         : (size_t)(vs[vi].cand.U * vs[vi].vl);
+        /* group_bytes is set by every backend (U*VL; RVV: U*vlenb*lmul).
+         * There is no correct fallback: vl is nominal (RVV: NOMVL*lmul),
+         * not hardware VLEN. A zero group_bytes is a backend bug. */
+        size_t gb0 = vs[vi].group_bytes;
+        if (gb0 == 0) {
+            snprintf(err, errlen,
+                     "benchmark: candidate %s has group_bytes=0",
+                     vs[vi].desc);
+            return -1;
+        }
         if (vs[vi].notail && gb0 > vbuf / 2) {
             if (gb0 > (size_t)-1 / 2) {
                 snprintf(err, errlen,
@@ -155,10 +162,15 @@ static int validate_versions(version_t *vs, int nv, const plan_t *pl,
          * buffers stay valid. */
         const plan_t *vpl = vs[i].plan ? vs[i].plan : pl;
         /* True full-group bytes; group_bytes is set by every backend
-         * (U*VL, or U*vlenb on RISC-V). */
-        size_t gb = vs[i].group_bytes
-                        ? vs[i].group_bytes
-                        : (size_t)(vs[i].cand.U * vs[i].vl);
+         * (U*VL; RVV: U*vlenb*lmul). Zero is a backend bug. */
+        size_t gb = vs[i].group_bytes;
+        if (gb == 0) {
+            snprintf(err, errlen,
+                     "benchmark: candidate %s has group_bytes=0",
+                     vs[i].desc);
+            rc = -1;
+            break;
+        }
         size_t lens[5];
         int nlens;
         if (vs[i].notail) {
@@ -169,10 +181,13 @@ static int validate_versions(version_t *vs, int nv, const plan_t *pl,
             lens[2] = (vmax / gb) * gb;
             nlens = 3;
         } else {
-            /* scalar-only, vector-group boundaries, multi-group */
-            int group = vs[i].cand.U * vs[i].vl;
+            /* scalar-only, vector-group boundaries, multi-group.
+             * Test at the TRUE group boundaries (gb), not the nominal
+             * U*vl: on RVV vl is NOMVL*lmul while the hardware group is
+             * U*vlenb*lmul. */
+            size_t group = gb;
             lens[0] = 1;
-            lens[1] = (size_t)group > 1 ? (size_t)group - 1 : 1;
+            lens[1] = group > 1 ? group - 1 : 1;
             lens[2] = (size_t)group;
             lens[3] = (size_t)group + 1;
             lens[4] = vmax;

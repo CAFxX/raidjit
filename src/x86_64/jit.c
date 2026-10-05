@@ -1371,8 +1371,9 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         return -1;
     }
     /* lmul is an RVV-only axis: reject cleanly rather than silently
-     * ignoring it. */
-    if (cand->lmul > 1) {
+     * ignoring it. Only 0 (means 1) and 1 are valid here; the explicit
+     * != form also rejects negative values (defense in depth). */
+    if (cand->lmul != 0 && cand->lmul != 1) {
         snprintf(err, errlen,
                  "lmul=%d requires RVV (not implemented for x86-64)",
                  cand->lmul);

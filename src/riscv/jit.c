@@ -23,8 +23,9 @@
  *   lo = x & 0x0f; hi = x >> 4;
  *   out = vrgather(lotab, lo) ^ vrgather(hitab, hi)
  * The 16-byte tables live in vector registers: Horner row tables are
- * loaded once in the prologue (vl = VLMAX >= 16, so all 16 bytes are
- * valid); mulacc/delta column tables are loaded per column from the
+ * loaded once in the prologue inside a vsetivli-16 window when
+ * LMUL > 1 (at LMUL == 1, vl = VLMAX >= 16 so all 16 bytes are valid);
+ * mulacc/delta column tables are loaded per column from the
  * constant pool inside a vsetivli-16 window, so that a short tail VL
  * cannot leave table elements stale, with vl restored afterwards. The
  * window also narrows vl to exactly 16 whenever LMUL > 1: at
@@ -352,14 +353,11 @@ static void c_pooladdr(cg_t *cg, size_t off)
 }
 
 /* Load the 16-byte nibble-table pair for coefficient c into
- * (tbl_lo, tbl_hi). When win != 0 the loads run inside a vsetivli-16
- * window: the 16-byte table loads need vl >= 16, but the body's vl can
- * be smaller (down to 1 in the tail), so vl is widened in the window
- * and restored for the data streams afterwards. When win == 0 the
- * caller guarantees vl == VLMAX (>= 16 on any RVV 1.0 implementation)
- * for the whole body, so the window is provably redundant and elided
- * (the counted full-group loop: vl is pinned at VLMAX there and
- * gen_body preserves it). */
+ * (tbl_lo, tbl_hi). The loads run inside a vsetivli-16 window when
+ * win != 0 (body vl can be < 16 in the tail) or when LMUL > 1 (vl ==
+ * VLMAX would over-read the 16-byte pool entry). When win == 0 and
+ * LMUL == 1 the caller guarantees vl == VLMAX (>= 16) for the whole
+ * body, so the window is provably redundant and elided. */
 static void c_ldtab(cg_t *cg, uint8_t c, int win)
 {
     em_t *e = &cg->em;
@@ -959,9 +957,9 @@ static void gen_function(cg_t *cg)
          * shift) for the group size. A3/A4 are free caller-saved temps
          * across gen_body (it clobbers T2-T5; T0 = vl, T1 = offset and
          * T6 = pool base stay live). vl is set to VLMAX once up front;
-         * gen_body preserves it, and table loads elide their
-         * vsetivli-16 window here: vl == VLMAX >= 16 provably covers
-         * the 16-byte loads (gen_body win=0). */
+         * gen_body preserves it. Table loads use a vsetivli-16 window
+         * when win=1 or LMUL>1 (at LMUL=1, vl == VLMAX >= 16 covers the
+         * 16-byte loads, so the window is elided there). */
         /* T0 = vl = VLMAX (vsetvli with rs1 == x0 selects VLMAX) */
         em_vsetvli(e, T0, X0, VSEW8, cg->vlmul, 1, 1);
         cg->uops += 1;

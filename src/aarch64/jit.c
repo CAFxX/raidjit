@@ -921,8 +921,8 @@ static void gen_tail(cg_t *cg)
             }
         }
         em_strb(e, 12, 10, 13);   /* [x10 + x13] = w12 */
-        if (pl->kind != P_DELTA)
-            em_mov_wi(e, 12, 0);
+        /* No w12 zeroing here: the loop head re-zeroes (or overwrites)
+         * w12 for the next byte. P_DELTA's accumulator persists. */
         em_add_ri(e, X13, X13, 1);
         em_cmp_rr(e, X13, X2);
         em_bcc(e, CC_LO, lj);
@@ -1242,8 +1242,9 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     cg.notail = cand->notail;
     cg.predtail = cand->predtail;
     /* lmul is an RVV-only axis: reject cleanly rather than silently
-     * ignoring it. */
-    if (cand->lmul > 1) {
+     * ignoring it. Only 0 (means 1) and 1 are valid here; the explicit
+     * != form also rejects negative values (defense in depth). */
+    if (cand->lmul != 0 && cand->lmul != 1) {
         snprintf(err, errlen,
                  "lmul=%d requires RVV (not implemented for AArch64)",
                  cand->lmul);

@@ -179,13 +179,13 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
             return NULL;
         }
 
-        /* Candidate buffer. Worst case today: x86 P_MULACC/P_DELTA with 8
-         * U-values each: AVX-512 GFNI + nibble (16), AVX2 nibble (8), SSE
-         * nibble (8) = 32 base; +8 AVX-512 nibble ternlog twins = 40;
-         * x2 for NT twins (80), x2 for prefetch twins (160). 512 leaves
-         * ample headroom for future candidate dimensions; plan_candidates
-         * still guards with maxout so a smaller buffer would truncate
-         * silently. */
+        /* Candidate buffer. Worst case today: RVV P_HORNER with LMUL:
+         * 2 muls x 5 U x 4 LMUL = 40 base; +20 remat twins = 60;
+         * x2 for xorsched (P_XOR only, up to 120); x2 for NT twins (240);
+         * x2 for prefetch twins (480). 512 is sufficient but at 94%
+         * utilization; a future axis must increase the buffer or fail
+         * closed -- silent truncation is unacceptable. plan_candidates
+         * guards with maxout. */
         cand_t cands[512];
         /* NT/prefetch twins only when benchmarking: on the static model they
          * tie with their temporal originals and lose the tie-break, so
