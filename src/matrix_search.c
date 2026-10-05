@@ -119,8 +119,9 @@ static void body_cost(const plan_t *pl, double *uops_u, double *mem_u,
     int n_in = pl->n_in, n_out = pl->n_out;
     double u = 0.0, m = 0.0, ug = 0.0, mg = 0.0;
     if (pl->kind == P_HORNER) {
-        /* i == 0: acc = 0*c + t = t: one load, n_out moves */
-        u += 1 + n_out;
+        /* i == 0: acc = 0*c + t = t: load directly into acc[0] plus
+         * (n_out-1) moves (not load-to-temp + n_out moves). */
+        u += n_out;
         m += REF_VL;
         for (int i = 1; i < n_in; i++) {
             u += 1; /* c_ld t (shared across rows) */
