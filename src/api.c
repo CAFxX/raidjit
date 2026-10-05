@@ -249,6 +249,10 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
                             npruned, npruned + nv);
                 winner = bench_select(vs, nv, &pl, &o, o.verbose, NULL, err, errlen);
             } else {
+                /* Heuristic path: validate before selecting (bench_select
+                 * does this internally; heuristic_select does not). */
+                if (validate_versions(vs, nv, &pl, err, errlen) != 0)
+                    goto fail;
                 winner = heuristic_select(vs, nv, &pl);
             }
         if (winner < 0)

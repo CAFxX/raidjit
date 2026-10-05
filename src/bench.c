@@ -79,8 +79,8 @@ static void sample_stats(double *ts, int n, double *med, double *q1,
  * Length-dispatch twins (version_t.notail) contractually serve only
  * len % group_bytes == 0, so they are validated only at group multiples;
  * every other version keeps the full scalar/boundary/multi-group sweep. */
-static int validate_versions(version_t *vs, int nv, const plan_t *pl,
-                             char *err, size_t errlen)
+int validate_versions(version_t *vs, int nv, const plan_t *pl,
+                      char *err, size_t errlen)
 {
     if (pl->n_out == 0 || !pl->mat)
         return 0; /* noop plan: nothing to validate */

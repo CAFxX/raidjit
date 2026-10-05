@@ -221,8 +221,16 @@ int plan_recover_failed_list(const rj_op *op, int nd, int np, int **F_out,
                              char *err, size_t errlen)
 {
     int nf = op->nfailed;
+    if (op->oom) {
+        snprintf(err, errlen, "recover: out of memory (failed-disk list)");
+        return -1;
+    }
     if (nf < 1) {
         snprintf(err, errlen, "recover: empty failed-disk list");
+        return -1;
+    }
+    if (!op->failed) {
+        snprintf(err, errlen, "recover: NULL failed-disk list");
         return -1;
     }
     int *F = malloc((size_t)nf * sizeof(int));

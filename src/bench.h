@@ -26,6 +26,8 @@ int bench_select(version_t *vs, int nv, const plan_t *pl,
 
 /* Static heuristic pick (no benchmarking). Returns winner index. */
 int heuristic_select(version_t *vs, int nv, const plan_t *pl);
+int validate_versions(version_t *vs, int nv, const plan_t *pl,
+                      char *err, size_t errlen);
 
 /* Pure selection step, factored out for unit testing: given measured median
  * seconds/call in secs[] and a relative eligibility window, pick the winner
