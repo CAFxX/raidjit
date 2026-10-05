@@ -456,8 +456,10 @@ static void test_f1(void)
          * (i,u)). Without F1 the i==0 path would do n_out=2 loads instead
          * of 1, totaling 7. Table loads (R15) are excluded from the count. */
         CHECK(c.n_load == 6, "f1 [%s]: n_input_loads=%d, want 6", v.desc, c.n_load);
-        /* F1 adds n_out*U=2 reg-reg moves on i==0. */
-        CHECK(c.n_move >= 2, "f1 [%s]: n_moves=%d, want >=2", v.desc, c.n_move);
+        /* F1 adds (n_out-1)*U=1 reg-reg moves on i==0: the input is loaded
+         * directly into acc[0] and moved to the remaining rows (not
+         * load-to-scratch + n_out moves). */
+        CHECK(c.n_move >= 1, "f1 [%s]: n_moves=%d, want >=1", v.desc, c.n_move);
         printf("f1 [%s]: loads=%d tbl_loads=%d moves=%d pool=%d OK\n",
                v.desc, c.n_load, c.n_tbl_load, c.n_move, c.n_pool_load);
     }

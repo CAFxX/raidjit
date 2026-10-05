@@ -567,6 +567,154 @@ static void mulacc_column(cg_t *cg, int col, int ncols, int u,
     }
 }
 
+/* Maximum-weight column pairing for the P_XOR VPTERNLOGD twin.
+ *
+ * A column pair (a,b) lets every row using BOTH columns fold its two
+ * XORs into one VPTERNLOGD (in[b] as the memory operand); rows using a
+ * single column of the pair take a plain XOR either way. So
+ * weight(a,b) = #{rows using a and b}, and the uop-optimal pairing is
+ * a maximum-weight matching on the complete graph over the n_in
+ * columns. Computed at JIT-compile time -- zero cost in the generated
+ * code. Exact DP over subsets for n_in <= 20; greedy by descending
+ * weight above that (correctness never depends on optimality: a
+ * suboptimal pairing just folds fewer XORs).
+ *
+ * Output: pa[k], pb[k] for k in [0, npairs); pb[k] == -1 marks an
+ * unpaired (leftover) column, emitted as a plain single-column step.
+ * Every column appears exactly once. Returns npairs. */
+static int ternlog_pair_columns(const plan_t *pl, int *pa, int *pb)
+{
+    int n = pl->n_in, n_out = pl->n_out;
+    int npairs = 0;
+    if (n <= 0)
+        return 0;
+    if (n == 1) {
+        pa[0] = 0;
+        pb[0] = -1;
+        return 1;
+    }
+    int *w = malloc((size_t)n * (size_t)n * sizeof(int));
+    if (!w) { /* OOM: degrade to the natural (0,1),(2,3),... pairing */
+        for (int i = 0; i < n; i += 2) {
+            pa[npairs] = i;
+            pb[npairs] = (i + 1 < n) ? i + 1 : -1;
+            npairs++;
+        }
+        return npairs;
+    }
+    for (int a = 0; a < n; a++)
+        for (int b = 0; b < n; b++) {
+            int c = 0;
+            if (a != b) {
+                for (int j = 0; j < n_out; j++)
+                    c += (pl->mat[(size_t)j * (size_t)n + (size_t)a] != 0 &&
+                          pl->mat[(size_t)j * (size_t)n + (size_t)b] != 0);
+            }
+            w[(size_t)a * (size_t)n + (size_t)b] = c;
+        }
+    if (n <= 20) {
+        /* Exact maximum-weight matching by DP over subsets:
+         * dp[mask] = best achievable weight on the vertex set mask. */
+        size_t N = (size_t)1 << n;
+        int *dp = malloc(N * sizeof(int));
+        int8_t *dec = malloc(N * sizeof(int8_t));
+        if (dp && dec) {
+            dp[0] = 0;
+            for (size_t mask = 1; mask < N; mask++) {
+                int i = 0; /* lowest set bit */
+                while (!(mask & ((size_t)1 << i)))
+                    i++;
+                size_t m0 = mask ^ ((size_t)1 << i);
+                int best = dp[m0]; /* leave i unpaired */
+                int8_t bj = -1;
+                for (int j = i + 1; j < n; j++) {
+                    if (mask & ((size_t)1 << j)) {
+                        int v = w[(size_t)i * (size_t)n + (size_t)j] +
+                                dp[m0 ^ ((size_t)1 << j)];
+                        if (v > best) {
+                            best = v;
+                            bj = (int8_t)j;
+                        }
+                    }
+                }
+                dp[mask] = best;
+                dec[mask] = bj;
+            }
+            size_t mask = N - 1;
+            while (mask) {
+                int i = 0;
+                while (!(mask & ((size_t)1 << i)))
+                    i++;
+                int8_t j = dec[mask];
+                if (j < 0) {
+                    pa[npairs] = i;
+                    pb[npairs] = -1;
+                    mask ^= (size_t)1 << i;
+                } else {
+                    pa[npairs] = i;
+                    pb[npairs] = j;
+                    mask ^= ((size_t)1 << i) | ((size_t)1 << j);
+                }
+                npairs++;
+            }
+            free(dp);
+            free(dec);
+            free(w);
+            return npairs;
+        }
+        free(dp);
+        free(dec);
+        /* fall through to greedy */
+    }
+    /* Greedy fallback (n_in > 20, or DP allocation failed): take the
+     * heaviest available pair first. O(n^3); JIT-compile time only. */
+    {
+        char *used = calloc((size_t)n, 1);
+        if (!used) { /* ultimate fallback: natural pairing */
+            for (int i = 0; i < n; i += 2) {
+                pa[npairs] = i;
+                pb[npairs] = (i + 1 < n) ? i + 1 : -1;
+                npairs++;
+            }
+            free(w);
+            return npairs;
+        }
+        for (;;) {
+            int ba = -1, bb = -1, bw = 0;
+            for (int a = 0; a < n; a++) {
+                if (used[a])
+                    continue;
+                for (int b = a + 1; b < n; b++) {
+                    if (used[b])
+                        continue;
+                    int wij = w[(size_t)a * (size_t)n + (size_t)b];
+                    if (wij > bw) {
+                        bw = wij;
+                        ba = a;
+                        bb = b;
+                    }
+                }
+            }
+            if (ba < 0)
+                break; /* no positive-weight pair left; rest stay single */
+            pa[npairs] = ba;
+            pb[npairs] = bb;
+            npairs++;
+            used[ba] = used[bb] = 1;
+        }
+        for (int a = 0; a < n; a++) {
+            if (!used[a]) {
+                pa[npairs] = a;
+                pb[npairs] = -1;
+                npairs++;
+            }
+        }
+        free(used);
+    }
+    free(w);
+    return npairs;
+}
+
 static void gen_body(cg_t *cg)
 {
     em_t *e = &cg->em;
@@ -609,31 +757,36 @@ static void gen_body(cg_t *cg)
         if (cg->cand.ternlog) {
             /* VPTERNLOGD twin (AVX-512 only): fold two input XORs into
              * one ternary-logic uop per row. Columns are processed in
-             * pairs (a,b) = (2i,2i+1). in[a] is loaded once into t and
-             * shared across rows; in[b]'s pointer is prb (hoisted reg
-             * when b < nhoist, else RDX loaded per iteration). For a
-             * row using both columns,
+             * maximum-weight pairs (ternlog_pair_columns): weight(a,b)
+             * is the number of rows using both columns, so the pairing
+             * maximizes the rows that take the single-uop
+             * c_vpternlog_mem. in[a] is loaded once into t and shared
+             * across rows; in[b]'s pointer is prb (hoisted reg when b <
+             * nhoist, else RDX loaded per iteration). For a row using
+             * both columns,
              * acc ^= t ^ in[b] becomes a single VPTERNLOGD with in[b]
              * as the memory operand ([prb+R11+u*vl]), vs one load + two
              * XOR uops in the plain candidate. Rows using only one
              * column of the pair take a plain XOR (register form for
-             * in[a], memory form for in[b]); a leftover odd column
-             * degrades to a plain single-column step. All accumulators
-             * are zeroed up front -- this also covers zero-input rows --
-             * so no first-input move logic is needed. Vector register
-             * use is accs + t, identical to the plain candidate, so the
-             * n_out*U+1 pressure formula in plan_need_regs() is
-             * unchanged. */
+             * in[a], memory form for in[b]); a leftover unpaired column
+             * (pb[k] == -1) degrades to a plain single-column step. All
+             * accumulators are zeroed up front -- this also covers
+             * zero-input rows -- so no first-input move logic is needed.
+             * Vector register use is accs + t, identical to the plain
+             * candidate, so the n_out*U+1 pressure formula in
+             * plan_need_regs() is unchanged. */
             assert(cg->cand.isa == ISA_AVX512);
             for (int j = 0; j < n_out; j++)
                 for (int u = 0; u < U; u++)
                     c_vzero(cg, j * U + u);
-            for (int i = 0; i < n_in; i += 2) {
-                int a = i, b = i + 1;
+            int tpa[RJ_MAX_DISKS], tpb[RJ_MAX_DISKS];
+            int npairs = ternlog_pair_columns(pl, tpa, tpb);
+            for (int pi = 0; pi < npairs; pi++) {
+                int a = tpa[pi], b = tpb[pi];
                 int ua = 0, ub = 0;
                 for (int j = 0; j < n_out; j++) {
                     ua |= pl->mat[(size_t)j * (size_t)n_in + (size_t)a];
-                    if (b < n_in)
+                    if (b >= 0)
                         ub |= pl->mat[(size_t)j * (size_t)n_in + (size_t)b];
                 }
                 if (!ua && !ub)
@@ -643,7 +796,7 @@ static void gen_body(cg_t *cg)
                     pra = body_inptr(cg, a, R10);
                     c_prefetch_in(cg, pra);
                 }
-                if (b < n_in && ub) {
+                if (b >= 0 && ub) {
                     prb = body_inptr(cg, b, RDX);
                     c_prefetch_in(cg, prb);
                 }
@@ -653,7 +806,7 @@ static void gen_body(cg_t *cg)
                     for (int j = 0; j < n_out; j++) {
                         int ma =
                             !!pl->mat[(size_t)j * (size_t)n_in + (size_t)a];
-                        int mb = b < n_in &&
+                        int mb = b >= 0 &&
                                  !!pl->mat[(size_t)j * (size_t)n_in +
                                            (size_t)b];
                         int acc = j * U + u;
