@@ -944,12 +944,27 @@ static void c_beq_long(cg_t *cg, int rs1, int rs2, int lab)
     em_bind(e, skip);
 }
 
-/* Long-range bne: branch to lab if rs1 != rs2. Same ±4 KiB B-type
- * motivation as c_beq_long; used for the counted loop's backward
- * branch, which spans the unrolled body. */
+/* Conditional branch to lab if rs1 != rs2. When the target label is
+ * already bound (the counted loop's backward edge: cnt_lab is bound
+ * before the body is emitted) and lies within the B-type +-4 KiB
+ * range, a single bne suffices -- one control-flow instruction per
+ * hot-loop iteration instead of two. Otherwise (forward reference,
+ * or a body spanning >= 4 KiB) fall back to the beq-over-jal long
+ * form, same motivation as c_beq_long. The distance is exact, not
+ * optimistic: everything between the label and the branch is already
+ * emitted, so no later fixup can move it. */
 static void c_bne_long(cg_t *cg, int rs1, int rs2, int lab)
 {
     em_t *e = &cg->em;
+    if (lab >= 0 && lab < e->nlab && e->lpos[lab] != (size_t)-1) {
+        long off = (long)e->lpos[lab] - (long)e->len;
+        /* B-type range: 12-bit signed offset in units of 2 bytes
+         * (em_resolve asserts the same bounds when patching). */
+        if (off >= -4096 && off < 4096 && (off & 1) == 0) {
+            em_bne(e, rs1, rs2, lab);
+            return;
+        }
+    }
     int skip = em_label(e);
     em_beq(e, rs1, rs2, skip);
     em_jal(e, X0, lab);
