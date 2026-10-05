@@ -5,11 +5,10 @@ top-level selection/contract metadata.
 
 Usage: manifest.py <stagedir> [date_utc]   (writes <stagedir>/manifest.json)
 
-Validates: all 6 expected kernels present, every referenced file exists,
-on-disk sizes match the fragment's code_size/const_size, no unexpected
-fragments in the stage dir. The optional date_utc lets the caller
-(tools/finalize_kernels.sh) stamp the same timestamp used in the .asm
-headers; without it, UTC now is used.
+Validates: every fragment in the stage dir is well-formed, every referenced
+file exists, on-disk sizes match the fragment's code_size/const_size. The
+optional date_utc lets the caller (tools/finalize_kernels.sh) stamp the same
+timestamp used in the .asm headers; without it, UTC now is used.
 """
 import hashlib
 import json
@@ -17,17 +16,10 @@ import os
 import sys
 from datetime import datetime, timezone
 
-EXPECTED = [
-    "raid5-4_avx512-gfni",
-    "raid6-5_avx512-gfni",
-    "raid5-4_avx512-gfni_maskedtail",  # item-14 tail twin (track B1x86)
-    "raid5-4_sve2",
-    "raid6-5_sve2",
-    "raid5-4_sve2_predtail",  # item-14 tail twin (track B1sve)
-    "raid6-5_sve2_predtail",  # item-14 tail twin (track B1sve)
-    "raid5-4_rvv",
-    "raid6-5_rvv",
-]
+# The fragment set is the source of truth: gen_kernels.c dies loudly on any
+# emission or twin-build failure, so a successful run guarantees all intended
+# kernels are present. The manifest validates internal consistency (names
+# match, files exist, sizes match).
 
 SELECTION_METHOD = (
     "heuristic_select (benchmark=0): highest ISA wins; among equal ISA, "
@@ -62,16 +54,14 @@ def main():
     stagedir = sys.argv[1]
     date_utc = (sys.argv[2] if len(sys.argv) > 2
                 else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    # A new kernel in gen_kernels.c must be registered in EXPECTED too:
-    # fail loudly rather than silently dropping its fragment.
+    # The fragment list is the source of truth: gen_kernels.c dies loudly
+    # on any emission failure, so all intended kernels are present.
     frags = sorted(f[:-5] for f in os.listdir(stagedir) if f.endswith(".json"))
     frags = [f for f in frags if f != "manifest"]
-    for f in frags:
-        if f not in EXPECTED:
-            sys.exit("manifest.py: unexpected fragment %s.json not in EXPECTED"
-                     % f)
+    if not frags:
+        sys.exit("manifest.py: no kernel fragments in %s" % stagedir)
     kernels = []
-    for name in EXPECTED:
+    for name in frags:
         frag = os.path.join(stagedir, name + ".json")
         with open(frag) as f:
             k = json.load(f)

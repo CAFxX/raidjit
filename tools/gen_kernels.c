@@ -43,6 +43,7 @@
 #include "../src/cpu.h"
 #include "../src/ref.h"
 #include "../src/bench.h"
+#include "../src/gf.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,6 +106,10 @@ static void fill_cpu(const char *target, rj_cpu_info *cpu)
         cpu->avx = cpu->avx2 = 1;
         cpu->avx512f = cpu->avx512bw = cpu->avx512vl = 1;
         cpu->gfni = 1;
+        /* VBMI for the permi2b representative (item 15). The synthetic
+         * CPU models a machine with both GFNI and VBMI; the permi2b twin
+         * is built from a nibble candidate explicitly. */
+        cpu->vbmi = 1;
         snprintf(cpu->brand, sizeof(cpu->brand), "synthetic-avx512-gfni");
     } else if (!strcmp(target, "sve2")) {
         cpu->neon = 1;
@@ -119,6 +124,12 @@ static void fill_cpu(const char *target, rj_cpu_info *cpu)
         cpu->rvv = 1;
         /* Bytes. Matches qemu-riscv64 -cpu max default vlen=128 bits. */
         cpu->rvv_vlen = 16;
+        /* NOTE: rvv_zvbc32e is intentionally 0 here. The MUL_ZVBC twin
+         * cannot be represented in this doc: QEMU 8.2.2 SIGILLs on
+         * vclmul.vv/vclmulh.vv, so a ZVBC kernel could not be
+         * execution-verified (the doc's "shipped bytes were executed"
+         * guarantee). The ZVBC path is covered by tests/test_riscv_zvbc.c
+         * via a bytecode interpreter. See the variant audit. */
         snprintf(cpu->brand, sizeof(cpu->brand), "synthetic-rvv");
     } else {
         die("unknown target '%s' (want avx512-gfni|sve2|rvv)", target);
@@ -183,13 +194,22 @@ static int verify_case(const kernel_t *k, size_t len, uint64_t seed)
 static const size_t kLens[] = {0, 1, 7, 1003, 65537, 1u << 20};
 static const uint64_t kSeeds[] = {0x12345678ULL, 0xDEADBEEFULL, 0x0BADF00DULL};
 
-/* Full matrix: every length x every seed. Returns 0 on success. */
-static int verify_kernel(const kernel_t *k, long *runs_out)
+/* Full matrix: every length x every seed. Returns 0 on success.
+ * If notail_group > 0, only test lengths that are multiples of the group
+ * (notail kernels are only valid for len % group == 0; the dispatcher
+ * guarantees this). */
+static int verify_kernel(const kernel_t *k, long *runs_out, size_t notail_group)
 {
     long runs = 0;
     for (size_t li = 0; li < sizeof(kLens) / sizeof(kLens[0]); li++) {
+        size_t len = kLens[li];
+        if (notail_group > 0) {
+            /* Round up to a multiple of group (0 stays 0). */
+            if (len % notail_group != 0)
+                len = ((len + notail_group - 1) / notail_group) * notail_group;
+        }
         for (size_t si = 0; si < sizeof(kSeeds) / sizeof(kSeeds[0]); si++) {
-            if (verify_case(k, kLens[li], kSeeds[si] ^ (uint64_t)kLens[li]))
+            if (verify_case(k, len, kSeeds[si] ^ (uint64_t)len))
                 return -1;
             runs++;
         }
@@ -313,15 +333,23 @@ static const char *check_marker(const char *target, const char *kname,
         m = "KMOVQ (tail-mask load into k1) present";
         if (!strstr(desc, "maskedtail"))
             die("%s: expected maskedtail twin, desc='%s'", kname, desc);
+    } else if (strstr(kname, "_permi2b")) {
+        /* Item-15: VPERMI2B = EVEX.66.0F38.W0 75 (map=2). */
+        n = count_evex(code, code_size, 2, 0x75);
+        m = "VPERMI2B (EVEX.66.0F38.W0 75) present";
+        if (!strstr(desc, "+permi2b"))
+            die("%s: code has VPERMI2B but desc lacks +permi2b", kname);
     } else if (strstr(kname, "_predtail")) {
         n = count_whilelt(code, code_size);
         m = "WHILELT (predicated-tail predicate) present";
         if (!strstr(desc, "predtail"))
             die("%s: expected predtail twin, desc='%s'", kname, desc);
     } else if (!strcmp(target, "sve2")) {
-        if (strstr(kname, "raid6")) {
+        if (strstr(desc, " horner ") || strstr(desc, " horner+")) {
             /* P_HORNER has GF multiplies: SVE2 EOR3 must be present.
-             * This is the proof the "sve2" label is accurate. */
+             * This is the proof the "sve2" label is accurate.
+             * (aarch64 desc is "<name> sve horner+nibble U=...", so match
+             * both " horner " and " horner+".) */
             n = count_eor3(code, code_size);
             m = "EOR3 (SVE2 three-way xor) present";
             if (!strstr(desc, "+eor3"))
@@ -339,7 +367,10 @@ static const char *check_marker(const char *target, const char *kname,
                 die("%s: expected SVE codegen, desc='%s'", kname, desc);
         }
     } else if (!strcmp(target, "avx512-gfni")) {
-        if (strstr(kname, "raid6")) {
+        /* P_HORNER (GF multiplies) uses VGF2P8AFFINEQB; P_XOR uses VPXORD.
+         * Decide by the desc's strategy tag, not the kernel name (recovery
+         * kernels are named raid6-* but may be P_XOR). */
+        if (strstr(desc, " horner ")) {
             /* VGF2P8AFFINEQB: EVEX.66.0F3A.W1 CE (map=3 in this emitter's
              * P0[2:0] convention; byte-identical to GCC/GAS). */
             n = count_evex(code, code_size, 3, 0xCE);
@@ -378,7 +409,8 @@ static const char *strategy_name(plan_kind_t k);
  * item-14 tail twins. */
 static void emit_kernel(const plan_t *pl, version_t *v, const char *kname,
                         const char *target, const char *outdir,
-                        const char *sname, int ndata, int redgreen)
+                        const char *sname, int ndata, const char *opname,
+                        int redgreen)
 {
 const uint8_t *code = (const uint8_t *)v->mem;
 const uint8_t *cnst = code + v->code_size;
@@ -386,8 +418,12 @@ const uint8_t *cnst = code + v->code_size;
 /* 1. verify the live image against the scalar reference */
 kernel_t k = {pl, v->fn};
 long runs = 0;
-if (verify_kernel(&k, &runs))
+/* notail kernels are only valid for len % group == 0. */
+size_t ntail_group = strstr(kname, "_notail") ? v->group_bytes : 0;
+if (verify_kernel(&k, &runs, ntail_group))
     die("%s: correctness verification FAILED", kname);
+/* redgreen length: must be notail-valid (round 1003 up to group multiple). */
+size_t rg_len = ntail_group ? ((1003 + ntail_group - 1) / ntail_group * ntail_group) : 1003;
 
 /* 2. ISA marker on the exact emitted bytes */
 int mcount = 0;
@@ -409,15 +445,20 @@ if (redgreen) {
         if (mprotect(mem, msz, PROT_READ | PROT_WRITE | PROT_EXEC))
             die("%s: redgreen mprotect failed", kname);
         /* Flip one const-pool byte. For the maskedtail twin the pool
-         * is the tail-mask table whose entry 0 is never read by
-         * construction (chunk length rdx in 1..64), so flip the first
-         * byte of the last entry (mask[64], exercised by every
-         * 64-byte tail chunk) instead of pool[0]. */
+         * ends with the 65-entry tail-mask table (520 bytes); entry 0 is
+         * never read by construction (chunk length rdx in 1..64), so flip
+         * the first byte of the entry exercised by the test length's tail.
+         * rg_len=1003 gives tail=43 (1003 % 64). */
         size_t flip_off = v->code_size;
-        if (strstr(kname, "_maskedtail"))
-            flip_off = v->code_size + v->const_size - 8;
+        if (strstr(kname, "_maskedtail")) {
+            size_t tail = rg_len % 64;
+            if (tail == 0)
+                tail = 64; /* no tail; use mask[64] anyway */
+            /* mask table is the last 520 bytes of the pool */
+            flip_off = v->code_size + v->const_size - 520 + tail * 8;
+        }
         mem[flip_off] ^= 0xFF;
-        if (verify_case(&k, 1003, 0xC0FFEEULL) == 0) {
+        if (verify_case(&k, rg_len, 0xC0FFEEULL) == 0) {
             printf("REDGREEN-FAIL %s: const corruption NOT detected\n",
                    kname);
             rg_ok = 0;
@@ -426,7 +467,7 @@ if (redgreen) {
         if (mprotect(mem, msz, PROT_READ | PROT_EXEC))
             die("%s: redgreen mprotect restore failed", kname);
         /* sanity: restored image verifies again */
-        if (verify_case(&k, 1003, 0xC0FFEEULL) != 0) {
+        if (verify_case(&k, rg_len, 0xC0FFEEULL) != 0) {
             printf("REDGREEN-FAIL %s: restore did not recover\n",
                    kname);
             rg_ok = 0;
@@ -443,7 +484,7 @@ if (redgreen) {
         const void *in[256];
         void *out[256];
         uint8_t *inb[256], *outb[256], *wantb[256];
-        size_t len = 1003;
+        size_t len = rg_len;
         xrng_state = 0xB16B00B5ULL;
         for (int i = 0; i < n_in; i++) {
             if (posix_memalign((void **)&inb[i], 64, len))
@@ -532,7 +573,7 @@ fclose(f);
         die("%s: reload mprotect failed", kname);
     kernel_t kr = {pl, (rj_fn)img};
     long rruns = 0;
-    if (verify_kernel(&kr, &rruns))
+    if (verify_kernel(&kr, &rruns, ntail_group))
         die("%s: SHIPPED-BYTES verification FAILED", kname);
     munmap(img, msz ? msz : (size_t)ps);
     printf("%s: shipped-bytes re-verified (%ld runs)\n", kname,
@@ -556,7 +597,7 @@ fclose(f);
             "  \"name\": \"%s\",\n"
             "  \"target\": \"%s\",\n"
             "  \"topology\": \"%s(%d)\",\n"
-            "  \"op\": \"encode\",\n"
+            "  \"op\": \"%s\",\n"
             "  \"desc\": \"%s\",\n"
             "  \"strategy\": \"%s\",\n"
             "  \"unroll\": %d,\n"
@@ -572,7 +613,7 @@ fclose(f);
             "  \"marker\": \"%s\",\n"
             "  \"marker_count\": %d\n"
             "}\n",
-            kname, target, sname, ndata, edesc,
+            kname, target, sname, ndata, opname, edesc,
             strategy_name(pl->kind), v->cand.U, nominal_vl,
             v->code_size, v->const_size, v->uops_per_byte,
             v->mem_per_byte, kname, kname, kname, emarker, mcount);
@@ -598,7 +639,59 @@ typedef struct {
     const char *sname; /* "raid5-4" */
     rj_topology *(*mk)(int);
     int ndata;
+    /* op maker: NULL = rj_op_encode(); else custom op (recover/delta) */
+    rj_op (*mkop)(void);
+    /* op name for the manifest: "encode", "recover", "parity_update" */
+    const char *opname;
 } spec_t;
+
+/* Op makers for non-encode specs */
+static rj_op mkop_recover_r6d0(void)
+{
+    int failed[] = {0};
+    return rj_op_recover(failed, 1);
+}
+
+static rj_op mkop_pupd_r6d0(void)
+{
+    int changed[] = {0};
+    return rj_op_parity_update(changed, 1);
+}
+
+static rj_topology *mk_rdp5(int ndata)
+{
+    (void)ndata;
+    return rj_topo_rdp(5); /* p=5 prime, k=4 data disks, 2 parities */
+}
+
+/* Custom non-Vandermonde matrix for P_MULACC (6 data, 2 par).
+ * Deliberately not Cauchy/Vandermonde so plan_select_strategy picks
+ * P_MULACC instead of P_HORNER. */
+static rj_topology *mk_custom_mulacc(int ndata)
+{
+    (void)ndata;
+    /* 2x6 matrix over GF(2^8), row-major. Non-systematic bits ensure
+     * it's not recognized as Vandermonde. */
+    static const uint8_t mat[12] = {
+        1, 0, 0, 0, 0, 0,  /* P: simple XOR (row 0) */
+        1, 2, 4, 8, 16, 32 /* Q: powers of 2 (row 1) */
+    };
+    return rj_topo_custom(6, 2, mat);
+}
+
+/* Custom RS(6,4) for the remat twin: 4 parities create enough register
+ * pressure that the persistent candidate doesn't fit but remat does. */
+static rj_topology *mk_rs64_remat(int ndata)
+{
+    (void)ndata;
+    static uint8_t mat[24];
+    static int init = 0;
+    if (!init) {
+        rs_default_matrix(6, 4, mat);
+        init = 1;
+    }
+    return rj_topo_custom(6, 4, mat);
+}
 
 int main(int argc, char **argv)
 {
@@ -621,8 +714,24 @@ int main(int argc, char **argv)
     o.prefetch_distance = 0;
 
     spec_t specs[] = {
-        {"raid5-4", rj_topo_raid5, 4},
-        {"raid6-5", rj_topo_raid6, 5},
+        {"raid5-4", rj_topo_raid5, 4, NULL, "encode"},
+        {"raid6-5", rj_topo_raid6, 5, NULL, "encode"},
+        /* RDP: XOR-code alternative (item 3). P_XOR with n_out=2 makes the
+         * xorsched and ternlog twins eligible; they are emitted as explicit
+         * _xsched/_ternlog twins below (mutually exclusive, winner-take-all
+         * would drop one). */
+        {"rdp-4", mk_rdp5, 4, NULL, "encode"},
+        /* Recovery: raid6-5 with data disk 0 failed (item 12 survivor
+         * path is exercised internally; the plan name records [rows].) */
+        {"raid6-5-rec0", rj_topo_raid6, 5, mkop_recover_r6d0, "recover"},
+        /* P_DELTA: partial-stripe parity update (changed disk 0). */
+        {"raid6-5-pupd0", rj_topo_raid6, 5, mkop_pupd_r6d0, "parity_update"},
+        /* P_MULACC: custom non-Vandermonde matrix. */
+        {"custom-6x2", mk_custom_mulacc, 6, NULL, "encode"},
+        /* remat: RS(6,4) with 4 parities; the _remat twin is built by
+         * forcing remat=1 on the winner, exercising the rematerialized
+         * codegen path (pool reloads instead of register-carried temps). */
+        {"rs64-remat", mk_rs64_remat, 6, NULL, "encode"},
     };
 
     for (size_t s = 0; s < sizeof(specs) / sizeof(specs[0]); s++) {
@@ -632,7 +741,7 @@ int main(int argc, char **argv)
         rj_topology *t = specs[s].mk(specs[s].ndata);
         if (!t)
             die("%s: topology constructor failed", kname);
-        rj_op op = rj_op_encode();
+        rj_op op = specs[s].mkop ? specs[s].mkop() : rj_op_encode();
 
         topo_int_t ti;
         char err[256];
@@ -666,7 +775,7 @@ int main(int argc, char **argv)
         version_t *v = &vs[w];
 
         emit_kernel(&pl, v, kname, target, outdir,
-                    specs[s].sname, specs[s].ndata, redgreen);
+                    specs[s].sname, specs[s].ndata, specs[s].opname, redgreen);
 
         /* Item-14 tail twins: built from the winning candidate exactly as
          * api.c does (plan_candidates never sets these flags). The twin
@@ -696,8 +805,154 @@ int main(int argc, char **argv)
                                       sizeof(e3)))
                     die("%s: tail twin build failed: %s", twname, e3);
                 emit_kernel(&pl, &twin, twname, target, outdir,
-                            specs[s].sname, specs[s].ndata, redgreen);
+                            specs[s].sname, specs[s].ndata, specs[s].opname, redgreen);
                 jit_free_version(&twin);
+            }
+        }
+
+        /* NT twin (item 18): non-temporal streaming stores. Built from
+         * the winning candidate with nt=1, mirroring the api.c NT twin
+         * (plan_candidates with allow_nt). Only for encode ops where
+         * NT stores are valid. */
+        if (pl.kind == P_XOR || pl.kind == P_HORNER || pl.kind == P_MULACC) {
+            cand_t ntc = vs[w].cand;
+            /* NT twin requires the base ISA; skip if already nt. */
+            if (!ntc.nt) {
+                ntc.nt = 1;
+                char ntname[128], e4[256];
+                snprintf(ntname, sizeof(ntname), "%s_nt", kname);
+                version_t nttwin;
+                memset(&nttwin, 0, sizeof(nttwin));
+                if (jit_build_version(&pl, &ntc, &cpu, &o, &nttwin, e4,
+                                      sizeof(e4)) == 0) {
+                    emit_kernel(&pl, &nttwin, ntname, target, outdir,
+                                specs[s].sname, specs[s].ndata, specs[s].opname, redgreen);
+                    jit_free_version(&nttwin);
+                } else {
+                    die("%s: NT twin build FAILED (item-18 representative)",
+                        ntname);
+                }
+                /* NT twin is fatal like the tail twin: silently dropping it
+                 * would leave the deliverable without the item-18
+                 * representative. All backends honor nt=1 unconditionally. */
+            }
+        }
+
+        /* notail twin (item 33): length-dispatch variant with the tail
+         * path omitted. Only valid for len % group == 0; the doc notes
+         * the admission caveat. */
+        {
+            cand_t ntc = vs[w].cand;
+            /* notail is disjoint from predtail/maskedtail. */
+            if (!ntc.predtail && !ntc.maskedtail) {
+                ntc.notail = 1;
+                char ntname[128], e5[256];
+                snprintf(ntname, sizeof(ntname), "%s_notail", kname);
+                version_t nttwin;
+                memset(&nttwin, 0, sizeof(nttwin));
+                if (jit_build_version(&pl, &ntc, &cpu, &o, &nttwin, e5,
+                                      sizeof(e5)) == 0) {
+                    emit_kernel(&pl, &nttwin, ntname, target, outdir,
+                                specs[s].sname, specs[s].ndata, specs[s].opname, redgreen);
+                    jit_free_version(&nttwin);
+                } else {
+                    die("%s: notail twin build FAILED", ntname);
+                }
+            }
+        }
+
+        /* remat twin: HORNER rematerialization (trades L1 loads for
+         * registers). Built from the winning candidate with remat=1.
+         * Only for P_HORNER plans where the twin is valid. */
+        if (pl.kind == P_HORNER) {
+            cand_t rmc = vs[w].cand;
+            if (!rmc.remat) {
+                rmc.remat = 1;
+                char rmname[128], e6[256];
+                snprintf(rmname, sizeof(rmname), "%s_remat", kname);
+                version_t rmtwin;
+                memset(&rmtwin, 0, sizeof(rmtwin));
+                if (jit_build_version(&pl, &rmc, &cpu, &o, &rmtwin, e6,
+                                      sizeof(e6)) == 0) {
+                    emit_kernel(&pl, &rmtwin, rmname, target, outdir,
+                                specs[s].sname, specs[s].ndata, specs[s].opname, redgreen);
+                    jit_free_version(&rmtwin);
+                } else {
+                    die("%s: remat twin build FAILED", rmname);
+                }
+            }
+        }
+
+        /* permi2b twin (item 15): VPERMI2B nibble lookup instead of
+         * VPSHUFB ping-pong. Requires a MUL_NIBBLE candidate (the winner
+         * is GFNI when available); find the first nibble candidate and
+         * build permi2b=1 from it. Only for P_MULACC/P_DELTA. */
+        if ((pl.kind == P_MULACC || pl.kind == P_DELTA) && cpu.vbmi) {
+            for (int i = 0; i < ncand; i++) {
+                if (cands[i].isa == ISA_AVX512 &&
+                    cands[i].mul == MUL_NIBBLE && !cands[i].permi2b) {
+                    cand_t pmc = cands[i];
+                    pmc.permi2b = 1;
+                    char pmname[128], e7[256];
+                    snprintf(pmname, sizeof(pmname), "%s_permi2b", kname);
+                    version_t pmtwin;
+                    memset(&pmtwin, 0, sizeof(pmtwin));
+                    if (jit_build_version(&pl, &pmc, &cpu, &o, &pmtwin,
+                                          e7, sizeof(e7)) == 0) {
+                        emit_kernel(&pl, &pmtwin, pmname, target, outdir,
+                                    specs[s].sname, specs[s].ndata,
+                                    specs[s].opname, redgreen);
+                        jit_free_version(&pmtwin);
+                    } else {
+                        die("%s: permi2b twin build FAILED", pmname);
+                    }
+                    break; /* one representative is enough */
+                }
+            }
+        }
+
+        /* xorsched twin (item 8): cross-row CSE program for P_XOR.
+         * ternlog twin (item 4): VPTERNLOGD for P_XOR. The two are
+         * mutually exclusive; emit both as separate representatives. */
+        if (pl.kind == P_XOR) {
+            for (int i = 0; i < ncand; i++) {
+                if (cands[i].isa == ISA_AVX512 && cands[i].xorsched &&
+                    !cands[i].ternlog) {
+                    cand_t xsc = cands[i];
+                    char xsname[128], e8[256];
+                    snprintf(xsname, sizeof(xsname), "%s_xsched", kname);
+                    version_t xstwin;
+                    memset(&xstwin, 0, sizeof(xstwin));
+                    if (jit_build_version(&pl, &xsc, &cpu, &o, &xstwin,
+                                          e8, sizeof(e8)) == 0) {
+                        emit_kernel(&pl, &xstwin, xsname, target, outdir,
+                                    specs[s].sname, specs[s].ndata,
+                                    specs[s].opname, redgreen);
+                        jit_free_version(&xstwin);
+                    } else {
+                        die("%s: xorsched twin build FAILED", xsname);
+                    }
+                    break;
+                }
+            }
+            for (int i = 0; i < ncand; i++) {
+                if (cands[i].isa == ISA_AVX512 && cands[i].ternlog) {
+                    cand_t tlc = cands[i];
+                    char tlname[128], e9[256];
+                    snprintf(tlname, sizeof(tlname), "%s_ternlog", kname);
+                    version_t tltwin;
+                    memset(&tltwin, 0, sizeof(tltwin));
+                    if (jit_build_version(&pl, &tlc, &cpu, &o, &tltwin,
+                                          e9, sizeof(e9)) == 0) {
+                        emit_kernel(&pl, &tltwin, tlname, target, outdir,
+                                    specs[s].sname, specs[s].ndata,
+                                    specs[s].opname, redgreen);
+                        jit_free_version(&tltwin);
+                    } else {
+                        die("%s: ternlog twin build FAILED", tlname);
+                    }
+                    break;
+                }
             }
         }
 
