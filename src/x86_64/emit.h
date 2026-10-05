@@ -138,7 +138,6 @@ void em_movdqa_rr_sse(em_t *e, int vd, int vs);
 void em_pxor_sse(em_t *e, int vd, int vs); /* vd ^= vs */
 /* Folded memory form: vd ^= [m128]. Valid legacy SSE (66 0F EF /r);
  * one uop vs movdqa+pxor's two. */
-void em_pxor_mem_sse(em_t *e, int vd, int b, int x, int sc, int disp);
 void em_pshufb_sse(em_t *e, int vd, int vs);
 void em_pand_sse(em_t *e, int vd, int vs);
 void em_psrlw_sse(em_t *e, int vd, unsigned imm);

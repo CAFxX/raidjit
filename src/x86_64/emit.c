@@ -865,12 +865,6 @@ void em_pxor_sse(em_t *e, int vd, int vs)
 {
     sse_op_mrm(e, 0x66, 0xEF, vd, 0, 0, -1, 0, 0, vs);
 }
-void em_pxor_mem_sse(em_t *e, int vd, int b, int x, int sc, int disp)
-{
-    /* PXOR xmm1, xmm2/m128: 66 0F EF /r. The memory form is valid
-     * legacy SSE -- one uop vs movdqa+pxor's two. */
-    sse_op_mrm(e, 0x66, 0xEF, vd, 1, b, x, sc, disp, 0);
-}
 
 void em_pshufb_sse(em_t *e, int vd, int vs)
 {
