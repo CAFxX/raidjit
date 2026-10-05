@@ -301,13 +301,13 @@ static void c_vclmulh(cg_t *cg, int vd, int vs1, int vs2)
     cg->uops += 1;
 }
 
-/* One GF(2^8) multiply-add via the Zvbc carryless path:
- *   res = clmul_reduce(vs1, vs2)   (5 carryless + 2 xor)
- *   vd  = first ? res : vd ^ res   (move / xor, like the nibble path)
- * where clmul_reduce is lo=q=n fold with K=0x1B (see DESIGN.md).
- * vd may alias vs1 (HORNER: acc = acc*c + t); r1/r2/r3/kvec/cvec are
- * the cg temps. 8 vector uops. */
-static void c_gfmul_acc_zvbc(cg_t *cg, int vd, int vs1, int vs2, int first)
+/* The carryless reduction half of c_gfmul_acc_zvbc: res =
+ * clmul_reduce(vs1, vs2) (5 carryless + 2 xor, lo=q=n fold with
+ * K=0x1B; see DESIGN.md), left in r1. 7 vector uops. Split out so the
+ * HORNER step can fuse its trailing add into one vxor.vv (see
+ * gen_body); vs1 may alias the eventual destination (the reduction
+ * only reads vs1). r1/r2/r3/kvec are the cg temps. */
+static void c_gfmul_red_zvbc(cg_t *cg, int vs1, int vs2)
 {
     c_vclmul(cg, cg->r1, vs1, vs2);        /* lo */
     c_vclmulh(cg, cg->r2, vs1, vs2);       /* hi */
@@ -316,6 +316,17 @@ static void c_gfmul_acc_zvbc(cg_t *cg, int vd, int vs1, int vs2, int first)
     c_vclmul(cg, cg->r2, cg->r2, cg->kvec); /* n */
     c_vxor(cg, cg->r1, cg->r1, cg->r3);     /* lo ^ q */
     c_vxor(cg, cg->r1, cg->r1, cg->r2);     /* res */
+}
+
+/* One GF(2^8) multiply-add via the Zvbc carryless path:
+ *   res = clmul_reduce(vs1, vs2)   (5 carryless + 2 xor)
+ *   vd  = first ? res : vd ^ res   (move / xor, like the nibble path)
+ * where clmul_reduce is lo=q=n fold with K=0x1B (see DESIGN.md).
+ * vd may alias vs1 (HORNER: acc = acc*c + t); r1/r2/r3/kvec/cvec are
+ * the cg temps. 8 vector uops. */
+static void c_gfmul_acc_zvbc(cg_t *cg, int vd, int vs1, int vs2, int first)
+{
+    c_gfmul_red_zvbc(cg, vs1, vs2);
     if (first)
         c_vmv(cg, vd, cg->r1);
     else
@@ -900,17 +911,20 @@ static void gen_body(cg_t *cg, int nu, int win)
                     } else if (cg->zvbc) {
                         /* Carryless path: the coefficient broadcast for
                          * this row lives in hreg[2j] (cvec slot;
-                         * hreg[2j+1] is unused here). acc aliases vs1:
-                         * the first two clmuls only read acc, the
-                         * overwrite (first=1) then writes it.
-                         * Horner step: acc = acc*C + t, i.e. acc must
-                         * be OVERWRITTEN with the product (not
-                         * accumulated: first=0 would compute
+                         * hreg[2j+1] is unused here).
+                         * Horner step: acc = acc*C + t. The product is
+                         * formed in r1 and XORed with t in a single
+                         * vxor.vv acc,r1,vd -- fusing the "vmv acc,r1 /
+                         * vxor acc,acc,vd" pair (RVV allows distinct
+                         * rd/rs1/rs2). The fused form is vl-agnostic,
+                         * so the tail (win=1) needs no special casing.
+                         * acc must be OVERWRITTEN with the step result
+                         * (not accumulated: xor-into-acc would compute
                          * acc^product, wrong). */
                         int cv = cg->hreg[2 * j];
                         assert(cv >= 0);
-                        c_gfmul_acc_zvbc(cg, acc, acc, cv, 1);
-                        c_vxor(cg, acc, acc, vd);
+                        c_gfmul_red_zvbc(cg, acc, cv);
+                        c_vxor(cg, acc, cg->r1, vd);
                     } else {
                         if (cg->cand.remat) {
                             /* Tables are already live from the per-(i,j)
