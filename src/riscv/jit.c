@@ -120,6 +120,11 @@ typedef struct {
     int tbl;   /* HORNER remat scratch: pool tables reloaded here.
                 * Assigned only in remat mode; 0 (from the cg memset)
                 * otherwise and never read there. */
+    int hoist_tables; /* MULACC/DELTA nibble path: the whole matrix uses
+                * a single nontrivial coefficient, so its table pair is
+                * loop-invariant and loaded once in the prologue into
+                * tbl_lo/tbl_hi (hoist_c) instead of per column. */
+    uint8_t hoist_c;  /* the hoisted coefficient (valid iff hoist_tables) */
     int *hreg; /* HORNER: 2 regs per row, -1 if unused */
     /* static cost model: per one loop iteration (nominal) */
     double uops, mem;
@@ -475,6 +480,21 @@ static void gen_const_setup(cg_t *cg)
         c_li(cg, T3, 0x1b);
         em_vmv_v_x(e, cg->kvec, T3);
     }
+    if (cg->hoist_tables) {
+        /* Single-coefficient table hoist (MULACC/DELTA nibble path):
+         * the table pair is loop-invariant, so it is loaded once here
+         * into tbl_lo/tbl_hi instead of per column in the body. vl ==
+         * VLMAX (T5, set above) and the replicated pool entry is
+         * exactly VLMAX bytes, so no narrowing window is needed.
+         * Prologue setup is not per-iteration work: uncounted. */
+        assert(cg->tbl_lo >= 0 && cg->tbl_hi >= 0);
+        size_t olo = pool_get(cg, CK_NIBLO, cg->hoist_c);
+        size_t ohi = pool_get(cg, CK_NIBHI, cg->hoist_c);
+        c_pooladdr(cg, olo);
+        em_vle8(e, cg->tbl_lo, T3);
+        c_pooladdr(cg, ohi);
+        em_vle8(e, cg->tbl_hi, T3);
+    }
     if (pl->kind == P_HORNER) {
         if (cg->zvbc) {
             /* Per-row coefficient broadcasts into the hreg[2j] cvec
@@ -758,14 +778,16 @@ static void gen_body(cg_t *cg, int nu, int win)
             /* one table load per distinct c != 0,1 in this column
              * (nibble path only: the Zvbc path has no tables; an
              * unguarded c_ldtab here would load into the unassigned
-             * tbl_lo/tbl_hi (v0), clobbering accumulator v0). */
+             * tbl_lo/tbl_hi (v0), clobbering accumulator v0). Skipped
+             * when the single-coefficient hoist keeps the table pair
+             * live in tbl_lo/tbl_hi from the prologue. */
             uint8_t seen[256] = { 0 };
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->mat[(size_t)j * (size_t)n_in + (size_t)i];
                 if (c < 2 || seen[c])
                     continue;
                 seen[c] = 1;
-                if (!cg->zvbc)
+                if (!cg->zvbc && !cg->hoist_tables)
                     c_ldtab(cg, c, win);
                 mulacc_rows_c(cg, i, n_in, first_col, c, nu);
             }
@@ -817,8 +839,9 @@ static void gen_body(cg_t *cg, int nu, int win)
                 seen[c] = 1;
                 /* Nibble path only: the Zvbc path has no tables (see
                  * the P_MULACC call site for why the guard is
-                 * load-bearing). */
-                if (!cg->zvbc)
+                 * load-bearing). Skipped under the single-coefficient
+                 * hoist (tables live from the prologue). */
+                if (!cg->zvbc && !cg->hoist_tables)
                     c_ldtab(cg, c, win);
                 /* NULL: accs hold oldpar, not zero -- always xor */
                 mulacc_rows_c(cg, i, nc, NULL, c, nu);
@@ -1346,6 +1369,32 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             cg.tbl_lo = cg.r2 + L;
             cg.tbl_hi = cg.tbl_lo + L;
             cg.mask = cg.tbl_hi + L;
+            /* Table hoisting: when the whole matrix uses a single
+             * nontrivial coefficient, its table pair is loop-invariant
+             * and can live in tbl_lo/tbl_hi for the entire function
+             * (loaded once in gen_const_setup) instead of being
+             * reloaded per column. Register pressure is unchanged (the
+             * same two registers, now persistent). With >= 2 distinct
+             * nontrivial coefficients the per-column reloads stay:
+             * keeping a table pair live per coefficient would cost
+             * 2*(ndistinct-1) extra registers against the 32-register
+             * budget, and with replicated pool entries each reload is
+             * only 4 instructions in the hot loop. */
+            {
+                uint8_t seen[256] = { 0 };
+                int ndistinct = 0;
+                int ncols =
+                    pl->kind == P_DELTA ? pl->nchanged : pl->n_in;
+                for (int k = 0; k < n_out * ncols; k++) {
+                    uint8_t c = pl->mat[k];
+                    if (c < 2 || seen[c])
+                        continue;
+                    seen[c] = 1;
+                    cg.hoist_c = c;
+                    ndistinct++;
+                }
+                cg.hoist_tables = (ndistinct == 1);
+            }
             if (cg.mask + L > 32) {
                 snprintf(err, errlen, "riscv backend: register pressure "
                                       "(mulacc needs %d regs)",
