@@ -23,18 +23,17 @@
  * GF(2^8) multiplies use the nibble method:
  *   lo = x & 0x0f; hi = x >> 4;
  *   out = vrgather(lotab, lo) ^ vrgather(hitab, hi)
- * The 16-byte tables live in vector registers: Horner row tables are
- * loaded once in the prologue inside a vsetivli-16 window when
- * LMUL > 1 (at LMUL == 1, vl = VLMAX >= 16 so all 16 bytes are valid);
- * mulacc/delta column tables are loaded per column from the
- * constant pool inside a vsetivli-16 window, so that a short tail VL
- * cannot leave table elements stale, with vl restored afterwards. The
- * window also narrows vl to exactly 16 whenever LMUL > 1: at
- * vl == VLMAX a vle8.v would otherwise over-read the 16-byte pool
- * entry (up to 8x at LMUL=8). At LMUL == 1 the counted full-group
- * loop runs at vl == VLMAX >= 16 throughout, so its table loads
- * provably elide the window (it survives only in the remainder/tail
- * bodies, where vl can be < 16). The "VLMAX >= 16"
+ * The 16-byte tables live in vector registers. Every constant-pool
+ * entry holds its table replicated to cover a full VLMAX load
+ * (lmul * vlenb bytes on this machine's VLEN), so a vle8.v at
+ * vl == VLMAX can never over-read the pool entry; vrgather indices
+ * are nibble values (0..15), so only the first 16 bytes are ever read
+ * and the replicas are semantically invisible. Table loads therefore
+ * run at the body's natural vl with no narrowing: Horner row tables
+ * are loaded once in the prologue, mulacc/delta column tables per
+ * column from the pool. The vsetivli-16 window survives only in the
+ * remainder/tail bodies (win=1), where vl can be < 16 and a short load
+ * would leave table elements past vl stale. The "VLMAX >= 16"
  * assumption is VLEN >= 128 (full V extension); cpu.c's "zve*" match
  * is optimistic -- on Zve32x with VLEN < 128 the 16-byte table loads
  * would be short (pre-existing limitation, not introduced here).
@@ -132,6 +131,9 @@ typedef struct {
     int notail;      /* length-dispatch twin: omit the strip-mining /
                     * single-chunk remainder tail entirely; only valid
                     * for len % group == 0 (see docs/length_dispatch.md) */
+    size_t vlenb;    /* VLEN in bytes on this machine (vlenb CSR), read
+                    * once at build time; sizes the replicated
+                    * constant-pool table entries (see pool_get) */
 } cg_t;
 
 /* vlenb CSR (0xC22): VLEN in bytes. A hardware constant, readable from
@@ -153,14 +155,28 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
             return cg->cent[i].off;
     uint8_t lo[16], hi[16];
     gf_build_nibble(c, lo, hi);
+    /* Replicated entry: the 16-byte table repeated enough times to
+     * cover a full VLMAX load (lmul * vlenb bytes) on this machine's
+     * VLEN, so a vle8.v at vl == VLMAX can never over-read the pool
+     * entry and the vsetivli-16 narrowing window is unnecessary in
+     * the counted loop. vrgather indices are nibble values (0..15),
+     * so only the first 16 bytes are ever read -- the replicas are
+     * semantically invisible. (At least 16 bytes even if vlenb < 16;
+     * VLEN < 128 is a pre-existing unsupported corner, see the file
+     * header.) rep is a multiple of 16: lmul and vlenb are powers of
+     * two, so lmul*vlenb >= 16 is a multiple of 16. */
+    size_t rep = cg->lmul * cg->vlenb;
+    if (rep < 16)
+        rep = 16;
     size_t off = (cg->pool_len + 15) & ~(size_t)15;
-    if (off + 16 > cg->pool_cap) {
-        cg->pool_cap = (off + 16 + 4095) & ~(size_t)4095;
+    if (off + rep > cg->pool_cap) {
+        cg->pool_cap = (off + rep + 4095) & ~(size_t)4095;
         cg->pool = realloc(cg->pool, cg->pool_cap);
         assert(cg->pool);
     }
-    memcpy(cg->pool + off, kind == CK_NIBLO ? lo : hi, 16);
-    cg->pool_len = off + 16;
+    for (size_t k = 0; k < rep; k += 16)
+        memcpy(cg->pool + off + k, kind == CK_NIBLO ? lo : hi, 16);
+    cg->pool_len = off + rep;
     if (cg->ncent == cg->ccent) {
         cg->ccent = cg->ccent ? cg->ccent * 2 : 32;
         cg->cent = realloc(cg->cent, (size_t)cg->ccent * sizeof(*cg->cent));
@@ -181,7 +197,8 @@ static void c_vle(cg_t *cg, int vd, int rs1)
     cg->uops += 1;
     /* Nominal data movement scales with LMUL: one vector load moves a
      * full vl=VLMAX strip (lmul x NOMVL nominal bytes). Table loads
-     * (c_ldtab/c_ldtab1) narrow vl to 16 and count unscaled NOMVL. */
+     * (c_ldtab/c_ldtab1) move a full VLMAX strip of replicated table
+     * bytes but count unscaled NOMVL (the 16 useful bytes). */
     cg->mem += NOMVL * cg->lmul;
 }
 
@@ -354,11 +371,13 @@ static void c_pooladdr(cg_t *cg, size_t off)
 }
 
 /* Load the 16-byte nibble-table pair for coefficient c into
- * (tbl_lo, tbl_hi). The loads run inside a vsetivli-16 window when
- * win != 0 (body vl can be < 16 in the tail) or when LMUL > 1 (vl ==
- * VLMAX would over-read the 16-byte pool entry). When win == 0 and
- * LMUL == 1 the caller guarantees vl == VLMAX (>= 16) for the whole
- * body, so the window is provably redundant and elided. */
+ * (tbl_lo, tbl_hi). The pool entry holds the table replicated to cover
+ * a full VLMAX load (see pool_get), so a vle8.v at the body's natural
+ * vl can never over-read it. The loads run inside a vsetivli-16 window
+ * only when win != 0 (the tail, where vl can be < 16 and a short load
+ * would leave table elements past vl stale); in the counted loop
+ * (win == 0) vl == VLMAX for the whole body, so the window is
+ * provably redundant and elided at any LMUL. */
 static void c_ldtab(cg_t *cg, uint8_t c, int win)
 {
     em_t *e = &cg->em;
@@ -370,24 +389,20 @@ static void c_ldtab(cg_t *cg, uint8_t c, int win)
     size_t ohi = pool_get(cg, CK_NIBHI, c);
     /* T5 saves the vl value (dead at all call sites: T2/T4 hold the
      * live pointers, T5 is only c_ldptr scratch); T3 is c_pooladdr
-     * scratch. The 16-byte table loads need vl == 16 exactly: with
-     * LMUL>1, VLMAX can be 32/64/128/..., and a vle8.v at vl=VLMAX
-     * would over-read the 16-byte pool entry (segfault risk). So we
-     * narrow vl to 16 whenever LMUL>1, even in the counted loop
-     * (win=0) where vl==VLMAX is otherwise sufficient. */
-    int need_narrow = win || cg->lmul > 1;
-    if (need_narrow)
+     * scratch. Only the win != 0 path needs them: the counted loop
+     * loads the replicated entry at vl == VLMAX with no narrowing. */
+    if (win)
         em_addi(e, T5, T0, 0); /* save vl */
-    if (need_narrow)
+    if (win)
         em_vsetivli(e, X0, 16, VSEW8, cg->vlmul, 1, 1);
     c_pooladdr(cg, olo);
     em_vle8(e, cg->tbl_lo, T3);
     c_pooladdr(cg, ohi);
     em_vle8(e, cg->tbl_hi, T3);
-    if (need_narrow)
+    if (win)
         /* restore vl: min(VLMAX, saved) == saved */
         em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
-    cg->uops += need_narrow ? 7 : 4;
+    cg->uops += win ? 7 : 4;
     cg->mem += 2 * NOMVL;
 }
 
@@ -395,12 +410,11 @@ static void c_ldtab(cg_t *cg, uint8_t c, int win)
  * c into vector register vd. The HORNER remat path uses this to reload
  * tables from the pool into the tbl scratch on every use; c_ldtab's
  * fixed (tbl_lo, tbl_hi) pair is only assigned in the MULACC/DELTA
- * register map, so it cannot serve the HORNER path. Same vsetivli-16
- * window discipline as c_ldtab: the window is elided in the counted
- * full-group loop (win=0) only when LMUL==1 (vl==VLMAX==16 at
- * VLEN=128, or VLMAX>16 but the over-read is benign); with LMUL>1
- * the window is kept to narrow vl to 16 and avoid over-reading the
- * 16-byte pool entry. */
+ * register map, so it cannot serve the HORNER path. Same window
+ * discipline as c_ldtab: the pool entry is replicated to cover a full
+ * VLMAX load, so the vsetivli-16 window is elided in the counted
+ * full-group loop (win=0) at any LMUL and kept only in the
+ * remainder/tail bodies (win=1), where vl can be < 16. */
 static void c_ldtab1(cg_t *cg, int vd, int kind, uint8_t c, int win)
 {
     em_t *e = &cg->em;
@@ -410,23 +424,17 @@ static void c_ldtab1(cg_t *cg, int vd, int kind, uint8_t c, int win)
     size_t off = pool_get(cg, kind, c);
     /* T5 saves the vl value (dead at all call sites: T2 holds the live
      * input pointer in the HORNER body, T5 is only c_ldptr scratch);
-     * T3 is c_pooladdr scratch.
-     * The 16-byte table load needs vl == 16 exactly: with LMUL>1,
-     * VLMAX can be 32/64/128/..., and a vle8.v at vl=VLMAX would
-     * over-read the 16-byte pool entry (segfault risk). So we narrow
-     * vl to 16 whenever LMUL>1, even in the counted loop (win=0)
-     * where vl==VLMAX is otherwise sufficient. */
-    int need_narrow = win || cg->lmul > 1;
-    if (need_narrow)
+     * T3 is c_pooladdr scratch. Only the win != 0 path needs them. */
+    if (win)
         em_addi(e, T5, T0, 0); /* save vl */
-    if (need_narrow)
+    if (win)
         em_vsetivli(e, X0, 16, VSEW8, cg->vlmul, 1, 1);
     c_pooladdr(cg, off);
     em_vle8(e, vd, T3);
-    if (need_narrow)
+    if (win)
         /* restore vl: min(VLMAX, saved) == saved */
         em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
-    cg->uops += need_narrow ? 5 : 2;
+    cg->uops += win ? 5 : 2;
     cg->mem += NOMVL;
 }
 
@@ -436,8 +444,9 @@ static void gen_const_setup(cg_t *cg)
 {
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
-    /* vl = VLMAX (LMUL-scaled): the 16-byte table loads below narrow
-     * vl to 16 when LMUL>1 to avoid over-reading the pool entry. */
+    /* vl = VLMAX (LMUL-scaled), held in T5 for the table loads below:
+     * the replicated pool entries (see pool_get) are exactly VLMAX
+     * bytes, so the loads need no narrowing. */
     em_vsetvli(e, T5, X0, VSEW8, cg->vlmul, 1, 1);
     if (cg->need_mask) {
         em_addi(e, T3, X0, 0x0f);
@@ -480,17 +489,14 @@ static void gen_const_setup(cg_t *cg)
                 assert(cg->hreg[2 * j] >= 0 && cg->hreg[2 * j + 1] >= 0);
                 size_t olo = pool_get(cg, CK_NIBLO, c);
                 size_t ohi = pool_get(cg, CK_NIBHI, c);
-                /* Narrow vl to 16 for the table loads: at LMUL>1,
-                 * vl==VLMAX would over-read the 16-byte pool entry.
-                 * (T5 holds VLMAX from above; restore after.) */
-                if (cg->lmul > 1)
-                    em_vsetivli(e, X0, 16, VSEW8, cg->vlmul, 1, 1);
+                /* No vl narrowing: the pool entry holds the table
+                 * replicated to cover a full VLMAX load (see pool_get),
+                 * and vl == VLMAX here (T5, set above), so the vle8.v
+                 * reads exactly the entry. */
                 c_pooladdr(cg, olo);
                 em_vle8(e, cg->hreg[2 * j], T3);
                 c_pooladdr(cg, ohi);
                 em_vle8(e, cg->hreg[2 * j + 1], T3);
-                if (cg->lmul > 1)
-                    em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
             }
         }
     }
@@ -959,8 +965,9 @@ static void gen_function(cg_t *cg)
          * across gen_body (it clobbers T2-T5; T0 = vl, T1 = offset and
          * T6 = pool base stay live). vl is set to VLMAX once up front;
          * gen_body preserves it. Table loads use a vsetivli-16 window
-         * when win=1 or LMUL>1 (at LMUL=1, vl == VLMAX >= 16 covers the
-         * 16-byte loads, so the window is elided there). */
+         * only when win=1 (the remainder path); in the counted loop
+         * the replicated pool entries make the window unnecessary at
+         * any LMUL. */
         /* T0 = vl = VLMAX (vsetvli with rs1 == x0 selects VLMAX) */
         em_vsetvli(e, T0, X0, VSEW8, cg->vlmul, 1, 1);
         cg->uops += 1;
@@ -1096,8 +1103,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     /* True full-group size for the length dispatcher: U * VLMAX * lmul.
      * vlenb is a hardware constant, so reading it once at build time is
      * sound (also under QEMU: the C code sees the same VLEN as the
-     * JITed code's vsetvli). */
-    v->group_bytes = (size_t)cg.U * read_vlenb() * (size_t)cg.lmul;
+     * JITed code's vsetvli). It also sizes the replicated constant-pool
+     * table entries (see pool_get). */
+    cg.vlenb = read_vlenb();
+    v->group_bytes = (size_t)cg.U * cg.vlenb * (size_t)cg.lmul;
 
     /* cand->ternlog: not implemented for RVV; ignored.
      * cand->nt: honored (Zihintntl NTL.ALL before each output store;
