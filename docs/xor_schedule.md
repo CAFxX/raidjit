@@ -194,9 +194,49 @@ in favor of its naive twin.** Checkable form:
 
 Flat-pair restriction (no nested temps) is deliberate: it bounds the live
 set to the two formation temps, keeps the pressure formula exact, and every
-extracted temp provably saves `≥ 1` XOR uop (needs `≥ 2` user rows). Nested
-extraction (`t2 = t1^c`) is a possible follow-up; it would need 3 live
-temps or in-place chaining and is out of scope.
+extracted temp provably saves `≥ 1` XOR uop (needs `≥ 2` user rows).
+
+### Nested-extraction evaluation (2026-10-06): deliberately NOT implemented
+
+A nested greedy (temp-input and temp-temp pairs, `t1 = t0^c`) was
+prototyped standalone (`tools/nested_cse_experiment.c`: nested greedy +
+honest AVX-convention static uop counting + scalar differential
+correctness check per schedule) and measured on 12 topologies: the
+repo's six xorsched differential-test topologies (t1-t6 from
+`tests/test_xorsched.c`), six synthetic deeply-structured/dense plans,
+and a real RDP-recovery P_XOR plan shape. Static uops per lane
+(AVX: temp formation 2 uops with an input operand, 1 uop temp-temp;
+fan-out 1 uop/row):
+
+| topology | naive | flat | nested | delta | nested maxlive |
+|---|---|---|---|---|---|
+| repo t1 (4x20) | 24 | 26 | 25 | -1 | 3 |
+| repo t2 (3x6) | 16 | 13 | 12 | -1 | 3 |
+| repo t3 (3x6) | 10 | 11 | 11 | 0 | 1 |
+| repo t5 (4x8) | 8 | 16 | 16 | 0 | 0 |
+| repo t6 (6x12) | 36 | 34 | 34 | 0 | 1 |
+| deep-share 4x7 | 19 | 19 | 16 | -3 | 2 |
+| chain 4x7 | 21 | 19 | 17 | -2 | 2 |
+| rs-like 3x9 | 27 | 21 | 18 | -3 | 2 |
+| deep-core 8x20 | 52 | 52 | 45 | -7 | 3 |
+| dense-rand 6x14 | 60 | 52 | 45 | -7 | 6 |
+| dense70 4x20 | 75 | 53 | 42 | -11 | 6 |
+| rdp-like 6x20 | 39 | 49 | 49 | 0 | 1 |
+
+Verdict: on the differential-test topologies nested saves 0-1 uop/lane
+(0-8%) -- not a win by the twin's own gate standard. The 11-21% wins
+concentrate in synthetic dense plans, but those need up to 6
+simultaneously-live temps vs flat's 1-2: at `n_out*U + 6` pressure the
+feasible U drops (e.g. n_out=4: U=7 -> U=6 on AVX-512), and the unroll
+loss can erase the static win in measured performance. Real P_XOR plans
+do not show the dense structure either (RDP recovery is sparse: 2x46
+with 6 ones/row; RAID-5/6 P_XOR is small). A production nested twin
+would need a temp-stack emitter on all three backends, a liveness-based
+pressure model replacing the exact `+1`/`+2`, and re-proof of
+model-emitter exactness -- disproportionate risk for 0-1 uop on the
+tested topologies. The flat bound stands; re-test trigger: a real
+P_XOR workload class with dense row sharing (3+ common inputs across
+many rows) where the twin is benchmark-relevant.
 
 ## 7. Measured evidence (2026-10-02, AMD EPYC 9D25)
 
