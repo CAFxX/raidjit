@@ -2104,17 +2104,23 @@ static void tripwire_referee_fires(void)
           v, ok, fired);
     /* (c) the referee==1 -> loud-FAIL link, pure unit (no benches):
      * a firing verdict records exactly one FAIL, a safe verdict
-     * records none. */
+     * records none. The firing call below is INTENTIONAL and is
+     * announced on stdout as a self-test, so the deliberately
+     * recorded FAIL line (tagged selftest-loud-path, which no real
+     * topology tag can match) cannot be mistaken for a real
+     * tripwire failure. */
     before = failures;
-    ok = tripwire_loud(1, "unit", "[rows 2]", "[rows 0]", 43.40, 50.17,
-                       0.05);
+    printf("SELFTEST tripwire loud-path: the following FAIL line is "
+           "intentional (asserts the loud-FAIL wiring)\n");
+    ok = tripwire_loud(1, "selftest-loud-path", "[rows 2]", "[rows 0]",
+                       43.40, 50.17, 0.05);
     CHECK(!ok && failures - before == 1,
           "tripwire loud/fires: one FAIL (ok=%d fired=%d)", ok,
           failures - before);
     failures = before;
     before = failures;
-    ok = tripwire_loud(0, "unit", "[rows 0]", "[rows 0]", 50.17, 50.17,
-                       0.05);
+    ok = tripwire_loud(0, "selftest-loud-path", "[rows 0]", "[rows 0]",
+                       50.17, 50.17, 0.05);
     CHECK(ok && failures == before, "tripwire loud/safe: no FAIL");
     rj_topo_free(t);
 }
