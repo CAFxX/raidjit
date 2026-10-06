@@ -44,6 +44,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_riscv_remat $(BUILDDIR)/test_sve_eor3 \
         $(BUILDDIR)/test_riscv_prefetch \
         $(BUILDDIR)/test_riscv_zvbc \
+        $(BUILDDIR)/test_riscv_zvbb \
         $(BUILDDIR)/test_rvv_f6 $(BUILDDIR)/test_rvv_lmul \
         $(BUILDDIR)/test_pdelta_edge \
         $(BUILDDIR)/test_boundaries $(BUILDDIR)/test_aarch64_shape \
@@ -197,6 +198,9 @@ _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_riscv_zvbc
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_riscv_zvbc
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_riscv_zvbc
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),zvbb=true ./$(BUILDDIR)/test_riscv_zvbb
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),zvbb=true,vlen=256 ./$(BUILDDIR)/test_riscv_zvbb
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),zvbb=true,vlen=512 ./$(BUILDDIR)/test_riscv_zvbb
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_rvv_f6
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_rvv_f6
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_rvv_f6
@@ -473,6 +477,8 @@ $(BUILDDIR)/test_riscv_prefetch: tests/test_riscv_prefetch.c $(BUILDDIR)/libraid
 	$(CC) $(CFLAGS) -o $@ tests/test_riscv_prefetch.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 $(BUILDDIR)/test_riscv_zvbc: tests/test_riscv_zvbc.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_riscv_zvbc.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+$(BUILDDIR)/test_riscv_zvbb: tests/test_riscv_zvbb.c src/riscv/emit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_riscv_zvbb.c src/riscv/emit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 $(BUILDDIR)/test_rvv_f6: tests/test_rvv_f6.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_rvv_f6.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 $(BUILDDIR)/test_rvv_lmul: tests/test_rvv_lmul.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)

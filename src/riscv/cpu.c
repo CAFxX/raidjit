@@ -217,6 +217,10 @@ void rj_cpu_detect(rj_cpu_info *out)
      * Zvbc-without-Zvbc32e must not enumerate it (reserved encoding),
      * Zvbc32e-standalone must. rvv_zvbc/rvv_zvkg stay informational. */
     out->rvv_zvbc32e = has_ext_cpuinfo("zvbc32e") ? 1 : 0;
+    /* Zvbb (vector bitmanip: vandn.vv, vbrev8.v, ...; ratified 1.0).
+     * Token-exact probe, like Zvbc32e. Detected for future use; no
+     * backend path consumes it yet (I5: no profitable twin found). */
+    out->rvv_zvbb = has_ext_cpuinfo("zvbb") ? 1 : 0;
     out->rvv_zicond = has_ext_cpuinfo("zicond") ? 1 : 0;
 
     cpuinfo_brand(out->brand, sizeof(out->brand));

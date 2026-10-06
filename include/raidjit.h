@@ -51,6 +51,12 @@ typedef struct {
                       * of Zvbc, legal standalone). THE gate for the
                       * SEW=8 MUL_ZVBC twin: until a kernel/QEMU reports
                       * the token the twin stays off (fail closed). */
+    int rvv_zvbb;    /* Zvbb vector bitmanip (vandn.vv, vbrev8.v, ...;
+                      * ratified 1.0). Detected for future use; no
+                      * backend path consumes it yet (see I5 analysis:
+                      * the nibble split needs 2 instructions minimum --
+                      * one per nibble -- and neither vandn nor vbrev8
+                      * can fuse them, so no profitable twin exists). */
     int rvv_zicond;  /* Zicond integer conditional (czero.eqz/nez) */
     int p_ext;       /* Packed SIMD P-extension */
     int p_version;   /* P-extension draft version: 5=0.5, 9=0.9.x, 20=0.20 */

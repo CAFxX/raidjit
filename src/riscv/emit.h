@@ -6,7 +6,9 @@
  * loads/stores (vle8.v/vse8.v), and the integer vector ALU subset used
  * for nibble-table GF(2^8) multiplies: vxor.vv, vand.vv, vand.vx,
  * vand.vi, vsrl.vi, vrgather.vv, vmv.v.v, vmv.v.x; plus the Zvbc/Zvkg
- * carryless multiplies vclmul.vv/vclmulh.vv used by the MUL_ZVBC twin.
+ * carryless multiplies vclmul.vv/vclmulh.vv used by the MUL_ZVBC twin;
+ * plus the Zvbb bitmanip instructions vandn.vv and vbrev8.v (detected
+ * but not yet consumed by any backend path; see rvv_zvbb).
  *
  * Labels with fixups (B-type branches, J-type jumps, PC-relative
  * auipc+addi pairs for
@@ -106,6 +108,18 @@ void em_vxor_vv(em_t *e, int vd, int vs1, int vs2);
 void em_vand_vv(em_t *e, int vd, int vs1, int vs2);
 void em_vand_vx(em_t *e, int vd, int vs2, int rs1);
 void em_vand_vi(em_t *e, int vd, int vs2, unsigned uimm);
+/* Zvbb vector bitmanip (detected via rvv_zvbb; no backend path emits
+ * these yet -- see the I5 analysis):
+ *   vandn.vv vd, vs1, vs2: vd[i] = vs1[i] & ~vs2[i] (OPIVV,
+ *     funct6=000001; note this is NOT 000101 -- that is vmin).
+ *   vbrev8.v vd, vs: vd[i] = brev8(vs[i]) (bit-reverse each byte;
+ *     VXUNARY0: funct6=010010, vs1 field = 01000 selects vbrev8).
+ * Encodings per the ratified Zvbb spec, cross-checked against the
+ * wasmtime Zvbb implementation's encoding table (funct6/vs1 values);
+ * NOT yet verified against GNU as (no RISC-V toolchain on this host).
+ * The shape test pins the exact words. */
+void em_vandn_vv(em_t *e, int vd, int vs1, int vs2); /* Zvbb */
+void em_vbrev8_v(em_t *e, int vd, int vs);           /* Zvbb */
 void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm);
 void em_vrgather_vv(em_t *e, int vd, int vtab, int vidx); /* vd[i] =
                           vtab[vidx[i]]; table reg in vs2 field, index

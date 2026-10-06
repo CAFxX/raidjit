@@ -14,6 +14,12 @@
  * - OPIVX (funct3=100): vand.vx funct6=001001, vmv.v.x funct6=010111
  *   (scalar in the vs1 field, vs2 field = 0).
  * - OPIVI (funct3=011): vsrl.vi funct6=101000 (uimm in vs1 field).
+ * - Zvbb (OPIVV): vandn.vv funct6=000001 (vd[i] = vs1[i] & ~vs2[i];
+ *   NOT 000101, which is vmin); vbrev8.v is VXUNARY0 funct6=010010
+ *   with vs1 field = 01000 selecting vbrev8 (source in vs2 field).
+ *   Per the ratified Zvbb spec; cross-checked against the wasmtime
+ *   Zvbb encoding table. NOT GAS-verified (no RISC-V toolchain here);
+ *   the shape test pins the words.
  */
 #include "emit.h"
 #include <stdlib.h>
@@ -390,6 +396,29 @@ void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm)
 {
     assert(uimm < 32);
     em_opv(e, 0x28 /*101000*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
+}
+
+/* Zvbb vector bitmanip. OPIVV class (funct3=000); operand placement
+ * follows the standard convention (first assembly source in
+ * bits[19:15], second in bits[24:20]), like em_vand_vv above.
+ *   vandn.vv vd, vs1, vs2: vd[i] = vs1[i] & ~vs2[i].
+ *     funct6=000001 (NOT 000101: that is vmin).
+ *   vbrev8.v vd, vs: vd[i] = brev8(vs[i]) (bit-reverse each byte).
+ *     VXUNARY0: funct6=010010, vs1 field = 01000 selects vbrev8, source
+ *     in the vs2 field (bits[24:20]).
+ * Encodings per the ratified Zvbb spec, cross-checked against the
+ * wasmtime Zvbb implementation's encoding table. NOT GAS-verified (no
+ * RISC-V toolchain on this host); the shape test pins the exact words
+ * so a future GAS check can confirm or correct them. */
+void em_vandn_vv(em_t *e, int vd, int vs1, int vs2)
+{
+    em_opv(e, 0x01 /*000001*/, vs2, vs1, 0x0 /*OPIVV*/, vd);
+}
+
+void em_vbrev8_v(em_t *e, int vd, int vs)
+{
+    em_opv(e, 0x12 /*010010*/, vs, 0x08 /*01000=vbrev8*/, 0x0 /*OPIVV*/,
+           vd);
 }
 
 void em_vrgather_vv(em_t *e, int vd, int vtab, int vidx)
