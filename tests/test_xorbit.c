@@ -142,6 +142,31 @@ static void check_sched_correct(const plan_t *pl, const char *tname)
     printf("ok sched %s (%d temps)\n", tname, s->ntemps);
 }
 
+/* ---- flat-bound pin (A3 negative result) ----
+ * gen_body_xorbit forms each temp as in[a]^in[b] with a,b input-bit
+ * ids (ia = a>>3, ka = a&7); a nested temp operand (>= 8*n_in_sched)
+ * would silently miscompile. A3 evaluated nested CSE and kept flat
+ * (see docs/xor_schedule.md section 10); this pins the bound the
+ * emitter relies on. Non-tautological: a nested temp operand fails it
+ * by construction. */
+static void check_flat_bound(const plan_t *pl, const char *tname)
+{
+    const xorbit_t *s = pl->bit_sched;
+    CHECK(s != NULL, "%s: NULL schedule", tname);
+    if (!s)
+        return;
+    long nbits = 8L * s->n_in_sched;
+    for (int m = 0; m < s->ntemps; m++) {
+        CHECK(s->temps[m].a >= 0 && s->temps[m].a < nbits,
+              "%s: temp %d operand a=%d not an input-bit id", tname, m,
+              s->temps[m].a);
+        CHECK(s->temps[m].b >= 0 && s->temps[m].b < nbits,
+              "%s: temp %d operand b=%d not an input-bit id", tname, m,
+              s->temps[m].b);
+    }
+    printf("ok flatbound %s (%d temps)\n", tname, s->ntemps);
+}
+
 /* ---- OOM hook ---- */
 static void check_oom(const plan_t *pl, const char *tname)
 {
@@ -327,6 +352,7 @@ int main(void)
         snprintf(pl.name, sizeof(pl.name), "t-mulacc4x2");
         pl.bit_sched = xorbit_build(&pl);
         check_sched_correct(&pl, "mulacc4x2");
+        check_flat_bound(&pl, "mulacc4x2");
         check_oom(&pl, "mulacc4x2");
         check_mutation(&pl, "mulacc4x2");
         int Us[] = { 1, 2, 4 };
@@ -354,6 +380,7 @@ int main(void)
         snprintf(pl.name, sizeof(pl.name), "t-mulacc6x3");
         pl.bit_sched = xorbit_build(&pl);
         check_sched_correct(&pl, "mulacc6x3");
+        check_flat_bound(&pl, "mulacc6x3");
         check_jit(&cpu, &pl, ISA_SSE, 1, 128, "mulacc6x3");
         check_jit(&cpu, &pl, ISA_SSE, 2, 200, "mulacc6x3");
         xorbit_free(pl.bit_sched);
@@ -374,6 +401,7 @@ int main(void)
         snprintf(pl.name, sizeof(pl.name), "t-horner63");
         pl.bit_sched = xorbit_build(&pl);
         check_sched_correct(&pl, "horner63");
+        check_flat_bound(&pl, "horner63");
         //check_jit(&cpu, &pl, ISA_SSE, 1, 128, "horner63"); // TODO: HORNER emitter needs plan_build setup
         //check_jit(&cpu, &pl, ISA_SSE, 2, 100, "horner63");
         xorbit_free(pl.bit_sched);
@@ -394,6 +422,7 @@ int main(void)
         snprintf(pl.name, sizeof(pl.name), "t-delta");
         pl.bit_sched = xorbit_build(&pl);
         check_sched_correct(&pl, "delta");
+        check_flat_bound(&pl, "delta");
         check_jit(&cpu, &pl, ISA_SSE, 1, 128, "delta");
         xorbit_free(pl.bit_sched);
         free(pl.mat);

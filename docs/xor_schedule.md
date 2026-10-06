@@ -306,3 +306,107 @@ re-run by this track; the later reconsideration-audit track owns that.
 - Row-dedup moves assume the canonical row's accumulator is final before
   the duplicate move — enforced by emission order (all unique rows fully
   accumulated before duplicate moves).
+
+## 10. Bit-level (xorbit) nested-CSE evaluation (A3, 2026-10-06): deliberately NOT implemented
+
+A1's bit-level scheduler (`xorbit_build`) uses flat pair-CSE: temps are
+pairs of input bits only, never nested. A3 evaluated nested/hierarchical
+CSE (temps of temps) on the bit-level IR, where the economics differ
+from the byte-level Wave-1 evaluation above (bit-level DAGs are deeper).
+Prototype: `tools/xorbit_nested_eval.c` (standalone, not in the build).
+
+Objective: static gate count `G = ntemps + sum_ob max(0, natoms(ob)-1)`,
+the XOR gate count of the scheduled DAG. Each nested extraction provably
+reduces G by `(nusers-1) >= 1` (same argument as flat), so nested can only
+improve on flat -- the question is the margin and the pressure cost.
+
+Method (deterministic; two runs diffed byte-identical):
+- `flat` = faithful replica of `xorbit_build`'s greedy. Fidelity is
+  CHECKED against the real `xorbit_build` on every corpus matrix
+  (ntemps, per-temp operands, G must match exactly); any divergence
+  aborts. Result: replica == `xorbit_build` on all 16 matrices.
+- `nested` = flat, then greedy rounds over input bits + formed temps,
+  extracting any pair with >= 1 temp co-occurring in >= 2 output-bit
+  rows. Every nested schedule is verified by a nested-aware interpreter
+  against a scalar GF(2^8) reference (20 deterministic inputs/matrix);
+  a mutation check (corrupt one temp operand) must break the
+  interpreter, proving the check non-tautological.
+- `ml_nest` = max simultaneously-live temps under immediate fanout
+  (temp m live on [m, lastuse(m)]). The flat emitter keeps no temp
+  live; a production nested emitter would need a temp-stack of this
+  size, i.e. `xorbit_need_regs` becomes `n_out*U + 4 + maxlive`.
+
+Corpus (16 fixed matrices; `real` = real workload shape):
+t-mulacc4x2, t-mulacc6x3 (from `tests/test_xorbit.c`), raid6-8p2
+(8+2: P row of 1s, Q row of powers of 2), rs63/rs104/rs144-vdm
+(Vandermonde `2^(i*j)` parity), t-horner63, horner10x4, t-delta,
+delta4x3, sparse20x4 (recovery-like sparse, 6 ones/row -- no CSE:
+flat and real agree on NULL), synthetic stress: dense8x8,
+rand10x5-s7, rand12x6-s42 (fixed LCG seeds), chain23 (alternating
+{2,3}), deepshare (4x3 block of c=3).
+
+Uncapped nested (maxlive unbounded):
+
+| matrix | G_naive | G_flat | G_nest | dG | dG% | ml_nest |
+|---|---|---|---|---|---|---|
+| t-mulacc4x2 | 88 | 65 | 61 | +4 | 6.2% | 5 |
+| t-mulacc6x3 | 324 | 215 | 164 | +51 | 23.7% | 27 |
+| raid6-8p2 | 199 | 156 | 129 | +27 | 17.3% | 14 |
+| rs63-vdm | 257 | 187 | 158 | +29 | 15.5% | 20 |
+| rs104-vdm | 861 | 554 | 423 | +131 | 23.6% | 54 |
+| rs144-vdm | 1319 | 837 | 602 | +235 | 28.1% | 104 |
+| t-horner63 | 357 | 234 | 191 | +43 | 18.4% | 27 |
+| horner10x4 | 1048 | 653 | 479 | +174 | 26.6% | 80 |
+| t-delta | 88 | 52 | 37 | +15 | 28.8% | 17 |
+| delta4x3 | 608 | 324 | 171 | +153 | 47.2% | 45 |
+| dense8x8 (syn) | 1792 | 1055 | 767 | +288 | 27.3% | 109 |
+| rand10x5-s7 (syn) | 1546 | 937 | 656 | +281 | 30.0% | 112 |
+| rand12x6-s42 (syn) | 2322 | 1378 | 929 | +449 | 32.6% | 156 |
+| chain23 (syn) | 328 | 188 | 74 | +114 | 60.6% | 30 |
+| deepshare (syn) | 565 | 342 | 228 | +114 | 33.3% | 41 |
+
+Real-shape subtotal: G_flat=3437 -> G_nest=2575, dG=862 (25.1%).
+
+The uncapped wins are real but unproducible: maxlive reaches 156
+(rand12x6-s42), 104 (rs144-vdm). `n_out*U + 4 + maxlive` exceeds every
+x86 register file on all but the smallest shapes (e.g. rs144-vdm at
+U=1: 8 + 104 = 112 regs). A production twin would need a temp-stack
+emitter in `gen_body_xorbit`, a liveness-based pressure model replacing
+the exact `n_out*U + 4`, and re-proof of model-emitter exactness.
+
+Pressure-bounded nested (extraction allowed only if maxlive stays <=
+cap; the tentative check is exact -- append, measure, roll back):
+
+| cap | all-corpus dG | real-shape dG | max ml |
+|---|---|---|---|
+| 1 | 0 (0.0%) | 0 (0.0%) | 1 |
+| 2 | 73 (1.0%) | 30 (0.9%) | 2 |
+| 3 | 190 (2.6%) | 89 (2.6%) | 3 |
+| 4 | 278 (3.8%) | 131 (3.8%) | 4 |
+
+(cap=1 admits no nested temp by construction: forming `t_new = t_x^q`
+needs `t_x` live, i.e. maxlive >= 2.)
+
+At cap=2 -- the affordable envelope on 16-reg SSE/AVX2, where the flat
+twin's exact `n_out*U + 4` budget already binds -- the win is 0-7 gates
+per real-shape matrix (0.0-2.3%; rs144-vdm: 7/837 = 0.8%; raid6-8p2:
+2/156 = 1.3%). Per-matrix best at cap=2 are the synthetic deep-share
+shapes (chain23 4.8%, deepshare 2.6%). Even at cap=4 the win is 3.8%
+for 4 extra live regs, which drops the feasible U on SSE/AVX2
+(`n_out*U + 4 + 4 <= 16`) and can erase the win in the enumerated twin
+set -- the same pressure-vs-win tradeoff that killed the byte-level
+nested twin in section 6.
+
+Verdict: **negative -- flat kept.** Uncapped nested wins 15-61% of
+gates but needs up to 156 live temps (unproducible pressure); the
+pressure-affordable win is ~1% on real shapes, not a win by the twin's
+own strict-static-win gate standard, and the larger wins concentrate in
+synthetic deep-share shapes -- mirroring the Wave-1 byte-level
+conclusion. No `src/` change ships; the flat-only temp-operand bound
+that `gen_body_xorbit` relies on is pinned by a test in
+`tests/test_xorbit.c` (`check_flat_bound`).
+
+Re-test trigger: a real GF-multiply workload class where maxlive<=2
+nested shows >10% gate wins on real shapes, or a register-file /
+emitter change that makes a temp-stack affordable -- re-run
+`tools/xorbit_nested_eval.c` (build: see its header comment).
