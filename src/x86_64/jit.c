@@ -41,7 +41,7 @@ typedef struct {
     } *cent;
     int ncent, ccent;
     /* register assignment */
-    int t, tlo, thi, r1, r2, tbl, t2, mask;
+    int t, tlo, thi, r1, r2, tbl, tbl2, t2, mask;
     int *hreg; /* HORNER: 2 regs per row (nibble) or 1 (gfni), -1 if unused */
     /* MULACC/DELTA GFNI table-load dedup (pure JIT-time state): the affine
      * table in tbl depends only on the coefficient c = mat[j][i], so it is
@@ -54,6 +54,14 @@ typedef struct {
      * the call also skips its uop/mem accounting. */
     size_t mulacc_pool_off;
     int mulacc_pool_valid;
+    /* PDELTA nibble NIBHI pinning (item 7, AVX512 only): tbl2 holds the
+     * NIBHI table for the last-used coefficient c. tbl is reloaded with
+     * NIBLO on every use (scratch); tbl2 is pinned, so the NIBHI pool
+     * load is skipped when c matches the last use. Saves 1 load uop
+     * per (i,u,j) when c is stable. tbl2 is written only here, never
+     * clobbered elsewhere on the PDELTA AVX512 nibble path. */
+    uint8_t mulacc_nib_c;
+    int mulacc_nib_valid;
     /* static cost model: per one group iteration */
     double uops, mem;
     int need_logexp; /* scalar tail needs log/exp tables */
@@ -75,6 +83,10 @@ typedef struct {
 } cg_t;
 
 static int is_sse(const cg_t *cg) { return cg->cand.isa == ISA_SSE; }
+static int is_avx512(const cg_t *cg)
+{
+    return cg->cand.isa == ISA_AVX512;
+}
 
 /* ---------------- pointer hoisting ---------------- */
 
@@ -553,10 +565,25 @@ static void mulacc_column(cg_t *cg, int col, int ncols, int u,
                 c_vpxor(cg, acc, acc, cg->r2);
             }
         } else {
+            /* Nibble VPSHUFB path. On PDELTA/AVX512 the NIBHI table is
+             * pinned in tbl2 (item 7): NIBLO is reloaded into tbl (scratch)
+             * on every use, but the NIBHI pool load is skipped when the
+             * coefficient matches the last use (tracked in
+             * cg->mulacc_nib_c). Saves 1 load uop per (i,u,j) when c is
+             * stable. On other paths the tables ping-pong through tbl. */
             c_ldpool(cg, cg->tbl, pool_get(cg, CK_NIBLO, c));
             c_shuf(cg, cg->r1, cg->tbl, cg->tlo);
-            c_ldpool(cg, cg->tbl, pool_get(cg, CK_NIBHI, c));
-            c_shuf(cg, cg->r2, cg->tbl, cg->thi);
+            if (pl->kind == P_DELTA && is_avx512(cg)) {
+                if (!cg->mulacc_nib_valid || cg->mulacc_nib_c != c) {
+                    c_ldpool(cg, cg->tbl2, pool_get(cg, CK_NIBHI, c));
+                    cg->mulacc_nib_c = c;
+                    cg->mulacc_nib_valid = 1;
+                }
+                c_shuf(cg, cg->r2, cg->tbl2, cg->thi);
+            } else {
+                c_ldpool(cg, cg->tbl, pool_get(cg, CK_NIBHI, c));
+                c_shuf(cg, cg->r2, cg->tbl, cg->thi);
+            }
             if (first) {
                 /* acc was 0: acc = r1^r2 in one uop. (On the ternlog
                  * candidate this replaces the 1-uop vpternlog, which
@@ -1761,7 +1788,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         if (cand->mul == MUL_NIBBLE) {
             if (cg.need_mask) {
                 cg.tlo = cg.t + 1; cg.thi = cg.t + 2; cg.r1 = cg.t + 3;
-                cg.r2 = cg.t + 4; cg.tbl = cg.t + 5; cg.mask = cg.t + 6;
+                cg.r2 = cg.t + 4; cg.tbl = cg.t + 5;
+                if (pl->kind == P_DELTA && is_avx512(&cg)) {
+                    /* NIBHI pinning (item 7): tbl2 holds NIBHI for the
+                     * last-used coefficient; mask shifts to t+7. */
+                    cg.tbl2 = cg.t + 6; cg.mask = cg.t + 7;
+                } else {
+                    cg.mask = cg.t + 6;
+                }
                 vmax = cg.mask;
             } else {
                 /* All coefficients in {0,1} (only P_DELTA reaches here:

@@ -106,7 +106,8 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat)
     int nontriv = plan_any_nontrivial(pl);
     if (x86) {
         /* src/x86_64/jit.c: t holds the input; nibble adds tlo,thi,r1,r2,tbl,mask
-         * (t..t+6); GFNI adds t2,tbl (t..t+2). HORNER adds 2 (nibble) or 1
+         * (t..t+6); PDELTA on AVX512 adds tbl2 for NIBHI pinning (t..t+7,
+         * item 7). GFNI adds t2,tbl (t..t+2). HORNER adds 2 (nibble) or 1
          * (GFNI) table regs per nontrivial row, unless remat (tables
          * reloaded from pool into tbl; no hreg). */
         if (pl->kind == P_HORNER) {
@@ -123,8 +124,13 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat)
              * GFNI never takes. */
             return n_out * U + (nontriv ? 3 : 1);
         }
-        if (nontriv)
+        if (nontriv) {
+            /* PDELTA on AVX512 pins the NIBHI table in tbl2 (item 7):
+             * one more vector register than the ping-pong form. */
+            if (pl->kind == P_DELTA && isa == ISA_AVX512)
+                return n_out * U + 8;
             return n_out * U + 7;
+        }
         /* All-trivial: the nibble split never runs, so tlo/thi/r2/tbl/
          * mask are dead. r1 survives on SSE as the delta temp (P_DELTA's
          * two-operand old^new needs it); on AVX the delta folds into a
