@@ -582,8 +582,8 @@ int survivor_significance_gate(const version_t *pool, const int *pool_sub,
 int survivor_select(const topo_int_t *ti, const int *F, int nf,
                     const char *opname, const rj_cpu_info *cpu,
                     const rj_options *o, version_t **vs_out, int *nv_out,
-                    plan_t **plans_out, int *nplans_out, char *err,
-                    size_t errlen)
+                    plan_t **plans_out, int *nplans_out, int *win_rows_out,
+                    char *err, size_t errlen)
 {
     *vs_out = NULL;
     *nv_out = 0;
@@ -639,6 +639,23 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         snprintf(err, errlen, "out of memory");
         return -1;
     }
+    /* #29: optionally capture each kept plan's subset row set so the
+     * caller can name the winning plan's rows in its stable ID.
+     * plans[] is filled in kept-subset order, so kept_rows[k*nf ..] is
+     * plans[k]'s row set. nf >= 1 was validated by survivor_enumerate. */
+    int *kept_rows = NULL;
+    if (win_rows_out && nkeep > 0) {
+        kept_rows = malloc((size_t)nkeep * (size_t)nf * sizeof(int));
+        if (!kept_rows) {
+            survivor_free_subsets(subs, nsub);
+            free(keep);
+            for (int i = 0; i < nplans; i++)
+                plan_free(&plans[i]);
+            free(plans);
+            snprintf(err, errlen, "out of memory");
+            return -1;
+        }
+    }
     int ok = 1;
     int si = 0; /* hoisted for the !ok cleanup below (P2.1) */
     for (si = 0; si < nsub && ok; si++) {
@@ -653,6 +670,9 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         memset(&subs[si].plan, 0, sizeof(plans[nplans]));
         plan_t *pl = &plans[nplans];
         nplans++;
+        if (kept_rows)
+            memcpy(&kept_rows[(size_t)(nplans - 1) * (size_t)nf],
+                   subs[si].rows, (size_t)nf * sizeof(int));
 
         cand_t cands[512];
         int ncand = plan_candidates(pl, cpu, cands, 512,
@@ -748,6 +768,7 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         for (int i = 0; i < nplans; i++)
             plan_free(&plans[i]);
         free(plans);
+        free(kept_rows);
         snprintf(err, errlen, "out of memory");
         return -1;
     }
@@ -756,6 +777,7 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         for (int i = 0; i < nplans; i++)
             plan_free(&plans[i]);
         free(plans);
+        free(kept_rows);
         snprintf(err, errlen, "no code version could be built");
         return -1;
     }
@@ -800,6 +822,37 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
          * apply. */
         winner = heuristic_select(pool, npool, &plans[0]);
     }
+    /* #29: report the winning plan's equation row set. The winner's
+     * version borrows its plan from plans[]; kept_rows[k] is plans[k]'s
+     * subset row set. */
+    if (win_rows_out && winner >= 0) {
+        int k = -1;
+        for (int i = 0; i < nplans; i++)
+            if (pool[winner].plan == &plans[i]) {
+                k = i;
+                break;
+            }
+        if (k < 0) {
+            /* Unreachable by construction (every pooled version borrows
+             * its plan from plans[]); fail loudly rather than handing
+             * out a garbage row set. */
+            free(pool_sub);
+            for (int i = 0; i < npool; i++)
+                jit_free_version(&pool[i]);
+            free(pool);
+            for (int i = 0; i < nplans; i++)
+                plan_free(&plans[i]);
+            free(plans);
+            free(kept_rows);
+            snprintf(err, errlen,
+                     "survivor: internal error (winner plan not in "
+                     "plans[])");
+            return -1;
+        }
+        memcpy(win_rows_out, &kept_rows[(size_t)k * (size_t)nf],
+               (size_t)nf * sizeof(int));
+    }
+    free(kept_rows);
     free(pool_sub);
     if (winner < 0) {
         for (int i = 0; i < npool; i++)

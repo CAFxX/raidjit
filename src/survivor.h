@@ -157,9 +157,13 @@ int survivor_significance_gate(const version_t *pool, const int *pool_sub,
  * pool (only under the RJ_SUBSET_PRUNE_INVERT test hook). The
  * test-only RJ_SURVIVOR_NO_GATE hook (any value) also skips the gate,
  * returning bench_select's raw winner; the L2 tripwire uses it to
- * compare raw measured winners. */
+ * compare raw measured winners.
+ *
+ * win_rows_out (may be NULL): when non-NULL, receives the winning
+ * plan's equation row set (nf sorted ints) -- the subset dimension of
+ * the winner, needed for the winner's stable plan ID (#29). */
 int survivor_select(const topo_int_t *ti, const int *F, int nf,
                     const char *opname, const rj_cpu_info *cpu,
                     const rj_options *o, version_t **vs_out, int *nv_out,
-                    plan_t **plans_out, int *nplans_out, char *err,
-                    size_t errlen);
+                    plan_t **plans_out, int *nplans_out, int *win_rows_out,
+                    char *err, size_t errlen);

@@ -9,6 +9,8 @@
 #include "dispatch.h"
 #include "prefetch_calib.h"
 #include "survivor.h"
+#include "api_batched.h"
+#include "planid.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +26,13 @@ struct rj_jit {
     int ntwins;
     int has_dispatch;
     rj_dispatcher *disp;
+    struct rj_batch *batch; /* Tier-1 batched driver state (item #9);
+                             * entry point via rj_get_fn_batched */
+    char plan_id[RJ_PLAN_ID_MAX]; /* stable plan ID (#29): the winning
+                                  * candidate spec + the effective
+                                  * stage-2 tail configuration, derived
+                                  * at compile time while the
+                                  * topology/op/plan are alive. */
 };
 
 /* ---------------- options ---------------- */
@@ -154,6 +163,7 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
 
     int *F = NULL;
     int use_survivor = 0;
+    int win_rows[RJ_MAX_DISKS]; /* #29: winning subset's equation rows */
     if (op->is_recover && !op->is_parity_update) {
         int nf = plan_recover_failed_list(op, ti.ndata, ti.npar, &F, err,
                                          errlen);
@@ -174,8 +184,8 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
         use_survivor = !no_survivor && !survivor_over_cap(&ti, F, nf);
         if (use_survivor) {
             winner = survivor_select(&ti, F, nf, opname, &cpu, &o, &vs,
-                                     &nv, &surv_plans, &n_surv_plans, err,
-                                     errlen);
+                                     &nv, &surv_plans, &n_surv_plans,
+                                     win_rows, err, errlen);
             if (winner == -2)
                 use_survivor = 0; /* cap raced: legacy fallback */
             else if (winner < 0) {
@@ -307,6 +317,11 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
     version_t twins[2];
     memset(twins, 0, sizeof(twins));
     int ntwins = 0;
+    /* #29: the effective stage-2 tail configuration -- the installed
+     * tail twins that actually serve traffic. A notail twin that lost
+     * the shootout never serves (dead weight, freed below) and is not
+     * part of the effective spec. */
+    int tail_eff_notail = 0, tail_eff_predtail = 0, tail_eff_maskedtail = 0;
     /* The twins are built from the WINNER's plan: on the survivor
      * path that is the winning subset's plan (wpl), so the chosen set
      * bakes into every dispatched variant. Dispatcher ABI unchanged. */
@@ -556,7 +571,79 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
                 disp = rj_dispatcher_create(vars, nvars);
                 /* Slot exhaustion degrades to general-only: the twins are
                  * freed below via ntwins. */
+                if (disp) {
+                    /* #29: effective tail config. w2 != 0: the notail
+                     * twin won the large-size shootout (pair[1..] hold
+                     * only the non-duel twins, i.e. at most the notail
+                     * twin) and serves multiples. duel_idx >= 0: the
+                     * predtail/maskedtail twin won its duel and serves
+                     * tails. */
+                    if (w2 != 0)
+                        tail_eff_notail = 1;
+                    if (duel_idx >= 0) {
+                        if (twins[duel_idx].predtail)
+                            tail_eff_predtail = 1;
+                        else if (twins[duel_idx].maskedtail)
+                            tail_eff_maskedtail = 1;
+                    }
+                }
             }
+        }
+    }
+
+    /* #29: derive the stable plan ID while the topology, op, and plan
+     * are still alive. Names the winning candidate spec plus the
+     * effective stage-2 tail configuration. */
+    char idbuf[RJ_PLAN_ID_MAX];
+    {
+        planid_opdesc_t opd;
+        const int *rowsp = NULL;
+        int nrowsp = 0;
+        int allrows[RJ_MAX_DISKS];
+        int iderr = 0;
+        if (op->is_recover && !op->is_parity_update) {
+            if (use_survivor) {
+                rowsp = win_rows; /* nf rows from survivor_select */
+                /* nf: recompute below via planid_opdesc_build's
+                 * canonicalization of op->failed; win_rows holds that
+                 * many entries. Count them from the op. */
+                int *F2 = NULL;
+                int nf2 = plan_recover_failed_list(op, ti.ndata, ti.npar,
+                                                  &F2, err, errlen);
+                if (nf2 < 0)
+                    iderr = 1;
+                else
+                    nrowsp = nf2;
+                free(F2);
+            } else {
+                for (int r = 0; r < ti.npar; r++)
+                    allrows[r] = r;
+                rowsp = allrows;
+                nrowsp = ti.npar;
+            }
+        }
+        if (!iderr &&
+            planid_opdesc_build(&opd, &ti, op, rowsp, nrowsp, err,
+                                errlen) != 0)
+            iderr = 1;
+        planid_tail_t tail = {tail_eff_notail, tail_eff_predtail,
+                              tail_eff_maskedtail};
+        if (!iderr &&
+            planid_format(idbuf, sizeof(idbuf), &ti,
+                          topo_internal_name(topo), &opd, wpl,
+                          &vs[winner].cand, &tail) != 0) {
+            if (err && errlen)
+                snprintf(err, errlen, "internal error: plan ID did not fit");
+            iderr = 1;
+        }
+        if (iderr) {
+            /* The fail label below does not own the stage-2 twins or
+             * the dispatcher yet (they move into j after its
+             * allocation): release them here. */
+            for (int t = 0; t < ntwins; t++)
+                jit_free_version(&twins[t]);
+            rj_dispatcher_destroy(disp);
+            goto fail;
         }
     }
 
@@ -573,6 +660,7 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
     j->v.plan = NULL; /* drop the compile-time borrow: the plan is freed
                        * below, and nothing may dereference it after
                        * compilation (see jit.h) */
+    memcpy(j->plan_id, idbuf, sizeof(j->plan_id)); /* #29: derived above */
     if (disp) {
         for (int t = 0; t < ntwins; t++) {
             j->twins[t] = twins[t];
@@ -677,4 +765,752 @@ void rj_get_info(const rj_jit *j, rj_info *info)
     info->mem_per_byte = j->v.mem_per_byte;
     info->code_size = j->v.code_size;
     info->const_size = j->v.const_size;
+}
+
+/* ---------------- stable plan IDs (#29) ---------------- */
+
+const char *rj_plan_id(const rj_jit *j)
+{
+    if (!j)
+        return NULL;
+    return j->plan_id;
+}
+
+/* Field-by-field candidate equality for the pinned-compile membership
+ * check (memcmp is unsafe: cand_t may carry padding bytes). */
+static int cand_spec_equal(const cand_t *a, const cand_t *b)
+{
+    return a->isa == b->isa && a->mul == b->mul && a->U == b->U &&
+           a->nt == b->nt && a->prefetch_dist == b->prefetch_dist &&
+           a->ternlog == b->ternlog && a->remat == b->remat &&
+           a->notail == b->notail && a->predtail == b->predtail &&
+           a->maskedtail == b->maskedtail && a->permi2b == b->permi2b &&
+           a->xorsched == b->xorsched && a->xorbit == b->xorbit &&
+           a->mshift == b->mshift && a->lmul == b->lmul;
+}
+
+static const char *planid_kind_name(plan_kind_t k)
+{
+    switch (k) {
+    case P_XOR: return "xor";
+    case P_HORNER: return "horner";
+    case P_MULACC: return "mulacc";
+    case P_DELTA: return "delta";
+    }
+    return "?";
+}
+
+rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
+                          const rj_options *opts, const char *plan_id,
+                          char *err, size_t errlen)
+{
+    if (!topo || !op || !plan_id) {
+        if (err && errlen)
+            snprintf(err, errlen, "null topology, op, or plan ID");
+        return NULL;
+    }
+    rj_options o;
+    if (opts)
+        o = *opts;
+    else
+        rj_options_default(&o);
+    /* loop_align feeds em_align's mask arithmetic (same gate as
+     * rj_compile). benchmark/nt_threshold/prefetch_distance are inert
+     * here: the ID already pins the nt and prefetch axes, and there is
+     * no benchmarking on the pinned path. */
+    if (o.loop_align < 0 ||
+        (o.loop_align != 0 && (o.loop_align & (o.loop_align - 1)) != 0)) {
+        if (err && errlen)
+            snprintf(err, errlen,
+                     "loop_align must be 0 or a power of two, got %d",
+                     o.loop_align);
+        return NULL;
+    }
+
+    rj_cpu_info cpu;
+    rj_cpu_detect(&cpu);
+
+    topo_int_t ti;
+    if (topo_int_build(&ti, topo, err, errlen) != 0)
+        return NULL;
+    const char *opname = topo_internal_name(topo);
+
+    planid_spec_t spec;
+    if (planid_parse(plan_id, &ti, opname, op, &spec, err, errlen) != 0) {
+        topo_int_free(&ti);
+        return NULL;
+    }
+
+    /* Rebuild the exact plan the ID names. Recover always goes through
+     * plan_build_recover_rows with the ID's equation row set: the
+     * survivor-vs-single-subset decision is a property of rj_compile's
+     * search, not of the pinned reproduction (deterministic by
+     * construction). */
+    plan_t pl;
+    memset(&pl, 0, sizeof(pl));
+    if (spec.opd.is_recover) {
+        int *F = NULL;
+        int nf = plan_recover_failed_list(op, ti.ndata, ti.npar, &F, err,
+                                          errlen);
+        if (nf < 0) {
+            topo_int_free(&ti);
+            return NULL;
+        }
+        /* planid_parse already validated the failed set against op. */
+        int rc = plan_build_recover_rows(&ti, F, nf, spec.opd.rows,
+                                        spec.opd.nrows, opname, &pl, err,
+                                        errlen);
+        free(F);
+        if (rc != 0) {
+            topo_int_free(&ti);
+            return NULL;
+        }
+    } else {
+        if (plan_build(&ti, op, opname, &pl, err, errlen) != 0) {
+            topo_int_free(&ti);
+            return NULL;
+        }
+    }
+
+    /* The rebuilt plan's kind must match the ID's kind axis: a mismatch
+     * means the planner derives a different strategy than the one the ID
+     * was issued for (planner drift the version bump missed) -- fail
+     * loudly, never build the wrong plan. */
+    if (pl.kind != spec.kind) {
+        if (err && errlen)
+            snprintf(err, errlen,
+                     "pinned plan ID: kind mismatch (ID names %s, this "
+                     "build derives %s for this topology/op)",
+                     planid_kind_name(spec.kind),
+                     planid_kind_name(pl.kind));
+        plan_free(&pl);
+        topo_int_free(&ti);
+        return NULL;
+    }
+    /* No-op plans have no tail to twin: an ID naming tail twins for one
+     * is bogus. */
+    if (pl.noop &&
+        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail)) {
+        if (err && errlen)
+            snprintf(err, errlen,
+                     "pinned plan ID: names tail twins for a no-op plan");
+        plan_free(&pl);
+        topo_int_free(&ti);
+        return NULL;
+    }
+    /* Shape validation: every backend assert becomes a clean error (a
+     * bad ID must fail loudly, never abort). */
+    if (planid_cand_valid(&pl, &spec.cand, err, errlen) != 0) {
+        plan_free(&pl);
+        topo_int_free(&ti);
+        return NULL;
+    }
+    /* Membership: the candidate (minus the stage-2 permi2b flag, which
+     * is never enumerated) must be one this build's planner enumerates
+     * for this plan on this CPU. The enumeration is deliberately a
+     * superset (allow_nt=1; the ID's exact prefetch distance): the ID
+     * is self-describing, so the check is "could this build construct
+     * this spec", not "would rj_compile with these opts enumerate it". */
+    cand_t member = spec.cand;
+    member.permi2b = 0;
+    cand_t cands[512];
+    size_t pfarg = spec.cand.prefetch_dist ? spec.cand.prefetch_dist : 0;
+    int nmem = plan_candidates(&pl, &cpu, cands, 512, 1, pfarg);
+    int found = 0;
+    for (int i = 0; i < nmem; i++)
+        if (cand_spec_equal(&cands[i], &member)) {
+            found = 1;
+            break;
+        }
+    if (!found) {
+        if (err && errlen)
+            snprintf(err, errlen,
+                     "unknown plan ID: candidate is not in this build's "
+                     "candidate space for this plan/CPU");
+        plan_free(&pl);
+        topo_int_free(&ti);
+        return NULL;
+    }
+    /* permi2b is a stage-2 twin, never enumerated: validate eligibility
+     * through the single source of truth (the B2 duel gate), then set
+     * the flag for the build. */
+    cand_t build_cand = member;
+    if (spec.cand.permi2b) {
+        version_t tmpw;
+        memset(&tmpw, 0, sizeof(tmpw));
+        tmpw.cand = member;
+        if (!api_permi2b_duel_eligible(&tmpw, &pl, &cpu)) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: names a permi2b twin this build "
+                         "cannot construct (needs AVX-512/VBMI nibble "
+                         "MULACC/DELTA with a nontrivial coefficient)");
+            plan_free(&pl);
+            topo_int_free(&ti);
+            return NULL;
+        }
+        build_cand.permi2b = 1;
+    }
+
+    /* Build the general version. A clean backend error (e.g. a prefetch
+     * distance the ISA cannot encode) is a loud failure, never a
+     * fallback. */
+    version_t v;
+    memset(&v, 0, sizeof(v));
+    {
+        char e2[256];
+        if (jit_build_version(&pl, &build_cand, &cpu, &o, &v, e2,
+                              sizeof(e2)) != 0) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: candidate build failed: %s", e2);
+            plan_free(&pl);
+            topo_int_free(&ti);
+            return NULL;
+        }
+    }
+    /* Same correctness bar as rj_compile: validate against the scalar
+     * reference before shipping. */
+    if (validate_versions(&v, 1, &pl, err, errlen) != 0) {
+        jit_free_version(&v);
+        plan_free(&pl);
+        topo_int_free(&ti);
+        return NULL;
+    }
+
+    /* Stage-2 tail twins, exactly as named by the ID. No benchmarking:
+     * the install decisions are part of the pinned spec. Any twin that
+     * cannot be built is a loud error, never a silent downgrade. */
+    version_t twins[2];
+    memset(twins, 0, sizeof(twins));
+    int ntwins = 0;
+    int twin_kind[2]; /* 0=notail, 1=predtail, 2=maskedtail */
+    int eff_notail = 0, eff_pred = 0, eff_masked = 0;
+    rj_dispatcher *disp = NULL;
+    char e3[256];
+    if (spec.tail.notail) {
+        cand_t tc = build_cand;
+        tc.notail = 1;
+        if (jit_build_version(&pl, &tc, &cpu, &o, &twins[ntwins], e3,
+                              sizeof(e3)) != 0) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: notail twin build failed: %s",
+                         e3);
+            goto pinned_fail;
+        }
+        twin_kind[ntwins] = 0;
+        ntwins++;
+        eff_notail = 1;
+    }
+    if (spec.tail.predtail) {
+        if (build_cand.isa != ISA_SVE) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: predtail twin needs an SVE "
+                         "candidate");
+            goto pinned_fail;
+        }
+        cand_t tc = build_cand;
+        tc.predtail = 1;
+        if (jit_build_version(&pl, &tc, &cpu, &o, &twins[ntwins], e3,
+                              sizeof(e3)) != 0) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: predtail twin build failed: %s",
+                         e3);
+            goto pinned_fail;
+        }
+        twin_kind[ntwins] = 1;
+        ntwins++;
+        eff_pred = 1;
+    }
+    if (spec.tail.maskedtail) {
+        /* Same eligibility as rj_compile's install gate. */
+        int mt_ok =
+            build_cand.isa == ISA_AVX512 && !build_cand.nt &&
+            cpu.avx512f && cpu.avx512bw &&
+            ((pl.kind == P_XOR && !build_cand.ternlog &&
+              !build_cand.xorsched) ||
+             (build_cand.mul == MUL_GFNI && cpu.gfni &&
+              (pl.kind == P_MULACC || pl.kind == P_DELTA ||
+               pl.kind == P_HORNER)));
+        if (!mt_ok) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: names a maskedtail twin this "
+                         "build cannot construct");
+            goto pinned_fail;
+        }
+        cand_t tc = build_cand;
+        tc.maskedtail = 1;
+        if (jit_build_version(&pl, &tc, &cpu, &o, &twins[ntwins], e3,
+                              sizeof(e3)) != 0) {
+            if (err && errlen)
+                snprintf(err, errlen,
+                         "pinned plan ID: maskedtail twin build failed: "
+                         "%s",
+                         e3);
+            goto pinned_fail;
+        }
+        twin_kind[ntwins] = 2;
+        ntwins++;
+        eff_masked = 1;
+    }
+    /* Validate the twins (same bar as the general version;
+     * validate_versions tests notail twins at multiples only). */
+    {
+        version_t aval[3];
+        aval[0] = v; /* shallow; freed via v/twins[] below, never here */
+        for (int t = 0; t < ntwins; t++)
+            aval[1 + t] = twins[t];
+        if (validate_versions(aval, 1 + ntwins, &pl, err, errlen) != 0)
+            goto pinned_fail;
+    }
+    /* Dispatcher over exactly the named set. Deterministic
+     * fastest-first order without measurements: the ID names only
+     * twins that serve traffic in the original unit (a named notail
+     * twin won its shootout; a named pred/masked twin won its duel),
+     * so ordinal priorities reproduce the effective routing -- notail
+     * (multiples) before general; the tail twin owns tails by policy.
+     * rj_dispatcher_create re-sorts by these ordinals. */
+    if (ntwins > 0) {
+        rj_variant vars[3];
+        memset(vars, 0, sizeof(vars));
+        int nvars = 0;
+        for (int t = 0; t < ntwins; t++) {
+            vars[nvars].fn = twins[t].fn;
+            vars[nvars].tail =
+                twin_kind[t] == 0 ? TAIL_NONE : TAIL_MASKED;
+            vars[nvars].group = twins[t].group_bytes;
+            vars[nvars].gbps = twin_kind[t] == 0 ? 3.0 : 2.0;
+            snprintf(vars[nvars].desc, sizeof(vars[nvars].desc), "%s",
+                     twins[t].desc);
+            rj_variant_derive(&vars[nvars]);
+            nvars++;
+        }
+        vars[nvars].fn = v.fn;
+        vars[nvars].tail = TAIL_SCALAR;
+        vars[nvars].group = v.group_bytes;
+        vars[nvars].gbps = 1.0;
+        snprintf(vars[nvars].desc, sizeof(vars[nvars].desc), "%s", v.desc);
+        rj_variant_derive(&vars[nvars]);
+        nvars++;
+        disp = rj_dispatcher_create(vars, nvars);
+        /* Slot exhaustion degrades to general-only, like rj_compile;
+         * the effective ID below then reports tail=scalar honestly. */
+    }
+
+    rj_jit *j = calloc(1, sizeof(*j));
+    if (!j) {
+        if (err && errlen)
+            snprintf(err, errlen, "out of memory");
+        goto pinned_fail;
+    }
+    j->v = v;
+    j->v.plan = NULL; /* same borrow discipline as rj_compile */
+    if (disp) {
+        for (int t = 0; t < ntwins; t++) {
+            j->twins[t] = twins[t];
+            j->twins[t].plan = NULL;
+        }
+        j->ntwins = ntwins;
+        j->has_dispatch = 1;
+        j->disp = disp;
+        ntwins = 0; /* now owned by j->twins */
+        disp = NULL; /* now owned by j->disp */
+    }
+    for (int t = 0; t < ntwins; t++)
+        jit_free_version(&twins[t]);
+    rj_dispatcher_destroy(disp);
+    /* Batched Tier-1 driver (item #9), like rj_compile. */
+    j->batch = rj_batch_create(rj_get_fn(j), (size_t)pl.n_in,
+                               (size_t)pl.n_out);
+    if (!j->batch) {
+        if (err && errlen)
+            snprintf(err, errlen, "out of memory");
+        rj_free(j);
+        plan_free(&pl);
+        topo_int_free(&ti);
+        return NULL;
+    }
+    /* The effective ID: round-trips the input ID when nothing degraded
+     * (tail=scalar honestly when dispatcher creation failed). */
+    {
+        planid_tail_t tail = {j->disp && eff_notail, j->disp && eff_pred,
+                              j->disp && eff_masked};
+        if (planid_format(j->plan_id, sizeof(j->plan_id), &ti, opname,
+                          &spec.opd, &pl, &build_cand, &tail) != 0) {
+            /* Unreachable: the same data formatted the input ID. */
+            rj_free(j);
+            plan_free(&pl);
+            topo_int_free(&ti);
+            if (err && errlen)
+                snprintf(err, errlen, "internal error: plan ID did not fit");
+            return NULL;
+        }
+    }
+    plan_free(&pl);
+    topo_int_free(&ti);
+    return j;
+
+pinned_fail:
+    for (int t = 0; t < ntwins; t++)
+        jit_free_version(&twins[t]);
+    jit_free_version(&v);
+    rj_dispatcher_destroy(disp);
+    plan_free(&pl);
+    topo_int_free(&ti);
+    return NULL;
+}
+
+/* Human-readable desc for a candidate that failed to build (no
+ * version_t exists to supply one). Mirrors jit_build_version's desc
+ * shape; informational only. tw is sized to its provable maximum so
+ * the final snprintf stays within desc's 192 bytes under
+ * -Wformat-truncation at every opt level. */
+static void synth_desc(char *out, size_t outlen, const plan_t *pl,
+                       const cand_t *c)
+{
+    const char *strat = pl->kind == P_XOR      ? "xor"
+                        : pl->kind == P_HORNER ? "horner"
+                        : pl->kind == P_DELTA  ? "delta"
+                                               : "mulacc";
+    const char *mul = c->mul == MUL_GFNI ? "+gfni"
+                      : c->mul == MUL_ZVBC ? "+zvbc"
+                                           : "+nibble";
+    /* Max tokens: +ternlog(8)+xsched(8)+xorbit(7)+nt(3)+pf<20 digits>(23)
+     * +remat(6)+permi2b(8)+mshift(7)+lmul<1 digit>(6) = 76 < 80. */
+    char tw[80];
+    size_t n = 0;
+    tw[0] = '\0';
+#define APPEND_TOK(cond, tok)                                                  \
+    do {                                                                       \
+        if (cond)                                                              \
+            n += (size_t)snprintf(tw + n, sizeof(tw) - n, "%s", tok);           \
+    } while (0)
+    APPEND_TOK(c->ternlog, "+ternlog");
+    APPEND_TOK(c->xorsched, "+xsched");
+    APPEND_TOK(c->xorbit, "+xorbit");
+    APPEND_TOK(c->nt, "+nt");
+    if (c->prefetch_dist)
+        n += (size_t)snprintf(tw + n, sizeof(tw) - n, "+pf%zu",
+                              c->prefetch_dist);
+    APPEND_TOK(c->remat, "+remat");
+    APPEND_TOK(c->permi2b, "+permi2b");
+    APPEND_TOK(c->mshift, "+mshift");
+    if (c->lmul)
+        n += (size_t)snprintf(tw + n, sizeof(tw) - n, "+lmul%d", c->lmul);
+#undef APPEND_TOK
+    tw[sizeof(tw) - 1] = '\0';
+    (void)n;
+    if (pl->kind == P_XOR)
+        snprintf(out, outlen, "%.65s %s %s U=%d%s (unbuilt)", pl->name,
+                 strat, isa_name(c->isa), c->U, tw);
+    else
+        snprintf(out, outlen, "%.65s %s %s%s U=%d%s (unbuilt)", pl->name,
+                 strat, isa_name(c->isa), mul, c->U, tw);
+}
+
+/* Emit rj_list_variants entries for one plan. Builds every candidate
+ * once (no benchmarking) for the exact static triple -- the same work
+ * rj_compile does before pruning -- then applies the identical
+ * prune_versions gate rj_compile uses (only when o->benchmark; the
+ * heuristic path does not prune). When count_only, just adds the
+ * candidate count to *total. Returns 0 on success, -1 on error
+ * (err set). */
+static int list_variants_emit(const plan_t *pl, const planid_opdesc_t *opd,
+                              const topo_int_t *ti, const char *toponame,
+                              const rj_cpu_info *cpu, const rj_options *o,
+                              int allow_nt, size_t pfarg, int count_only,
+                              rj_plan_variant *out, int nout, int *written,
+                              int *total, char *err, size_t errlen)
+{
+    cand_t cands[512];
+    int ncand = plan_candidates(pl, cpu, cands, 512, allow_nt, pfarg);
+    if (count_only) {
+        *total += ncand;
+        return 0;
+    }
+    if (ncand <= 0)
+        return 0;
+
+    version_t *vs = calloc((size_t)ncand, sizeof(*vs));
+    char(*berr)[256] = calloc((size_t)ncand, sizeof(*berr));
+    char(*descs)[192] = calloc((size_t)ncand, sizeof(*descs));
+    double *uops = calloc((size_t)ncand, sizeof(*uops));
+    double *mem = calloc((size_t)ncand, sizeof(*mem));
+    rj_fn *fns = calloc((size_t)ncand, sizeof(*fns));
+    int *vidx = calloc((size_t)ncand, sizeof(*vidx));
+    int *ispruned = calloc((size_t)ncand, sizeof(*ispruned));
+    if (!vs || !berr || !descs || !uops || !mem || !fns || !vidx ||
+        !ispruned) {
+        free(vs);
+        free(berr);
+        free(descs);
+        free(uops);
+        free(mem);
+        free(fns);
+        free(vidx);
+        free(ispruned);
+        if (err && errlen)
+            snprintf(err, errlen, "out of memory");
+        return -1;
+    }
+    for (int i = 0; i < ncand; i++)
+        vidx[i] = -1;
+
+    int nv = 0;
+    for (int i = 0; i < ncand; i++) {
+        char e2[256];
+        if (jit_build_version(pl, &cands[i], cpu, o, &vs[nv], e2,
+                              sizeof(e2)) == 0) {
+            vidx[i] = nv;
+            memcpy(descs[i], vs[nv].desc, sizeof(descs[i]));
+            uops[i] = vs[nv].uops_per_byte;
+            mem[i] = vs[nv].mem_per_byte;
+            fns[i] = vs[nv].fn;
+            nv++;
+        } else {
+            snprintf(berr[i], sizeof(berr[i]), "%s", e2);
+        }
+    }
+
+    /* The library's static assessment: exactly rj_compile's prune gate.
+     * prune_versions finalizes pruned versions in place; survivors are
+     * identified by their (unique) fn pointers against the pre-prune
+     * snapshot. */
+    int nret = nv;
+    if (o->benchmark && nv > 0)
+        nret = prune_versions(vs, nv, 0);
+    if (o->benchmark) {
+        for (int i = 0; i < ncand; i++) {
+            if (vidx[i] < 0)
+                continue; /* build failed: separate reason below */
+            int surv = 0;
+            for (int k = 0; k < nret; k++)
+                if (vs[k].fn == fns[i]) {
+                    surv = 1;
+                    break;
+                }
+            ispruned[i] = !surv;
+        }
+    }
+    for (int k = 0; k < nret; k++)
+        jit_free_version(&vs[k]);
+    free(vs);
+
+    planid_tail_t no_tail = {0, 0, 0};
+    int rc = 0;
+    for (int i = 0; i < ncand && rc == 0; i++) {
+        rj_plan_variant e;
+        memset(&e, 0, sizeof(e));
+        /* Stage-1 candidate: tail=scalar always (stage-2 twins are
+         * built from the winner only, never enumerated). */
+        if (planid_format(e.plan_id, sizeof(e.plan_id), ti, toponame, opd,
+                          pl, &cands[i], &no_tail) != 0) {
+            if (err && errlen)
+                snprintf(err, errlen, "internal error: plan ID did not fit");
+            rc = -1;
+            break;
+        }
+        if (vidx[i] < 0) {
+            synth_desc(e.desc, sizeof(e.desc), pl, &cands[i]);
+            e.survivor = 0;
+            snprintf(e.reason, sizeof(e.reason), "build failed: %.140s",
+                     berr[i]);
+        } else {
+            memcpy(e.desc, descs[i], sizeof(e.desc));
+            e.uops_per_byte = uops[i];
+            e.mem_per_byte = mem[i];
+            if (ispruned[i]) {
+                e.survivor = 0;
+                /* The dominating twin is the entry with +ternlog added
+                 * to this entry's twins axis (prune_versions only ever
+                 * prunes the plain member of a +ternlog twin pair). */
+                snprintf(e.reason, sizeof(e.reason),
+                         "pruned: +ternlog twin pareto-dominates on the "
+                         "static (uops, mem, code) triple (see the entry "
+                         "with +ternlog added)");
+            } else {
+                e.survivor = 1;
+            }
+        }
+        if (*written < nout)
+            out[(*written)++] = e;
+        (*total)++;
+    }
+
+    free(berr);
+    free(descs);
+    free(uops);
+    free(mem);
+    free(fns);
+    free(vidx);
+    free(ispruned);
+    return rc;
+}
+
+int rj_list_variants(const rj_topology *topo, rj_op op,
+                     const rj_options *opts, rj_plan_variant *out, int nout)
+{
+    if (!topo)
+        return -1;
+    rj_options o;
+    if (opts)
+        o = *opts;
+    else
+        rj_options_default(&o);
+    if (o.loop_align < 0 ||
+        (o.loop_align != 0 && (o.loop_align & (o.loop_align - 1)) != 0))
+        return -1;
+    if (op.oom)
+        return -1;
+
+    rj_cpu_info cpu;
+    rj_cpu_detect(&cpu);
+    char ebuf[256];
+    topo_int_t ti;
+    if (topo_int_build(&ti, topo, ebuf, sizeof(ebuf)) != 0)
+        return -1;
+    const char *opname = topo_internal_name(topo);
+    /* NT/prefetch twin enumeration follows rj_compile exactly. */
+    int allow_nt = o.nt_threshold > 0 && o.benchmark;
+    size_t pfarg = prefetch_calib_dist_arg(&o);
+    int count_only = (out == NULL || nout <= 0);
+
+    int rc = 0, total = 0, written = 0;
+
+    if (op.is_recover && !op.is_parity_update) {
+        int *F = NULL;
+        int nf = plan_recover_failed_list(&op, ti.ndata, ti.npar, &F, ebuf,
+                                          sizeof(ebuf));
+        if (nf < 0)
+            goto lv_done;
+        /* Same survivor-vs-single decision as rj_compile. */
+        const char *nss = getenv("RJ_NO_SURVIVOR_SELECT");
+        int no_survivor = nss && nss[0] != '\0' && strcmp(nss, "0") != 0;
+        int use_survivor = !no_survivor && !survivor_over_cap(&ti, F, nf);
+        if (use_survivor) {
+            /* Full pre-prune space: every enumerated subset's
+             * candidates. The static assessment has two layers: the
+             * subset shortlist, then prune_versions per kept subset
+             * (mirroring survivor_select). */
+            survivor_subset_t *subs = NULL;
+            int nsub = 0;
+            int *keep = NULL;
+            if (survivor_enumerate(&ti, F, nf, opname, &subs, &nsub, ebuf,
+                                   sizeof(ebuf)) != 0) {
+                free(F);
+                goto lv_done;
+            }
+            if (nsub > 0) {
+                keep = malloc((size_t)nsub * sizeof(int));
+                if (!keep) {
+                    survivor_free_subsets(subs, nsub);
+                    free(F);
+                    goto lv_done;
+                }
+                survivor_l2_signal(subs, nsub, &cpu, &o);
+                survivor_shortlist(subs, nsub, keep);
+            }
+            for (int si = 0; si < nsub; si++) {
+                planid_opdesc_t opd;
+                if (planid_opdesc_build(&opd, &ti, &op, subs[si].rows,
+                                       subs[si].nrows, ebuf,
+                                       sizeof(ebuf)) != 0) {
+                    rc = -1;
+                    break;
+                }
+                if (keep && !keep[si]) {
+                    /* Subset pruned by the static shortlist: tag every
+                     * candidate without building (nothing was built for
+                     * it in rj_compile either). */
+                    cand_t cands[512];
+                    int ncand = plan_candidates(&subs[si].plan, &cpu,
+                                                cands, 512, allow_nt,
+                                                pfarg);
+                    if (count_only) {
+                        total += ncand;
+                        continue;
+                    }
+                    planid_tail_t no_tail = {0, 0, 0};
+                    for (int i = 0; i < ncand && rc == 0; i++) {
+                        rj_plan_variant e;
+                        memset(&e, 0, sizeof(e));
+                        if (planid_format(e.plan_id, sizeof(e.plan_id),
+                                          &ti, opname, &opd,
+                                          &subs[si].plan, &cands[i],
+                                          &no_tail) != 0) {
+                            rc = -1;
+                            break;
+                        }
+                        synth_desc(e.desc, sizeof(e.desc), &subs[si].plan,
+                                   &cands[i]);
+                        e.survivor = 0;
+                        snprintf(e.reason, sizeof(e.reason),
+                                 "pruned: parity-row subset shortlisted "
+                                 "out by the static L2 signal");
+                        if (written < nout)
+                            out[written++] = e;
+                        total++;
+                    }
+                    if (rc != 0)
+                        break;
+                } else {
+                    if (list_variants_emit(&subs[si].plan, &opd, &ti,
+                                           opname, &cpu, &o, allow_nt,
+                                           pfarg, count_only, out, nout,
+                                           &written, &total, ebuf,
+                                           sizeof(ebuf)) != 0) {
+                        rc = -1;
+                        break;
+                    }
+                }
+            }
+            free(keep);
+            survivor_free_subsets(subs, nsub);
+        } else {
+            plan_t pl;
+            memset(&pl, 0, sizeof(pl));
+            if (plan_build(&ti, &op, opname, &pl, ebuf, sizeof(ebuf)) !=
+                0) {
+                free(F);
+                goto lv_done;
+            }
+            int rows[RJ_MAX_DISKS];
+            for (int r = 0; r < ti.npar; r++)
+                rows[r] = r;
+            planid_opdesc_t opd;
+            if (planid_opdesc_build(&opd, &ti, &op, rows, ti.npar, ebuf,
+                                    sizeof(ebuf)) != 0)
+                rc = -1;
+            else if (list_variants_emit(&pl, &opd, &ti, opname, &cpu, &o,
+                                        allow_nt, pfarg, count_only, out,
+                                        nout, &written, &total, ebuf,
+                                        sizeof(ebuf)) != 0)
+                rc = -1;
+            plan_free(&pl);
+        }
+        free(F);
+    } else {
+        plan_t pl;
+        memset(&pl, 0, sizeof(pl));
+        if (plan_build(&ti, &op, opname, &pl, ebuf, sizeof(ebuf)) != 0)
+            goto lv_done;
+        planid_opdesc_t opd;
+        if (planid_opdesc_build(&opd, &ti, &op, NULL, 0, ebuf,
+                                sizeof(ebuf)) != 0)
+            rc = -1;
+        else if (list_variants_emit(&pl, &opd, &ti, opname, &cpu, &o,
+                                    allow_nt, pfarg, count_only, out,
+                                    nout, &written, &total, ebuf,
+                                    sizeof(ebuf)) != 0)
+            rc = -1;
+        plan_free(&pl);
+    }
+
+lv_done:
+    topo_int_free(&ti);
+    return rc == 0 ? total : -1;
 }

@@ -682,7 +682,8 @@ static void select_oom_cleanup(void)
         plan_t *plans = NULL;
         int nplans = 0;
         int rc = survivor_select(&ti, F, 1, "rs63/f0", &cpu, &o, &vs,
-                                 &nv, &plans, &nplans, err, sizeof(err));
+                                 &nv, &plans, &nplans, NULL, err,
+                                 sizeof(err));
         unsetenv("RJ_SURVIVOR_FAIL_VS_ALLOC");
         unsetenv("RJ_NO_SUBSET_PRUNE");
         CHECK(rc == -1, "oom select: rc=%d want -1 (%s)", rc, err);
@@ -690,7 +691,7 @@ static void select_oom_cleanup(void)
               "oom select: outputs must stay empty on OOM");
         /* No dangling state: an unhooked select right after must work. */
         rc = survivor_select(&ti, F, 1, "rs63/f0", &cpu, &o, &vs, &nv,
-                             &plans, &nplans, err, sizeof(err));
+                             &plans, &nplans, NULL, err, sizeof(err));
         CHECK(rc >= 0, "oom select: follow-up rc=%d (%s)", rc, err);
         if (rc >= 0) {
             for (int i = 0; i < nv; i++)

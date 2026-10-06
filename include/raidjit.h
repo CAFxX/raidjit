@@ -285,6 +285,105 @@ typedef struct {
 
 void rj_get_info(const rj_jit *j, rj_info *info);
 
+/* ---------------- stable plan IDs ----------------
+ * A plan ID is a structured, human-readable, version-prefixed string
+ * naming one candidate spec exactly:
+ *
+ *   rj<V>:<topo>:<op>:<isa>:<kind>:<mul>:u<U>:<twins>:<tail>
+ *
+ * e.g. "rj1:rs(6,3)#9e3779b97f4a7c15:enc:avx512:mulacc:gfni:u8:ternlog:scalar"
+ *
+ * Axes, in order: codegen version ("rj1"); topology ("rs(6,3)" plus a
+ * 16-hex-digit FNV-1a fingerprint of ndata/npar/matrix -- the name is
+ * for humans, the fingerprint is the identity); op ("enc", "pupd0+2",
+ * or "rec6.rows0+1+2" naming failed disks and the equation row set);
+ * ISA; plan kind (xor/horner/mulacc/delta); multiply method
+ * (nibble/gfni/zvbc); unroll ("u8"); twin axes ("-" or "+"-joined
+ * nt/pf<N>/ternlog/remat/xorsched/xorbit/mshift/permi2b/lmul<N>); and
+ * the effective stage-2 tail configuration ("scalar", or
+ * "notail"/"predtail"/"maskedtail" for installed tail twins).
+ *
+ * The library keeps no persistent state, ever: the ID is a pure
+ * function of the candidate spec and the caller owns storage.
+ * Typical flow: rj_compile once -> rj_plan_id -> store the string ->
+ * rj_compile_pinned on every later start. rj_list_variants enumerates
+ * the full pre-prune candidate space for callers that benchmark with
+ * their own methodology and then pin the winner's ID.
+ *
+ * Reproduce contract: the same build, given the same ID, re-JITs the
+ * same candidate spec deterministically. Not byte-identical machine
+ * code: the candidate is the contract. Codegen-affecting rj_options
+ * fields (loop_align, emit_endbr, emit_shadow_stack) still come from
+ * the pinned call's opts -- pass identical opts for identical code.
+ * benchmark/nt_threshold/prefetch_distance are inert for pinned
+ * compile (the ID already pins nt and the prefetch distance).
+ *
+ * Strict invalidation: the version prefix is bumped on any release
+ * that could affect generated code. rj_compile_pinned rejects IDs
+ * from other versions with a version-mismatch error -- stale pins are
+ * never honored, forcing re-benchmarking after upgrades. There is no
+ * best-effort cross-version mode. */
+
+/* Compile the exact plan named by plan_id, bypassing enumeration,
+ * pruning, and benchmarking. Returns NULL with err set on any
+ * mismatch: malformed/unknown ID, version mismatch, topology or op
+ * mismatch vs the passed topo/op, a plan kind the current build would
+ * not derive, or a candidate spec the current build cannot construct
+ * (wrong CPU features, unbuildable twin, ...). NEVER falls back to
+ * heuristics -- a silent fallback would defeat pinning. The returned
+ * unit validates against the scalar reference before it is returned
+ * (same bar as rj_compile); tail twins named by the ID are rebuilt
+ * deterministically (no duels -- their install decisions are part of
+ * the pinned spec). */
+rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
+                          const rj_options *opts, const char *plan_id,
+                          char *err, size_t errlen);
+
+/* The stable plan ID of a compiled unit (rj_compile or
+ * rj_compile_pinned). Returns NULL for a NULL unit. The string is
+ * owned by the unit (valid until rj_free); copy it if it must outlive
+ * the unit. */
+const char *rj_plan_id(const rj_jit *j);
+
+/* One enumerated candidate variant (rj_list_variants). */
+typedef struct {
+    char plan_id[4096];   /* stable ID (stage-1 candidate; tail=scalar) */
+    char desc[192];       /* human-readable, e.g. "raid6 enc mulacc
+                           * avx512+gfni U=8+ternlog" */
+    int survivor;         /* 1 = survives the library's static assessment,
+                           * 0 = pruned (see reason) */
+    char reason[160];     /* "" when survivor; otherwise why pruned:
+                           * "build failed: ..." (the candidate does not
+                           * build on this CPU), "statically dominated by
+                           * +ternlog twin ..." (prune_versions), or
+                           * "subset shortlisted out ..." (recover: the
+                           * A5 parity-row subset did not survive the
+                           * static L2 shortlist) */
+    double uops_per_byte; /* static model (0 when the build failed) */
+    double mem_per_byte;  /* static model (0 when the build failed) */
+} rj_plan_variant;
+/* NOTE: named rj_plan_variant (not rj_variant): rj_variant is already
+ * taken by the length-dispatcher's internal variant type. */
+
+/* Enumerate the FULL pre-prune candidate space for (topo, op): every
+ * candidate spec plan_candidates produces (over every A5 parity-row
+ * subset for recover), each tagged with its stable plan ID and the
+ * library's static assessment (survivor vs pruned + reason). NT and
+ * prefetch twins follow the same rule as rj_compile (only when
+ * benchmarking with nt_threshold > 0 / prefetch enabled); the static
+ * prune assessment applies only when opts->benchmark is set (rj_compile
+ * does not prune on the heuristic path either).
+ *
+ * Returns the total number of variants. When out != NULL, fills up to
+ * nout entries in deterministic enumeration order; when nout is
+ * smaller than the total, re-call with a larger buffer. Returns -1 on
+ * invalid input (null topo, bad op, no candidates). Enumeration builds
+ * every candidate once (no benchmarking) to obtain the exact static
+ * cost triple -- the same work rj_compile does before pruning. */
+int rj_list_variants(const rj_topology *topo, rj_op op,
+                     const rj_options *opts,
+                     rj_plan_variant *out, int nout);
+
 #ifdef __cplusplus
 }
 #endif
