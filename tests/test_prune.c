@@ -106,6 +106,18 @@
  *      vacuous, which is the correct fail-safe direction). The Part 5
  *      ordering tests are therefore non-tautological: they genuinely
  *      depend on the published port data in the weights.
+ *
+ * Mutation evidence (run 2026-10-06, #31 roofline cost model):
+ *  M-31-1: plan_uarch_cost's bandwidth leg dropped (t_mem = 0: the
+ *      ridge flattened to "always compute-bound") ->
+ *      unit_roofline_bandwidth_flip FAILS (3 checks: fewer-uops A now
+ *      wins, the byte-sensitivity pins flip with it) and
+ *      unit_roofline_ridge_continuous FAILS (ridge cost collapses to
+ *      the compute leg, not 2^{1/4} x leg).
+ *      unit_roofline_compute_bound, unit_roofline_monotone and
+ *      unit_roofline_prune_leg stay green (correct: none of them
+ *      depends on the bandwidth leg). The ordering tests are therefore
+ *      non-tautological: they genuinely depend on the roofline blend.
  */
 #include "../include/raidjit.h"
 #include "../src/plan.h"
@@ -118,6 +130,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -1189,9 +1202,9 @@ static void replay_agreement(void)
  *     (the dirty-sharing double-load case: mem_sched > mem_naive) must
  *     not prune the plain counterpart -- pareto requires mem not-worse
  *     (PRUNE_EPS), independent of the kind guard.
- *  3. Hardening: notail/xorsched/lmul mismatched pairs never satisfy
- *     the twin relation (pins the C13 field-comparison additions in
- *     twin_dominates).
+ *  3. Hardening: notail/xorsched/lmul/xorbit mismatched pairs never
+ *     satisfy the twin relation (pins the C13 field-comparison
+ *     additions in twin_dominates, plus the track-A1 xorbit pin).
  * Positive control (P_MULACC +ternlog pair still prunes) is covered by
  * Part 1's unit_twin_prunes_plain. */
 
@@ -1305,6 +1318,28 @@ static void unit_twin_axes_pinned(void)
               "plain must survive");
         CHECK(find_desc(vs, n, "twin-lmul2") >= 0, "twin must survive");
     }
+    /* xorbit mismatch: a=(tl=1,xorbit=1) vs b=(tl=0,xorbit=0) must
+     * never satisfy the twin relation, even when the triple would
+     * dominate. Pins the xorbit field-comparison in twin_dominates
+     * (track A1): the bit-program twin is a different codegen shape,
+     * not a multiply twin. The twin's uop advantage is deliberately
+     * large (1.0 vs 1.502) so that no uarch leg -- I3 or roofline --
+     * can veto the prune on any uarch: without the pin this pair
+     * prunes, making the test a true negative control. */
+    {
+        version_t vs[2];
+        mkvx(&vs[0], P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 0, 0, 0,
+             1.502, 32.016, 5824, "plain-xb0");
+        mkvx(&vs[1], P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 1, 0, 0,
+             1.000, 32.016, 5440, "twin-xb1");
+        vs[0].cand.xorbit = 0;
+        vs[1].cand.xorbit = 1;
+        int n = prune_versions(vs, 2, 0);
+        CHECK(n == 2, "xorbit-mismatched pair must not prune, got %d",
+              n);
+        CHECK(find_desc(vs, n, "plain-xb0") >= 0, "plain must survive");
+        CHECK(find_desc(vs, n, "twin-xb1") >= 0, "twin must survive");
+    }
 }
 
 /* ---------------- Part 5: uarch-aware cost model (I3) ---------------- */
@@ -1321,7 +1356,7 @@ static void unit_uarch_weights_sane(void)
             continue;
         CHECK(w->t_ternlog > 0 && w->t_shuffle > 0 && w->t_xor > 0 &&
                   w->t_gfni > 0 && w->t_ld64 > 0 && w->vec_bw > 0 &&
-                  w->mem_cpb > 0,
+                  w->mem_cpb > 0 && w->bw_bpc > 0,
               "non-positive weight for uarch %d", u);
         CHECK(w->freq512 >= 1.0, "freq512 < 1 for uarch %d", u);
     }
@@ -1371,12 +1406,16 @@ static void unit_uarch_detect(void)
  *   Zen5: blends tie (0.42 cyc/uop): A kept.
  * The SAME pair ranks B-first on Intel but A-first on AMD: port
  * pressure, not uop counts. All figures are static estimates (est.);
- * the benchmark remains the arbiter. */
+ * the benchmark remains the arbiter.
+ * #31: the fixture uses mem=1.0/B so the pair sits above the ridge
+ * (compute-bound) and the compute leg decides; at mem=30/B the pair
+ * would be bandwidth-bound and the port flip would genuinely vanish
+ * under the roofline -- the flip is a property of the compute leg. */
 static void unit_uarch_cost_gfni_nibble_flip(void)
 {
     cand_t ca = { .isa = ISA_AVX512, .mul = MUL_GFNI, .U = 8 };
     cand_t cb = { .isa = ISA_AVX512, .mul = MUL_NIBBLE, .U = 8 };
-    double mem = 30.0;
+    double mem = 1.0;
     double costA_icl =
         plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_INTEL_ICELAKE);
     double costB_icl =
@@ -1485,6 +1524,171 @@ static void unit_uarch_prune_preserved(void)
     rj_uarch_override(host); /* restore host detection */
 }
 
+/* #31 adversarial: the roofline flips the ordering vs uops-only.
+ *
+ * Bandwidth-bound pair (P_MULACC, AVX-512 nibble, same kernel class so
+ * the port-weighted uop rate is identical and the ordering difference
+ * is pure roofline):
+ *   A: fewer uops (0.50/B), more bytes (8.0/B)
+ *   B: more uops  (0.80/B), fewer bytes (4.0/B)
+ * Uops-only (the I3 compute leg) ranks A first by construction
+ * (0.50 < 0.80 at the same w_uop); the roofline cost on this
+ * bandwidth-bound regime ranks B first: bytes moved dominate.
+ * All figures are static estimates (est.); the benchmark remains the
+ * arbiter. */
+static void unit_roofline_bandwidth_flip(void)
+{
+    cand_t ca = { .isa = ISA_AVX512, .mul = MUL_NIBBLE, .U = 8 };
+    cand_t cb = { .isa = ISA_AVX512, .mul = MUL_NIBBLE, .U = 8 };
+    rj_uarch_t u = RJ_UARCH_INTEL_SKYLAKEX;
+    double costA = plan_uarch_cost(0.50, 8.0, P_MULACC, &ca, u);
+    double costB = plan_uarch_cost(0.80, 4.0, P_MULACC, &cb, u);
+    CHECK(costB < costA,
+          "bandwidth-bound: fewer-bytes B (%.4f) must beat fewer-uops "
+          "A (%.4f)",
+          costB, costA);
+    /* Regime pin, behavioral (no table constants baked in): at fixed
+     * bytes the cost is nearly uop-insensitive (bandwidth-bound),
+     * while halving the bytes nearly halves the cost. */
+    double costA2 = plan_uarch_cost(0.80, 8.0, P_MULACC, &ca, u);
+    CHECK(costA2 / costA < 1.05,
+          "bandwidth-bound: +60%% uops at fixed bytes must barely move "
+          "the cost (%.4f vs %.4f)",
+          costA2, costA);
+    double costA3 = plan_uarch_cost(0.50, 4.0, P_MULACC, &ca, u);
+    CHECK(costA3 / costA < 0.7,
+          "bandwidth-bound: halving bytes must nearly halve the cost "
+          "(%.4f vs %.4f)",
+          costA3, costA);
+}
+
+/* #31: compute-bound agreement. High-AI pair:
+ *   A: fewer uops (2.0/B), more bytes (1.0/B)
+ *   B: more uops  (2.5/B), fewer bytes (0.5/B)
+ * Both the uops-only leg and the roofline rank A first, and the cost
+ * is nearly byte-insensitive (compute-bound). */
+static void unit_roofline_compute_bound(void)
+{
+    cand_t ca = { .isa = ISA_AVX512, .mul = MUL_NIBBLE, .U = 8 };
+    rj_uarch_t u = RJ_UARCH_INTEL_SKYLAKEX;
+    double costA = plan_uarch_cost(2.0, 1.0, P_MULACC, &ca, u);
+    double costB = plan_uarch_cost(2.5, 0.5, P_MULACC, &ca, u);
+    CHECK(costA < costB,
+          "compute-bound: fewer-uops A (%.4f) must beat fewer-bytes "
+          "B (%.4f)",
+          costA, costB);
+    /* Regime pin: quartering the bytes at fixed uops barely moves the
+     * cost. */
+    double costA2 = plan_uarch_cost(2.0, 0.25, P_MULACC, &ca, u);
+    CHECK(costA2 / costA > 0.95,
+          "compute-bound: -75%% bytes at fixed uops must barely move "
+          "the cost (%.4f vs %.4f)",
+          costA2, costA);
+}
+
+/* #31: the blend is monotone in both legs -- the property the prune
+ * gate's roofline leg relies on (a twin with fewer uops and equal
+ * bytes can never cost more than the plain). Sweeps every uarch and
+ * several candidate classes, including the NULL-cand generic path. */
+static void unit_roofline_monotone(void)
+{
+    cand_t cnib = { .isa = ISA_AVX512, .mul = MUL_NIBBLE, .U = 8 };
+    cand_t cgfni = { .isa = ISA_AVX512, .mul = MUL_GFNI, .U = 8 };
+    cand_t cavx2 = { .isa = ISA_AVX2, .mul = MUL_NIBBLE, .U = 8 };
+    const cand_t *cs[4] = { &cnib, &cgfni, &cavx2, NULL };
+    for (int u = 0; u < RJ_UARCH_COUNT; u++) {
+        for (int c = 0; c < 4; c++) {
+            double c05 = plan_uarch_cost(0.5, 4.0, P_MULACC, cs[c],
+                                        (rj_uarch_t)u);
+            double c10 = plan_uarch_cost(1.0, 4.0, P_MULACC, cs[c],
+                                        (rj_uarch_t)u);
+            CHECK(c05 <= c10,
+                  "uarch %d class %d: cost must not decrease when uops "
+                  "rise at fixed bytes (%.6f > %.6f)",
+                  u, c, c05, c10);
+            double m2 = plan_uarch_cost(1.0, 2.0, P_MULACC, cs[c],
+                                       (rj_uarch_t)u);
+            double m8 = plan_uarch_cost(1.0, 8.0, P_MULACC, cs[c],
+                                       (rj_uarch_t)u);
+            CHECK(m2 <= m8,
+                  "uarch %d class %d: cost must not decrease when bytes "
+                  "rise at fixed uops (%.6f > %.6f)",
+                  u, c, m2, m8);
+        }
+    }
+}
+
+/* #31: the blend is continuous at the ridge -- no hard max() switch.
+ * On the NULL-cand generic path the rates are known exactly
+ * (w_uop = 1/vec_bw), so t_compute == t_mem is constructible: the
+ * cost there must be 2^{1/4} x either leg, and nudging either leg a
+ * little must move the cost only a little. */
+static void unit_roofline_ridge_continuous(void)
+{
+    const rj_uarch_weights_t *w = rj_uarch_weights(RJ_UARCH_UNKNOWN);
+    double bw = w->bw_bpc;  /* > 0 by unit_uarch_weights_sane */
+    double vbw = w->vec_bw; /* > 0 ditto */
+    double m = 2.0;
+    /* t_compute = u/vbw, t_mem = m/bw: equalize them. */
+    double u = m * vbw / bw;
+    double tm = m / bw;
+    double ridge = plan_uarch_cost(u, m, P_MULACC, NULL,
+                                  RJ_UARCH_UNKNOWN);
+    double want = tm * pow(2.0, 0.25);
+    CHECK(fabs(ridge / want - 1.0) < 1e-9,
+          "ridge cost %.9f must equal 2^{1/4} x leg (%.9f)", ridge,
+          want);
+    /* No cliff: +/-1% on either leg moves the cost by < 2%. */
+    double up = plan_uarch_cost(u * 1.01, m, P_MULACC, NULL,
+                               RJ_UARCH_UNKNOWN);
+    double dn = plan_uarch_cost(u * 0.99, m, P_MULACC, NULL,
+                               RJ_UARCH_UNKNOWN);
+    double mp = plan_uarch_cost(u, m * 1.01, P_MULACC, NULL,
+                               RJ_UARCH_UNKNOWN);
+    double mn = plan_uarch_cost(u, m * 0.99, P_MULACC, NULL,
+                               RJ_UARCH_UNKNOWN);
+    CHECK(fabs(up / ridge - 1.0) < 0.02,
+          "+1%% uops at the ridge moved the cost by %.4f", up / ridge);
+    CHECK(fabs(dn / ridge - 1.0) < 0.02,
+          "-1%% uops at the ridge moved the cost by %.4f", dn / ridge);
+    CHECK(fabs(mp / ridge - 1.0) < 0.02,
+          "+1%% bytes at the ridge moved the cost by %.4f", mp / ridge);
+    CHECK(fabs(mn / ridge - 1.0) < 0.02,
+          "-1%% bytes at the ridge moved the cost by %.4f", mn / ridge);
+}
+
+/* #31, prune level: the roofline leg is veto-only and must agree with
+ * the triple+I3 verdict on the validated twin pair (fewer uops, equal
+ * bytes) on every uarch, so it never disturbs the prune. In
+ * particular the leg must use the exact substitution economics, not
+ * the averaged per-uop rate: the twin's average cost/uop rises
+ * (the removed xors were the cheapest uops in the mix), which inverted
+ * the averaged comparison on Zen5 even though the twin does strictly
+ * less work -- a false veto that kept the plain. */
+static void unit_roofline_prune_leg(void)
+{
+    version_t twin, plain;
+    mkv(&twin, P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 1, 1.346,
+        32.016, 5440, "twin");
+    mkv(&plain, P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 0, 1.502,
+        32.016, 5824, "plain");
+    for (int u = 0; u < RJ_UARCH_COUNT; u++)
+        CHECK(prune_twin_roofline_ok(&twin, &plain, (rj_uarch_t)u),
+              "uarch %d: roofline leg must not veto the validated twin "
+              "prune",
+              u);
+    /* End-to-end: the prune still drops the plain on the host uarch. */
+    version_t vs[2];
+    mkv(&vs[0], P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 0, 1.502,
+        32.016, 5824, "plain");
+    mkv(&vs[1], P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 1, 1.346,
+        32.016, 5440, "twin");
+    int n = prune_versions(vs, 2, 0);
+    CHECK(n == 1 && find_desc(vs, n, "twin") == 0 &&
+              find_desc(vs, n, "plain") < 0,
+          "roofline leg must preserve the validated twin prune");
+}
+
 int main(void)
 {
     printf("prune unit:\n");
@@ -1515,6 +1719,12 @@ int main(void)
     unit_uarch_cost_gfni_nibble_flip();
     unit_uarch_veto_hostile();
     unit_uarch_prune_preserved();
+    printf("prune roofline cost model (#31):\n");
+    unit_roofline_bandwidth_flip();
+    unit_roofline_compute_bound();
+    unit_roofline_monotone();
+    unit_roofline_ridge_continuous();
+    unit_roofline_prune_leg();
     printf("prune e2e smoke (rj_compile with/without pruning):\n");
     e2e_smoke();
     printf("prune hook wiring (verbose prune line):\n");

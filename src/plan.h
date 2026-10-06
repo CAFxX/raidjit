@@ -247,7 +247,10 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat);
  * characteristic kernel model. mem_cpb is cycles per memory byte
  * (load-dominated). freq512 is the sustained-frequency derate applied
  * to 512-bit-vector candidates (Intel license-based downclocking under
- * sustained AVX-512; an estimate, >= 1.0).
+ * sustained AVX-512; an estimate, >= 1.0). bw_bpc is the peak
+ * single-core sustainable DRAM streaming bandwidth, bytes/cycle
+ * (#31): a conservative static per-uarch-class figure (est., NOT
+ * measured) feeding the bandwidth leg of the roofline cost.
  *
  * These are STATIC ESTIMATES, not measurements: they feed heuristic
  * ordering and the prune-soundness gate only. The benchmark remains
@@ -261,6 +264,8 @@ typedef struct {
     double vec_bw;    /* generic vector-uop dispatch width (uops/cycle) */
     double mem_cpb;   /* cycles per memory byte */
     double freq512;   /* 512-bit sustained-frequency derate (est., >= 1) */
+    double bw_bpc;    /* peak single-core DRAM streaming bandwidth,
+                       * bytes/cycle (est., NOT measured; #31) */
 } rj_uarch_weights_t;
 
 /* Weights for a uarch tag (never NULL; unknown tags fall back to the
@@ -268,9 +273,19 @@ typedef struct {
 const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u);
 
 /* Uarch-aware static cost estimate (cycles/byte, est.) for a candidate:
- * the static (uops, mem) model re-weighted by the candidate's
- * characteristic op mix at this uarch's published throughputs, so the
- * cost reflects port pressure rather than raw uop counts. The op mix
+ * a roofline blend (#31) of the I3 compute leg and a bandwidth leg.
+ * The compute leg re-weights the static (uops, mem) model by the
+ * candidate's characteristic op mix at this uarch's published
+ * throughputs (port pressure, not raw uop counts); the bandwidth leg
+ * is mem_per_byte / bw_bpc with bw_bpc the uarch's conservative
+ * static single-core streaming bandwidth (bytes/cycle, est. -- NOT
+ * measured). With arithmetic intensity AI = uops_per_byte /
+ * mem_per_byte and ridge point ridge = (1/w_uop) / bw_bpc (peak
+ * uops/cycle over peak bytes/cycle), the blend is the continuous
+ * p-norm (t_compute^4 + t_mem^4)^{1/4}: below the ridge
+ * (bandwidth-bound) the cost is ~bytes moved, above it
+ * (compute-bound) ~uop cost, with no hard switch. Monotone in both
+ * legs (load-bearing for the prune gate's roofline leg). The op mix
  * is structural per (kind, isa, mul, ternlog) class, read off the
  * emitter sequences (see src/plan.c); classes without a kernel model
  * fall back to the generic dispatch width. Intended for heuristic

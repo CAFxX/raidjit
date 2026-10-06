@@ -39,6 +39,18 @@
  * argmin tripwire (Part 3) as the loud detector for future
  * model/codegen drift.
  *
+ * On top of that, a roofline leg (#31, prune_twin_roofline_ok) vetoes
+ * the prune when the twin's roofline-aware cost exceeds the plain's
+ * on the host uarch. Veto-only like the uarch leg: it keeps the plain,
+ * never drops anything the triple gate kept, so a candidate that
+ * looks worse on uops but moves fewer bytes keeps its chance when
+ * bandwidth-bound. For the AVX-512 nibble twin the comparison is
+ * exact (the 2xVPXOR->VPTERNLOGD substitution economics, same
+ * bandwidth leg), so the leg agrees with the triple+I3 verdict on
+ * every uarch and guards future twin/codegen shapes -- and future
+ * cost-model edits -- whose uop saving might not pay in a
+ * bandwidth-bound regime.
+ *
  * Public API (also documented in prune.h for the later survivor-set
  * track):
  *   int prune_versions(version_t *vs, int nv, unsigned flags);
@@ -97,13 +109,63 @@ int prune_twin_uarch_ok(const version_t *twin, const version_t *plain,
     return margin >= -PRUNE_EPS;
 }
 
+/* Roofline-aware leg of the twin dominance gate (#31).
+ *
+ * The twin's roofline cost must not exceed the plain's: in a
+ * bandwidth-bound regime a candidate that looks worse on uops but
+ * moves fewer bytes can win, so the prune gate respects the roofline
+ * cost rather than uops alone.
+ *
+ * For the AVX-512 nibble twin -- the only +ternlog twin the planner
+ * enumerates (plan_candidates gates ternlog twins on
+ * isa == ISA_AVX512 && mul == MUL_NIBBLE), with xorbit == 0 (the naive
+ * nibble body, not the track-A1 bit-program twin) -- the comparison is
+ * EXACT,
+ * not averaged: each saved uop is one (2 VPXOR -> 1 VPTERNLOGD) fold
+ * of the nibble path's acc ^= r1 ^ r2 (cf. prune_twin_uarch_ok), so
+ * the compute-leg difference is du*(2*t_xor - t_ternlog) cycles/byte
+ * with du = plain.uops - twin.uops, and the bandwidth leg is
+ * identical (same mem_per_byte on the same uarch). With the blend
+ * monotone in the compute leg, the twin's roofline cost cannot exceed
+ * the plain's unless the substitution is port-hostile -- the case the
+ * I3 leg already vetoes. The averaged per-uop-rate comparison would
+ * be WRONG here: the twin's average cost/uop rises because the
+ * removed xors were the cheapest uops in the mix, an averaging
+ * artifact that inverts the comparison on e.g. Zen5 even though the
+ * twin does strictly less work (caught by unit_roofline_prune_leg).
+ *
+ * Twin shapes without an exact substitution model fall back to the
+ * averaged roofline comparison (plan_uarch_cost on both versions).
+ *
+ * Returns 1 when the twin costs no more than the plain (prune may
+ * proceed); 0 when it costs more (keep the plain). Veto-only: it can
+ * keep the plain, never drop anything the triple gate kept. Exposed
+ * non-statically for tests (declared in prune.h). */
+int prune_twin_roofline_ok(const version_t *twin, const version_t *plain,
+                           rj_uarch_t uarch)
+{
+    const rj_uarch_weights_t *w = rj_uarch_weights(uarch);
+    if (twin->cand.isa == ISA_AVX512 && twin->cand.mul == MUL_NIBBLE &&
+        twin->cand.xorbit == 0) {
+        double du = plain->uops_per_byte - twin->uops_per_byte;
+        return du * (2.0 * w->t_xor - w->t_ternlog) >= -PRUNE_EPS;
+    }
+    double ct = plan_uarch_cost(twin->uops_per_byte, twin->mem_per_byte,
+                               twin->kind, &twin->cand, uarch);
+    double cp = plan_uarch_cost(plain->uops_per_byte, plain->mem_per_byte,
+                               plain->kind, &plain->cand, uarch);
+    return ct <= cp + PRUNE_EPS;
+}
+
 /* A (the +ternlog twin) dominates B (plain) iff they are the same
  * candidate in every respect except the ternlog flag, their plan kind
  * is one where the twin direction is validated, A's triple
- * pareto-dominates B's, and the twin's uop substitution is not
- * port-hostile on this uarch (prune_twin_uarch_ok). */
+ * pareto-dominates B's, the twin's uop substitution is not
+ * port-hostile on this uarch (prune_twin_uarch_ok), and the twin's
+ * roofline-aware cost does not exceed the plain's on this uarch
+ * (prune_twin_roofline_ok). */
 static int twin_dominates(const version_t *a, const version_t *b,
-                          const rj_uarch_weights_t *w, int verbose)
+                          rj_uarch_t uarch, int verbose)
 {
     /* Plan-kind guard (attacker 17): the twin prune direction is
      * validated only for P_MULACC and P_DELTA
@@ -135,7 +197,11 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * (lmul=2,ternlog=1)/(lmul=1,ternlog=0) pair must never satisfy the
      * twin relation on the checked axes. (Unlike notail/predtail/
      * maskedtail, lmul genuinely varies in-list for RVV, so this pin
-     * is load-bearing, not just hardening.) Behavior-preserving for
+     * is load-bearing, not just hardening.) xorbit is pinned (track
+     * A1): a (xorbit=1,ternlog=1)/(xorbit=0,ternlog=0) pair must never
+     * satisfy the twin relation on the checked axes -- the bit-program
+     * twin is a different codegen shape (bit-level CSE body vs naive
+     * nibble emitter), not a multiply twin. Behavior-preserving for
      * the other axes today: all in-list candidates have
      * notail=0/predtail=0/maskedtail=0, and P_XOR pairs are refused by
      * the kind guard anyway. */
@@ -150,6 +216,7 @@ static int twin_dominates(const version_t *a, const version_t *b,
         a->cand.maskedtail != b->cand.maskedtail ||
         a->cand.permi2b != b->cand.permi2b ||
         a->cand.xorsched != b->cand.xorsched ||
+        a->cand.xorbit != b->cand.xorbit ||
         a->cand.lmul != b->cand.lmul)
         return 0;
 
@@ -185,6 +252,7 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * VPTERNLOGD substitution must not be port-hostile on this uarch
      * (see prune_twin_uarch_ok). Veto-only: it keeps the plain, never
      * drops anything the triple gate kept. */
+    const rj_uarch_weights_t *w = rj_uarch_weights(uarch);
     if (!prune_twin_uarch_ok(a, b, w)) {
         if (verbose)
             fprintf(stderr,
@@ -192,6 +260,17 @@ static int twin_dominates(const version_t *a, const version_t *b,
                     "substitution is port-hostile on this uarch "
                     "(t_ternlog=%.2f > 2*t_xor=%.2f) -- NOT pruning\n",
                     w->t_ternlog, 2.0 * w->t_xor);
+        return 0;
+    }
+    /* Roofline leg (#31): the twin's roofline-aware cost must not
+     * exceed the plain's on this uarch (see prune_twin_roofline_ok).
+     * Veto-only: it keeps the plain, never drops anything the triple
+     * gate kept. */
+    if (!prune_twin_roofline_ok(a, b, uarch)) {
+        if (verbose)
+            fprintf(stderr,
+                    "raidjit: prune: twin's roofline cost exceeds the "
+                    "plain's on this uarch -- NOT pruning\n");
         return 0;
     }
     return 1;
@@ -216,16 +295,15 @@ int prune_versions(version_t *vs, int nv, unsigned flags)
     if (!dominated)
         return nv; /* allocation failure: prune nothing (safe) */
     int verbose = (flags & PRUNE_VERBOSE) != 0;
-    /* Uarch tag for the port-pressure leg of the dominance gate,
-     * resolved once per call (test override honored via
-     * rj_uarch_current). */
-    const rj_uarch_weights_t *w =
-        rj_uarch_weights(rj_uarch_current());
+    /* Uarch tag for the port-pressure leg and the roofline leg of the
+     * dominance gate, resolved once per call (test override honored
+     * via rj_uarch_current). */
+    rj_uarch_t uarch = rj_uarch_current();
     for (int i = 0; i < nv; i++) {
         for (int j = 0; j < nv; j++) {
             if (i == j || dominated[j])
                 continue;
-            if (twin_dominates(&vs[i], &vs[j], w, verbose))
+            if (twin_dominates(&vs[i], &vs[j], uarch, verbose))
                 dominated[j] = 1;
         }
     }

@@ -4,6 +4,7 @@
 #include "xorsched.h"
 #include <assert.h>
 #include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1206,6 +1207,18 @@ rj_uarch_t rj_uarch_current(void)
  *   (no 512-bit downclocking).
  * - vec_bw (fallback dispatch width): Intel 4, AMD 6 -- approximate,
  *   only used for candidate classes without a kernel model.
+ * - bw_bpc (#31): peak single-core sustainable DRAM streaming
+ *   bandwidth, bytes/cycle (est., NOT measured -- no benchmark feeds
+ *   this number). Conservative static per-uarch-class figures at the
+ *   low end of published single-core streaming numbers: DDR4-era
+ *   classes (SKX/ICL, single-core memcpy/NT-store ~20-25 GB/s at
+ *   ~3 GHz ~= 7-8 B/cyc) get 8; DDR5-era classes (SPR/Zen4/Zen5,
+ *   ~30-40 GB/s at ~3 GHz ~= 10-13 B/cyc) get 12; UNKNOWN gets the
+ *   conservative 8. Deliberately low: the model errs toward
+ *   bandwidth-bound, so a byte-frugal candidate is never ranked worse
+ *   on uop counts alone. A zero bw_bpc (only possible in hand-built
+ *   test weights, never in this table) degrades the cost to the
+ *   compute leg alone.
  * - SKX has no GFNI: t_gfni falls back to the Intel value (unused in
  *   practice). Zen3 has no AVX-512: it aliases the generic AMD row
  *   (the 512-bit entries are unused there).
@@ -1214,27 +1227,27 @@ rj_uarch_t rj_uarch_current(void)
  *   model degrades gracefully to uarch-independent behavior. */
 static const rj_uarch_weights_t uarch_w_unknown = {
     1.0 / 3.5, 1.0 / 3.5, 1.0 / 3.5, 1.0 / 3.5, 1.0 / 3.5,
-    3.5, 1.0 / 64.0, 1.0
+    3.5, 1.0 / 64.0, 1.0, 8.0 /* est. */
 };
 static const rj_uarch_weights_t uarch_w_icl = {
     0.50, 1.00, 0.50, 1.00, 0.50,
-    4.0, 0.50 / 64.0, 1.00
+    4.0, 0.50 / 64.0, 1.00, 8.0 /* est. */
 };
 static const rj_uarch_weights_t uarch_w_skx = {
     0.50, 1.00, 0.50, 1.00, 0.50,
-    4.0, 0.50 / 64.0, 1.10 /* est. */
+    4.0, 0.50 / 64.0, 1.10 /* est. */, 8.0 /* est. */
 };
 static const rj_uarch_weights_t uarch_w_spr = {
     0.50, 1.00, 0.50, 1.00, 0.50,
-    4.0, 0.50 / 64.0, 1.05 /* est. */
+    4.0, 0.50 / 64.0, 1.05 /* est. */, 12.0 /* est. */
 };
 static const rj_uarch_weights_t uarch_w_zen4 = {
     0.50, 1.00, 0.50, 1.00, 1.00,
-    6.0, 1.00 / 64.0, 1.00
+    6.0, 1.00 / 64.0, 1.00, 12.0 /* est. */
 };
 static const rj_uarch_weights_t uarch_w_zen5 = {
     0.33, 0.50, 0.25, 0.50, 0.50,
-    6.0, 0.50 / 64.0, 1.00
+    6.0, 0.50 / 64.0, 1.00, 12.0 /* est. */
 };
 
 const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u)
@@ -1259,26 +1272,24 @@ const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u)
     }
 }
 
-double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
-                       plan_kind_t kind, const cand_t *cand, rj_uarch_t u)
+/* Effective cycles per uop for the candidate's characteristic kernel
+ * op mix (I3). Characteristic multiply-kernel op mix per candidate
+ * class. Counts are per GF multiply (nibble/GFNI) or per folded xor
+ * pair (P_XOR), read off the emitter sequences in src/x86_64/jit.c:
+ * mulacc_column emits 2 pool loads + 2 VPSHUFB + the fold (2 VPXOR,
+ * or 1 VPTERNLOGD in the +ternlog twin); the GFNI path emits
+ * 1 VGF2P8AFFINEQB + 1 VGF2P8MULB + 1 VPXOR with the affine-table
+ * pool load amortized across the column (hence ld 0). P_XOR mixes
+ * are approximate: the body is a pure xor reduction (2 xors per
+ * load in the plain form; the twin folds each pair into one
+ * VPTERNLOGD). The blend covers the uarch-sensitive kernel only;
+ * kernel-external uops (nibble split, loop overhead, stores) are
+ * uarch-neutral to first order and folded into the same per-uop
+ * rate. This is a HEURISTIC for static ordering (est.), not a
+ * cycle-accurate model: the benchmark is the final arbiter. */
+static double kernel_w_uop(plan_kind_t kind, const cand_t *cand,
+                           const rj_uarch_weights_t *w)
 {
-    const rj_uarch_weights_t *w = rj_uarch_weights(u);
-    if (!cand) /* no candidate axes: generic dispatch-width rate */
-        return uops_per_byte / w->vec_bw + mem_per_byte * w->mem_cpb;
-    /* Characteristic multiply-kernel op mix per candidate class.
-     * Counts are per GF multiply (nibble/GFNI) or per folded xor pair
-     * (P_XOR), read off the emitter sequences in src/x86_64/jit.c:
-     * mulacc_column emits 2 pool loads + 2 VPSHUFB + the fold (2 VPXOR,
-     * or 1 VPTERNLOGD in the +ternlog twin); the GFNI path emits
-     * 1 VGF2P8AFFINEQB + 1 VGF2P8MULB + 1 VPXOR with the affine-table
-     * pool load amortized across the column (hence ld 0). P_XOR mixes
-     * are approximate: the body is a pure xor reduction (2 xors per
-     * load in the plain form; the twin folds each pair into one
-     * VPTERNLOGD). The blend covers the uarch-sensitive kernel only;
-     * kernel-external uops (nibble split, loop overhead, stores) are
-     * uarch-neutral to first order and folded into the same per-uop
-     * rate. This is a HEURISTIC for static ordering (est.), not a
-     * cycle-accurate model: the benchmark is the final arbiter. */
     double n_tl = 0.0, n_shuf = 0.0, n_xor = 0.0, n_gfni = 0.0, n_ld = 0.0;
     int modeled = 0;
     if (cand->isa == ISA_AVX512) {
@@ -1305,19 +1316,54 @@ double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
             modeled = 1;
         }
     }
-    double w_uop;
     if (modeled) {
         double ntot = n_tl + n_shuf + n_xor + n_gfni + n_ld;
-        w_uop = (n_tl * w->t_ternlog + n_shuf * w->t_shuffle +
-                 n_xor * w->t_xor + n_gfni * w->t_gfni +
-                 n_ld * w->t_ld64) / ntot;
-    } else {
-        /* No kernel model for this class (non-AVX512 ISA or exotic
-         * mul): generic dispatch-width rate. */
-        w_uop = 1.0 / w->vec_bw;
+        return (n_tl * w->t_ternlog + n_shuf * w->t_shuffle +
+                n_xor * w->t_xor + n_gfni * w->t_gfni +
+                n_ld * w->t_ld64) / ntot;
     }
-    double cost = uops_per_byte * w_uop + mem_per_byte * w->mem_cpb;
-    if (cand->isa == ISA_AVX512)
+    /* No kernel model for this class (non-AVX512 ISA or exotic
+     * mul): generic dispatch-width rate. */
+    return 1.0 / w->vec_bw;
+}
+
+double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
+                       plan_kind_t kind, const cand_t *cand, rj_uarch_t u)
+{
+    const rj_uarch_weights_t *w = rj_uarch_weights(u);
+    /* Effective cycles per uop: the I3 kernel-mix rate, or the generic
+     * dispatch-width rate when there are no candidate axes. */
+    double w_uop = cand ? kernel_w_uop(kind, cand, w) : 1.0 / w->vec_bw;
+    /* #31: roofline blend of the compute leg and the bandwidth leg.
+     *
+     * Compute leg: t_compute = uops_per_byte * w_uop (cycles/byte at
+     * this uarch's port-weighted rate for the kernel's op mix).
+     * Bandwidth leg: t_mem = mem_per_byte / bw_bpc (cycles/byte at the
+     * uarch's conservative static single-core streaming bandwidth;
+     * est., NOT measured).
+     *
+     * Arithmetic intensity AI = uops_per_byte / mem_per_byte (uops per
+     * byte moved); ridge point ridge = (1/w_uop) / bw_bpc (peak
+     * uops/cycle over peak bytes/cycle, both from I3's weights and the
+     * static bandwidth figure). t_compute / t_mem = AI / ridge, so the
+     * blend keys off exactly that comparison: below the ridge
+     * (bandwidth-bound) the cost is ~t_mem (bytes moved); above it
+     * (compute-bound) ~t_compute (uop cost). The blend is the
+     * continuous p-norm (t_compute^4 + t_mem^4)^{1/4} -- at the ridge
+     * both legs contribute equally (cost = 2^{1/4} x either leg), and
+     * there is no hard max() switch. The blend is monotone in both
+     * legs, which the prune gate's roofline leg relies on: a twin with
+     * fewer uops and equal bytes can never cost more than the plain.
+     * A non-positive bw_bpc (only possible in hand-built test
+     * weights) degrades gracefully to the compute leg alone.
+     * HEURISTIC for static ordering (est.): the benchmark is the final
+     * arbiter. */
+    double t_compute = uops_per_byte * w_uop;
+    double t_mem = w->bw_bpc > 0.0 ? mem_per_byte / w->bw_bpc : 0.0;
+    double c2 = t_compute * t_compute;
+    double m2 = t_mem * t_mem;
+    double cost = sqrt(sqrt(c2 * c2 + m2 * m2));
+    if (cand && cand->isa == ISA_AVX512)
         cost *= w->freq512;
     return cost;
 }

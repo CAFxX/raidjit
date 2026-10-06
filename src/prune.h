@@ -11,7 +11,10 @@
  * +ternlog twin pair is pruned, and only when the twin (same plan kind,
  * isa, mul, U, nt, prefetch distance, remat, notail, xorsched;
  * ternlog=1 vs 0) pareto-dominates it on the static (uops_per_byte,
- * mem_per_byte, code_size) triple -- and only for plan kinds P_MULACC /
+ * mem_per_byte, code_size) triple, the twin's 2xVPXOR->VPTERNLOGD
+ * substitution is not port-hostile on the host uarch (I3 leg), and the
+ * twin's roofline-aware cost does not exceed the plain's on the host
+ * uarch (#31 leg) -- and only for plan kinds P_MULACC /
  * P_DELTA, where the twin direction is validated (enforced by a
  * plan-kind guard in prune.c, not by the triple values). Twin pairs are
  * the one place where codegen is structurally identical except for the
@@ -76,5 +79,18 @@ int prune_versions(version_t *vs, int nv, unsigned flags);
  * See src/prune.c for the derivation. */
 int prune_twin_uarch_ok(const version_t *twin, const version_t *plain,
                         const rj_uarch_weights_t *w);
+
+/* Roofline-aware leg of the twin dominance gate (#31), exposed for
+ * tests. Returns 1 when the twin's roofline-aware cost does not exceed
+ * the plain's on the given uarch (i.e. pruning the plain may
+ * proceed); 0 when it does (the plain must be kept -- e.g. a
+ * bandwidth-bound regime where a uop saving does not pay). Veto-only.
+ * For the AVX-512 nibble twin (xorbit == 0) the comparison is exact
+ * (the 2xVPXOR->VPTERNLOGD substitution economics against an
+ * identical bandwidth leg), so the leg agrees with the triple+I3
+ * verdict on every uarch; other twin shapes use the averaged
+ * plan_uarch_cost comparison. See src/prune.c for the derivation. */
+int prune_twin_roofline_ok(const version_t *twin, const version_t *plain,
+                           rj_uarch_t uarch);
 
 #endif
