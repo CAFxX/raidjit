@@ -28,6 +28,18 @@ typedef struct {
     int avx512bw;    /* byte/word shuffles */
     int avx512vl;
     int vbmi;        /* AVX-512 VBMI (vpermi2b; leaf 7 ECX bit 1) */
+    int bitalg;      /* AVX-512 BITAlg (vpshufbitqmb; leaf 7 ECX bit 12).
+                      * Distinct from VBMI: e.g. Cannon Lake has VBMI
+                      * without BITAlg, so a BITAlg instruction must never
+                      * be gated on vbmi alone. Added for track I1: the
+                      * VPSHUFBITQMB bit-gather was evaluated against the
+                      * SDM and rejected as a GF-multiply twin (it selects
+                      * bits but performs no XOR/parity, so it cannot do an
+                      * 8x8 bit-matrix multiply; see
+                      * hidden_files/brainstorm_isa_uarch_2026-10-06.md
+                      * item 1 and the I1/I2 lane's final report). The bit
+                      * stays as the correct gate for any future BITAlg
+                      * use. */
     int gfni;        /* Galois-field affine instructions (needs AVX512) */
     int cet_ss;      /* CPU supports CET shadow stack */
     /* AArch64 */

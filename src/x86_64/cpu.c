@@ -83,6 +83,15 @@ void rj_cpu_detect(rj_cpu_info *out)
         out->avx512vl = ((b >> 31) & 1) && avx512_os;
         /* VBMI (vpermi2b): leaf 7 ECX bit 1. Needs AVX512F HW + ZMM OS. */
         out->vbmi     = ((c >> 1) & 1) && out->avx512f && avx512_os;
+        /* BITAlg (vpshufbitqmb): leaf 7 ECX bit 12. A separate flag from
+         * VBMI: Cannon Lake has VBMI without BITAlg, so BITAlg
+         * instructions must be gated on this bit, never on vbmi alone.
+         * Same AVX512F HW + ZMM OS requirement as the other 512-bit
+         * extensions. Track I1 evaluated VPSHUFBITQMB as a GF-multiply
+         * twin and rejected it (it is a bit-gather, not a bit-matrix
+         * multiply -- no XOR/parity -- per the SDM); the bit stays as
+         * the correct gate for any future BITAlg use. */
+        out->bitalg   = ((c >> 12) & 1) && out->avx512f && avx512_os;
         /* GFNI: this JIT only emits EVEX (512-bit) VGF2P8AFFINEQB, which
          * needs AVX512F HW and ZMM OS state in addition to the GFNI bit. */
         out->gfni     = ((c >> 8) & 1) && out->avx512f && avx512_os;

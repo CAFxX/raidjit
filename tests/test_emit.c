@@ -101,6 +101,14 @@ int main(void)
      * VPORB equivalent; GAS rejects vporb with zmm operands) */
     CHECK(em_vpor_mem(&e, 2, 1, 10, 11, 0, 0, VL64),
           0x62, 0x91, 0x75, 0x48, 0xeb, 0x14, 0x1a);
+    /* vpmultishiftqb %zmm2, %zmm1, %zmm0 (track I2; GAS 2.42 reference
+     * bytes: 62 f2 f5 48 83 c2; note W=1, unlike the W0 neighbors) */
+    CHECK(em_vpmultishiftqb(&e, 0, 1, 2, VL64),
+          0x62, 0xf2, 0xf5, 0x48, 0x83, 0xc2);
+    /* vpmultishiftqb %zmm17, %zmm18, %zmm31 (high regs: vvvv bit4 -> V'=0,
+     * rm bit4 -> X, dest bit4 -> R'; GAS 2.42: 62 22 ed 40 83 f9) */
+    CHECK(em_vpmultishiftqb(&e, 31, 18, 17, VL64),
+          0x62, 0x22, 0xed, 0x40, 0x83, 0xf9);
     /* vpsrlw $4, %zmm11 -> %zmm10 (high regs) */
     CHECK(em_vpsrlw(&e, 10, 11, 4, VL64),
           0x62, 0xd1, 0x2d, 0x48, 0x71, 0xd3, 0x04);

@@ -700,6 +700,23 @@ void em_vpermi2b(em_t *e, int vd_idx, int vtbl1, int vtbl2, int vl)
                0, 0);
 }
 
+void em_vpmultishiftqb(em_t *e, int vd, int vctrl, int vdata, int vl)
+{
+    /* VPMULTISHIFTQB: per-qword variable byte-field extract (track I2).
+     * EVEX.66.0F38.W1 83 /r (AVX512_VBMI). Note W=1 (unlike the W0
+     * neighbors in this file). Semantics per 64-bit lane:
+     *   vd.qword[i].byte[j] = (vdata.qword[i] >> (vctrl.qword[i].byte[j]
+     *                           & 0x3F)) & 0xFF
+     * vctrl is EVEX.vvvv (shift counts; register-only -- no memory
+     * form), vdata is ModRM r/m. Encoding verified against GAS 2.42
+     * (`vpmultishiftqb %zmm2,%zmm1,%zmm0` = 62 f2 f5 48 83 c2, i.e.
+     * vd=0/vctrl=1/vdata=2; `%zmm17,%zmm18,%zmm31` = 62 22 ed 40 83 f9)
+     * and by execution against a scalar model on a VBMI host. */
+    assert(vl == VL64);
+    vec_op_mrm(e, 2, 1, vd, vctrl, 0x83, vl, 1, 0, 0, -1, 0, 0, vdata,
+               0, 0);
+}
+
 void em_vpand(em_t *e, int vd, int s1, int s2, int vl)
 {
     /* VEX: 66 0F DB ; EVEX: VPANDD (W=0) */

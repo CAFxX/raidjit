@@ -111,6 +111,11 @@ void em_kmovq_km(em_t *e, int k, int b, int x, int sc, int disp);
 void em_vpor_mem(em_t *e, int vd, int s1, int b, int x, int sc, int disp,
                  int vl);
 void em_vpermi2b(em_t *e, int vd_idx, int vtbl1, int vtbl2, int vl);
+void em_vpmultishiftqb(em_t *e, int vd, int vctrl, int vdata, int vl);
+/* VPMULTISHIFTQB (AVX512_VBMI): per 64-bit lane, each output byte j is
+ * 8 bits of vdata's lane starting at the bit selected by vctrl's byte j
+ * (low 6 bits). vd = dest, vctrl = EVEX.vvvv (shift counts, register
+ * only), vdata = ModRM r/m (data). Used by the I2 nibble-split twin. */
 void em_vpand(em_t *e, int vd, int s1, int s2, int vl);
 void em_vpsrlw(em_t *e, int vd, int s1, unsigned imm, int vl);
 void em_vpsllw(em_t *e, int vd, int s1, unsigned imm, int vl);
