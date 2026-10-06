@@ -750,9 +750,8 @@ static void shortlist_rs63(void)
 
 /* Structural shortlist property, re-derived independently from the
  * documented rule (no shared helpers with the implementation):
- * expected keep = {today} ∪ top-(K-1) measured-ranked pareto
- * members on the l2_gbps signal (static (l2_uops, l2_mem) fallback
- * for unmeasured subsets), hard cap K =
+ * expected keep = {today} ∪ top-(K-1) statically-ranked pareto
+ * members on the exact (l2_uops, l2_mem) signal, hard cap K =
  * SURVIVOR_SHORTLIST_CAP. The implementation must match exactly. */
 static void shortlist_pareto_struct(const char *tag, rj_topology *t,
                                     const int *F, int nf)
@@ -800,10 +799,9 @@ static void shortlist_pareto_struct(const char *tag, rj_topology *t,
             expected[today] = 1;
             nkept_exp++;
         }
-        /* top-(K-1): repeatedly take the highest-l2_gbps pareto member
-         * not already kept; unmeasured subsets rank last (static
-         * l2_rank_less fallback), ties break by subset index (the
-         * documented rule, item 2: measured ordering). */
+        /* top-(K-1): repeatedly take the smallest (uops, mem) pareto
+         * member not already kept; signal-less subsets rank last,
+         * ties break by subset index (the documented rule). */
         for (int k = 0; k < SURVIVOR_SHORTLIST_CAP - 1; k++) {
             int best = -1;
             for (int i = 0; i < nsub; i++) {
@@ -813,28 +811,15 @@ static void shortlist_pareto_struct(const char *tag, rj_topology *t,
                     best = i;
                     continue;
                 }
-                int ibad = !(subs[i].l2_gbps > 0.0);
-                int bbad = !(subs[best].l2_gbps > 0.0);
-                int iless; /* 1 if i ranks better (higher gbps) than best */
-                if (ibad != bbad) {
-                    iless = !ibad;
-                } else if (!ibad &&
-                           subs[i].l2_gbps != subs[best].l2_gbps) {
-                    iless = subs[i].l2_gbps > subs[best].l2_gbps;
-                } else {
-                    /* Static fallback: valid first, then (uops, mem). */
-                    int ival = subs[i].l2_valid;
-                    int bval = subs[best].l2_valid;
-                    iless =
-                        (ival && !bval) ||
-                        (ival == bval &&
-                         (subs[i].l2_uops < subs[best].l2_uops ||
-                          (subs[i].l2_uops == subs[best].l2_uops &&
-                           (subs[i].l2_mem < subs[best].l2_mem ||
-                            (subs[i].l2_mem == subs[best].l2_mem &&
-                             i < best)))));
-                }
-                if ((!ibad && bbad) || (ibad == bbad && iless))
+                int ibad = !subs[i].l2_valid;
+                int bbad = !subs[best].l2_valid;
+                if ((!ibad && bbad) ||
+                    (ibad == bbad &&
+                     (subs[i].l2_uops < subs[best].l2_uops ||
+                      (subs[i].l2_uops == subs[best].l2_uops &&
+                       (subs[i].l2_mem < subs[best].l2_mem ||
+                        (subs[i].l2_mem == subs[best].l2_mem &&
+                         i < best))))))
                     best = i;
             }
             if (best < 0 || nkept_exp >= SURVIVOR_SHORTLIST_CAP)

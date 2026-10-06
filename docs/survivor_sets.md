@@ -47,21 +47,14 @@ the exact signal discriminates ((0.660, 18.141) vs (0.691, 20.031)).
 
 The shortlist keeps: the pareto frontier on the exact
 `(l2_uops, l2_mem)` pair, plus the `is_today` subset (the no-regression
-anchor) unconditionally, then the measured top-(K-1) pareto members
-(ordered by `l2_gbps`, the quick-measured canonical throughput;
-unmeasured subsets fall back to static lexicographic rank), with a
-HARD CAP of `SURVIVOR_SHORTLIST_CAP = 3` subsets total:
-keep = {today} ∪ top-(K-1) measured-ranked pareto members.
-The measured ordering (item 2, 2026-10-06) replaces the static
-lexicographic rank because the static signal can misrank vs measured
-performance: on RDP(5) F={0,1,2,3} the measured-best subset (71.98
-GB/s) ranked #5 statically, outside the cap=3 shortlist -- the cap
-dropped the winner. The measured signal is a quick benchmark (single
-size, 7 iters, 20ms warm-up) of each canonical version, ~0.05s per
-subset. Subsets whose canonical version fails to build carry no signal
-and are never treated as dominated (a missing signal can only keep a
-subset, never drop it). Only shortlisted subsets pay the full candidate
-build + pooled bench. Measured shortlist sizes (x86-64): rs(6,3)/f0 = 1,
+anchor) unconditionally, then the statically top-(K-1) pareto members
+(lexicographic on (uops, mem); ties by subset index), with a HARD CAP
+of `SURVIVOR_SHORTLIST_CAP = 3` subsets total:
+keep = {today} ∪ top-(K-1) statically-ranked pareto members.
+Subsets whose canonical version fails to build carry no signal and are
+never treated as dominated (a missing signal can only keep a subset,
+never drop it). Only shortlisted subsets pay the full candidate build
++ pooled bench. Measured shortlist sizes (x86-64): rs(6,3)/f0 = 1,
 rs(6,3)/f02 = 2, rdp(5) whole-disk = 3 of 34.
 
 `RJ_NO_SUBSET_PRUNE=1` disables L2 (same contract as `RJ_NO_PRUNE`):

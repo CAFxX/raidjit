@@ -9,8 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <time.h>
-#include <stdint.h>
 
 static int cmp_int_asc(const void *a, const void *b)
 {
@@ -336,100 +334,6 @@ int survivor_enumerate(const topo_int_t *ti, const int *F, int nf,
     return 0;
 }
 
-/* Quick measured throughput for one canonical version (GB/s, 0 on
- * failure). Single working-set size (bench_bytes), 7 timed iters,
- * 20ms warm-up (same DVFS discipline as bench_select). No validation:
- * kept subsets are validated later by the pooled bench_select; this is
- * a RANKING signal only, used by survivor_shortlist to order pareto
- * members (item 2). Buffers follow the bench_select fill pattern. */
-static double l2_quick_gbps(const plan_t *pl, version_t *v, size_t bytes)
-{
-    int n_in = pl->n_in, n_out = pl->n_out;
-    const void **in = malloc(sizeof(void *) * (size_t)n_in);
-    void **out = malloc(sizeof(void *) * (size_t)n_out);
-    uint8_t **ib = malloc(sizeof(uint8_t *) * (size_t)n_in);
-    uint8_t **ob = malloc(sizeof(uint8_t *) * (size_t)n_out);
-    if (!in || !out || !ib || !ob) {
-        free(in);
-        free(out);
-        free(ib);
-        free(ob);
-        return 0.0;
-    }
-    for (int i = 0; i < n_in; i++) {
-        if (posix_memalign((void **)&ib[i], 64, bytes)) {
-            for (int j = 0; j < i; j++)
-                free(ib[j]);
-            free(in);
-            free(out);
-            free(ib);
-            free(ob);
-            return 0.0;
-        }
-        for (size_t k = 0; k < bytes; k++)
-            ib[i][k] = (uint8_t)(i * 37 + k * 11 + 1);
-        in[i] = ib[i];
-    }
-    for (int i = 0; i < n_out; i++) {
-        if (posix_memalign((void **)&ob[i], 64, bytes)) {
-            for (int j = 0; j < n_in; j++)
-                free(ib[j]);
-            for (int j = 0; j < i; j++)
-                free(ob[j]);
-            free(in);
-            free(out);
-            free(ib);
-            free(ob);
-            return 0.0;
-        }
-        memset(ob[i], 0, bytes);
-        out[i] = ob[i];
-    }
-    v->fn(in, out, bytes);
-
-    /* 20ms warm-up (item 4 discipline), then 7 timed iters. */
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    int warm = 0;
-    for (;;) {
-        v->fn(in, out, bytes);
-        warm++;
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        double el = (t1.tv_sec - t0.tv_sec) +
-                    (t1.tv_nsec - t0.tv_nsec) * 1e-9;
-        if (el >= 0.020 && warm >= 3)
-            break;
-    }
-    double ts[7];
-    for (int i = 0; i < 7; i++) {
-        clock_gettime(CLOCK_MONOTONIC, &t0);
-        v->fn(in, out, bytes);
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        ts[i] = (t1.tv_sec - t0.tv_sec) +
-                (t1.tv_nsec - t0.tv_nsec) * 1e-9;
-    }
-    /* Median. */
-    for (int i = 0; i < 7; i++)
-        for (int j = i + 1; j < 7; j++)
-            if (ts[j] < ts[i]) {
-                double tmp = ts[i];
-                ts[i] = ts[j];
-                ts[j] = tmp;
-            }
-    double med = ts[3];
-    for (int i = 0; i < n_in; i++)
-        free(ib[i]);
-    for (int i = 0; i < n_out; i++)
-        free(ob[i]);
-    free(in);
-    free(out);
-    free(ib);
-    free(ob);
-    if (med <= 0.0)
-        return 0.0;
-    return (double)bytes / med / 1e9;
-}
-
 void survivor_l2_signal(survivor_subset_t *subs, int nsub,
                         const rj_cpu_info *cpu, const rj_options *o)
 {
@@ -442,7 +346,6 @@ void survivor_l2_signal(survivor_subset_t *subs, int nsub,
         subs[i].l2_valid = 0;
         subs[i].l2_uops = 0;
         subs[i].l2_mem = 0;
-        subs[i].l2_gbps = 0;
         /* Exactly ONE version per subset: plan_candidates[0] is the
          * best ISA at the highest fitting U (see plan_candidates).
          * Its (uops_per_byte, mem_per_byte) is the EXACT static signal
@@ -476,11 +379,6 @@ void survivor_l2_signal(survivor_subset_t *subs, int nsub,
         subs[i].l2_uops = v.uops_per_byte;
         subs[i].l2_mem = v.mem_per_byte;
         subs[i].l2_valid = 1;
-        /* Measured ranking signal (item 2): time the canonical version
-         * so the shortlist can order by measured GB/s. Uses
-         * o->bench_bytes (the pooled bench's working set). */
-        subs[i].l2_gbps =
-            l2_quick_gbps(&subs[i].plan, &v, o->bench_bytes);
         jit_free_version(&v);
     }
 }
@@ -513,23 +411,6 @@ static int l2_rank_less(const survivor_subset_t *subs, int a, int b)
     if (subs[a].l2_mem != subs[b].l2_mem)
         return subs[a].l2_mem < subs[b].l2_mem;
     return a < b;
-}
-
-/* Measured rank for the top-(K-1) cut (item 2): higher l2_gbps is
- * better. Subsets with no measurement (l2_gbps == 0) rank after all
- * measured ones, ordered by the static l2_rank_less as a fallback.
- * The static signal can misrank vs measured performance (RDP(5):
- * measured-best was static #5), so the cut uses the measured signal
- * whenever it exists. */
-static int l2_measured_less(const survivor_subset_t *subs, int a, int b)
-{
-    int ma = subs[a].l2_gbps > 0.0;
-    int mb = subs[b].l2_gbps > 0.0;
-    if (ma != mb)
-        return ma > mb;
-    if (ma && subs[a].l2_gbps != subs[b].l2_gbps)
-        return subs[a].l2_gbps > subs[b].l2_gbps;
-    return l2_rank_less(subs, a, b);
 }
 
 void survivor_shortlist(survivor_subset_t *subs, int nsub, int *keep)
@@ -566,11 +447,9 @@ void survivor_shortlist(survivor_subset_t *subs, int nsub, int *keep)
          * RJ_SUBSET_PRUNE_INVERT hook: keep dominated instead) */
         in_pareto[i] = invert ? dominated : !dominated;
     }
-    /* Measured rank of the pareto members for the top-(K-1) cut:
+    /* Static rank of the pareto members for the top-(K-1) cut:
      * simple O(n^2) selection sort (the pareto set is tiny; avoids
-     * qsort_r portability issues). Orders by measured l2_gbps
-     * (item 2); static l2_rank_less is the fallback for unmeasured
-     * subsets. */
+     * qsort_r portability issues). */
     int *ranked = malloc((size_t)(nsub > 0 ? nsub : 1) * sizeof(int));
     int nranked = 0;
     if (ranked) {
@@ -580,7 +459,7 @@ void survivor_shortlist(survivor_subset_t *subs, int nsub, int *keep)
         for (int i = 0; i < nranked; i++) {
             int best = i;
             for (int j = i + 1; j < nranked; j++)
-                if (l2_measured_less(subs, ranked[j], ranked[best]))
+                if (l2_rank_less(subs, ranked[j], ranked[best]))
                     best = j;
             int tmp = ranked[i];
             ranked[i] = ranked[best];
@@ -588,7 +467,7 @@ void survivor_shortlist(survivor_subset_t *subs, int nsub, int *keep)
         }
     }
     /* The no-regression anchor: today's subset always survives
-     * (skipped under the inversion hook). Then the measured
+     * (skipped under the inversion hook). Then the statically
      * top-(K-1) pareto members, hard-capped at SURVIVOR_SHORTLIST_CAP
      * total. */
     int nkept = 0;

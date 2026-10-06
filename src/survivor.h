@@ -45,13 +45,6 @@ typedef struct {
     double l2_mem;  /* canonical version's real mem_per_byte (same
                      * NT/prefetch-blindness as l2_uops) */
     int l2_valid;   /* 1 if l2_uops/l2_mem hold a built version's values */
-    double l2_gbps; /* measured throughput of the canonical version
-                     * (GB/s, single-size quick timing; 0 = not measured).
-                     * The static (l2_uops, l2_mem) signal can misrank
-                     * subsets vs measured performance (item 2: on
-                     * RDP(5) the measured-best subset ranked #5
-                     * statically, outside the cap=3 shortlist), so the
-                     * shortlist orders pareto members by l2_gbps. */
 } survivor_subset_t;
 
 /* Enumerate every valid (non-singular) parity-row subset for a recover
