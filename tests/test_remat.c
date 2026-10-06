@@ -7,6 +7,13 @@
  * (test_correct/test_matrix only ever run the benchmark winner, which is
  * rarely a remat twin).
  *
+ * Matrix note: the RS(6,3)/RAID-6 cases below use explicit custom
+ * Vandermonde matrices (the historical default via rs_default_matrix),
+ * not the rj_topo_rs/rj_topo_raid6 constructors. Since A2 2.0 those
+ * constructors emit searched non-Vandermonde matrices (P_MULACC), and
+ * rematerialization is implemented only for P_HORNER, so the searched
+ * topologies cannot exercise the remat twins at all.
+ *
  * Cases:
  *   - RS(6,3) encode, AVX-512 nibble, U=8, remat: the headline twin
  *     (persistent needs 34 regs, remat needs 31).
@@ -83,12 +90,37 @@ static int count_ntriv(const plan_t *pl)
     return n;
 }
 
+/* Custom Vandermonde topology via the historical default matrix
+ * (rs_default_matrix): the A2 1.0 search's fixed point was byte-identical
+ * to this, and the planner still picks P_HORNER for it -- unlike the
+ * A2 2.0 searched matrices, which are non-Vandermonde (P_MULACC).
+ * Used so the remat cases below keep testing the P_HORNER remat twins. */
+static rj_topology *vandermonde_topo(int ndata, int npar)
+{
+    uint8_t *mat = malloc((size_t)npar * (size_t)ndata);
+    if (!mat)
+        return NULL;
+    rs_default_matrix(ndata, npar, mat);
+    rj_topology *t = rj_topo_custom(ndata, npar, mat);
+    free(mat);
+    return t;
+}
+
 /* Force-build one remat candidate and check it against the scalar ref.
  * expect_ntriv >= 0 locks the test to a specific nontrivial-coefficient
  * count (boundary coverage); -1 disables the check. force_all_trivial
  * rewrites the plan to an all-ones Horner plan (mat and horner_c alike,
  * so ref_run stays consistent) to exercise the c in {0,1} fast paths
- * and the dead mask-load elision in remat mode. */
+ * and the dead mask-load elision in remat mode.
+ *
+ * Kind note: this test asserts P_HORNER deliberately. Rematerialization
+ * is implemented only for P_HORNER (jit_build_version asserts, and
+ * plan_candidates enumerates remat twins only under pl->kind ==
+ * P_HORNER), so P_MULACC plans cannot exercise it. Since A2 2.0 the
+ * searched topologies (rj_topo_rs / rj_topo_raid6) emit non-Vandermonde
+ * matrices and pick P_MULACC; the callers below therefore pass explicit
+ * custom Vandermonde matrices (vandermonde_topo), for which the planner
+ * still takes the Horner branch. */
 static void test_remat_case(const char *name, rj_topology *t, mul_t mul,
                             int U, int force_all_trivial, int expect_ntriv)
 {
@@ -107,6 +139,9 @@ static void test_remat_case(const char *name, rj_topology *t, mul_t mul,
         return;
     }
     if (pl.kind != P_HORNER) {
+        /* P_HORNER is required, not incidental: remat twins exist only
+         * for Horner plans, and callers pass explicit custom
+         * Vandermonde matrices for exactly this reason. */
         CHECK(0, "%s: expected P_HORNER, got kind %d", name, pl.kind);
         plan_free(&pl);
         rj_op_free(&op);
@@ -210,6 +245,9 @@ static void test_planner_gfni_twin(void)
     plan_t pl;
     CHECK(plan_build(&ti, &op, "rs(6,4)", &pl, err, sizeof(err)) == 0,
           "plan: %s", err);
+    /* P_HORNER is still correct here: this is the custom historical
+     * Vandermonde matrix (rs_default_matrix), not an A2 2.0 searched
+     * one, so plan_select_strategy takes the Horner branch. */
     CHECK(pl.kind == P_HORNER, "expected P_HORNER, got kind %d", pl.kind);
 
     rj_cpu_info cpu;
@@ -241,8 +279,8 @@ int main(void)
         return 0;
     }
 
-    rj_topology *t63 = rj_topo_rs(6, 3);
-    CHECK(t63 != NULL, "rj_topo_rs(6,3)");
+    rj_topology *t63 = vandermonde_topo(6, 3);
+    CHECK(t63 != NULL, "vandermonde_topo(6,3)");
     if (t63) {
         test_remat_case("rs(6,3) nibble U=8", t63, MUL_NIBBLE, 8, 0, 2);
         rj_topo_free(t63);
@@ -253,8 +291,8 @@ int main(void)
      * c in {0,1} fast paths and the dead mask-load elision in remat
      * mode. */
     {
-        rj_topology *ta = rj_topo_rs(6, 3);
-        CHECK(ta != NULL, "rj_topo_rs(6,3)");
+        rj_topology *ta = vandermonde_topo(6, 3);
+        CHECK(ta != NULL, "vandermonde_topo(6,3)");
         if (ta) {
             test_remat_case("rs(6,3) all-trivial nibble U=8", ta,
                             MUL_NIBBLE, 8, 1, 0);
@@ -262,16 +300,16 @@ int main(void)
         }
     }
 
-    rj_topology *t6 = rj_topo_raid6(8);
-    CHECK(t6 != NULL, "rj_topo_raid6(8)");
+    rj_topology *t6 = vandermonde_topo(8, 2);
+    CHECK(t6 != NULL, "vandermonde_topo(8,2)");
     if (t6) {
         test_remat_case("raid6(8) nibble U=12", t6, MUL_NIBBLE, 12, 0, 1);
         rj_topo_free(t6);
     }
 
     if (cpu.gfni) {
-        rj_topology *tg = rj_topo_rs(6, 3);
-        CHECK(tg != NULL, "rj_topo_rs(6,3)");
+        rj_topology *tg = vandermonde_topo(6, 3);
+        CHECK(tg != NULL, "vandermonde_topo(6,3)");
         if (tg) {
             test_remat_case("rs(6,3) gfni U=9", tg, MUL_GFNI, 9, 0, 2);
             rj_topo_free(tg);

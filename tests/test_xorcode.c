@@ -3,7 +3,8 @@
  * Coverage:
  *  1. validity boundaries: prime/non-prime p, k/w envelope, the
  *     RJ_MAX_DISKS expanded-size cap, rj_xorcode_rows, rj_topo_raid6_rs
- *     preserving the old RS RAID-6 behavior (incl. P_HORNER plan kind).
+ *     preserving the old RS RAID-6 bounds (the matrix is the A2 2.0
+ *     searched one, so the plan kind is P_MULACC, not P_HORNER).
  *  2. matrix unit tests: binary entries, Liberation Q ones-count
  *     (kw+k-1, Plank FAST'08 3.3), exhaustive 2-disk MDS check via
  *     solve_recovery (the exact solver plan_build uses).
@@ -153,7 +154,10 @@ static void test_validity(void)
     CHECK(rj_topo_liberation(14) == NULL, "liberation(14): 272 > 256");
     CHECK(rj_topo_liberation(16) == NULL, "liberation(16): 306 > 256");
 
-    /* rj_topo_raid6_rs: the old RS RAID-6, unchanged semantics */
+    /* rj_topo_raid6_rs: the old RS RAID-6 bounds, unchanged (ndata/npar
+     * validity). The matrix itself is the A2 2.0 searched one, so the
+     * plan kind moved from P_HORNER to P_MULACC with the deliberate
+     * 2.0 parity-format change. */
     CHECK(rj_topo_raid6_rs(2) == NULL, "raid6_rs(2) must be NULL");
     CHECK(rj_topo_raid6_rs(52) == NULL, "raid6_rs(52) must be NULL");
     t = rj_topo_raid6_rs(8);
@@ -162,14 +166,16 @@ static void test_validity(void)
         CHECK(rj_topo_ndata(t) == 8 && rj_topo_npar(t) == 2,
               "raid6_rs(8) dims");
         CHECK(rj_xorcode_rows(t) == 0, "raid6_rs is not an xorcode");
-        /* old behavior: RS matrix -> P_HORNER plan */
+        /* A2 2.0: the searched RS matrix is non-Vandermonde, so
+         * plan_select_strategy picks P_MULACC (was P_HORNER under the
+         * historical Vandermonde default). */
         topo_int_t ti;
         char err[128];
         if (topo_int_build(&ti, t, err, sizeof(err)) == 0) {
             plan_t pl;
             rj_op op = rj_op_encode();
             if (plan_build(&ti, &op, "t", &pl, err, sizeof(err)) == 0) {
-                CHECK(pl.kind == P_HORNER, "raid6_rs plan kind %d",
+                CHECK(pl.kind == P_MULACC, "raid6_rs plan kind %d",
                       (int)pl.kind);
                 plan_free(&pl);
             } else {

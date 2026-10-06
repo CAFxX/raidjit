@@ -194,10 +194,15 @@ int main(void)
         free(pl.horner_c);
     }
 
-    /* 4. U=7 admission: rs(6,3) encode is HORNER n_out=3 with one
-     *    trivial row (need = 3*7+6+2*2 = 31 <= 32); U=7 nibble must be
-     *    offered, U=8 (34 regs) must not.
-     *    x86-only, like section 2 (synthetic x86 CPU). */
+    /* 4. U=7/U=8 admission: rs(6,3) encode is now MULACC n_out=3,
+     *    nontrivial (the A2 2.0 searched matrix is non-Vandermonde, so
+     *    plan_select_strategy picks P_MULACC, not P_HORNER -- the
+     *    deliberate 2.0 parity-format change). x86 nibble non-remat
+     *    needs n_out*U + 7 (t,tlo,thi,r1,r2,tbl,mask live): U=7 needs
+     *    28, U=8 needs 31 -- both <= 32, so both are offered. Under the
+     *    old P_HORNER plan U=8 needed 34 and was rejected; that verdict
+     *    belonged to the old plan kind's accounting, not to the
+     *    planner. x86-only, like section 2 (synthetic x86 CPU). */
 #if defined(__x86_64__)
     {
         rj_topology *t = rj_topo_rs(6, 3);
@@ -210,11 +215,28 @@ int main(void)
                   "topo build: %s", err);
             CHECK(plan_build(&ti, &op, "rs63", &pl, err, sizeof(err)) == 0,
                   "plan build: %s", err);
-            CHECK(pl.kind == P_HORNER, "expected HORNER, got %d", pl.kind);
+            CHECK(pl.kind == P_MULACC, "expected MULACC, got %d", pl.kind);
+            /* Pin the exact P_MULACC nibble accounting (non-remat): one
+             * more unroll would exceed the 32-reg file (3*9+7=34), so
+             * U=8 is the boundary admission. */
+            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0) == 31,
+                  "mulacc nibble U=8: got %d want 31",
+                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0));
+            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 7, 0) == 28,
+                  "mulacc nibble U=7: got %d want 28",
+                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 7, 0));
             cand_t cands[128];
             int nc = plan_candidates(&pl, &cpu, cands, 128, 0, 0);
+            CHECK(nc > 0, "no candidates");
             int saw_nib_u7 = 0, saw_nib_u8 = 0;
-            for (int i = 0; i < nc; i++)
+            for (int i = 0; i < nc; i++) {
+                /* every offered candidate must fit the regfile */
+                int need = plan_need_regs(cands[i].isa, cands[i].mul, &pl,
+                                          cands[i].U, cands[i].remat);
+                CHECK(need <= isa_nregs(cands[i].isa),
+                      "cand %s U=%d needs %d > %d regs",
+                      isa_name(cands[i].isa), cands[i].U, need,
+                      isa_nregs(cands[i].isa));
                 if (cands[i].isa == ISA_AVX512 &&
                     cands[i].mul == MUL_NIBBLE) {
                     if (cands[i].U == 7 && !cands[i].remat)
@@ -222,8 +244,9 @@ int main(void)
                     if (cands[i].U == 8 && !cands[i].remat)
                         saw_nib_u8 = 1;
                 }
-            CHECK(saw_nib_u7, "U=7 nibble (31 regs) should be offered");
-            CHECK(!saw_nib_u8, "U=8 nibble non-remat (34 regs) must be rejected");
+            }
+            CHECK(saw_nib_u7, "U=7 nibble (28 regs) should be offered");
+            CHECK(saw_nib_u8, "U=8 nibble (31 regs) should be offered");
             rj_op_free(&op);
             plan_free(&pl);
             topo_int_free(&ti);

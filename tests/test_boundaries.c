@@ -420,7 +420,11 @@ static void case_encode_raid6(const rj_cpu_info *cpu)
     CHECK(t != NULL, "rj_topo_raid6(5)");
     if (t) {
         rj_op op = rj_op_encode();
-        drive(t, &op, "raid6(5) encode", cpu, P_HORNER);
+        /* P_MULACC, not P_HORNER: rj_topo_raid6 emits the A2 2.0
+         * searched matrix, which is non-Vandermonde, so
+         * plan_select_strategy takes the multiply-accumulate branch
+         * (deliberate 2.0 parity-format change). */
+        drive(t, &op, "raid6(5) encode", cpu, P_MULACC);
         rj_op_free(&op);
         rj_topo_free(t);
     }
@@ -432,7 +436,9 @@ static void case_encode_rs63(const rj_cpu_info *cpu)
     CHECK(t != NULL, "rj_topo_rs(6,3)");
     if (t) {
         rj_op op = rj_op_encode();
-        drive(t, &op, "rs(6,3) encode", cpu, P_HORNER);
+        /* P_MULACC for the same reason as raid6(5) above: the searched
+         * A2 2.0 matrix is non-Vandermonde. */
+        drive(t, &op, "rs(6,3) encode", cpu, P_MULACC);
         rj_op_free(&op);
         rj_topo_free(t);
     }

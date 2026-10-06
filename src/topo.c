@@ -111,10 +111,12 @@ rj_topology *rj_topo_raid6_rs(int ndata)
     char nm[32];
     snprintf(nm, sizeof(nm), "raid6(%d)", ndata);
     rj_topology *t = topo_new(ndata, 2, nm);
-    /* RS default via the plan-time search (docs/matrix_search.md); the
-     * search's fixed point is the historical default, so the bytes are
-     * unchanged. Routes through matrix_search_default(), never
-     * rs_default_matrix() directly (A6 proof gate). */
+    /* RS default via the plan-time search (docs/matrix_search.md). Since
+     * A2 2.0 the search minimizes bitmatrix weight and emits strictly
+     * lighter non-Vandermonde matrices, so the bytes differ from the
+     * historical default by design (deliberate parity-format change; no
+     * backward compatibility). Routes through matrix_search_default(),
+     * never rs_default_matrix() directly (A6 proof gate). */
     if (t && matrix_search_default(ndata, 2, t->mat) != 0) {
         rj_topo_free(t);
         return NULL;
@@ -217,9 +219,12 @@ rj_topology *rj_topo_rs(int ndata, int npar)
     char nm[32];
     snprintf(nm, sizeof(nm), "rs(%d,%d)", ndata, npar);
     rj_topology *t = topo_new(ndata, npar, nm);
-    /* The default matrix now comes from the plan-time search
-     * (docs/matrix_search.md); the search's fixed point is the
-     * historical Vandermonde default, so the bytes are unchanged. */
+    /* The default matrix comes from the plan-time search 2.0
+     * (docs/matrix_search.md): the bitmatrix-weight objective emits
+     * non-Vandermonde matrices, so the bytes differ from the historical
+     * Vandermonde default by design (deliberate parity-format change).
+     * Consequence: plan_select_strategy picks P_MULACC, not P_HORNER,
+     * for these topologies. */
     if (t && npar > 0 && matrix_search_default(ndata, npar, t->mat) != 0) {
         rj_topo_free(t);
         return NULL;
