@@ -52,7 +52,8 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_matrix_search $(BUILDDIR)/test_xorcode \
         $(BUILDDIR)/test_notail_xorsched $(BUILDDIR)/test_survivor \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
-        $(BUILDDIR)/test_traps
+        $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
+        $(BUILDDIR)/test_recover_closedform
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -313,6 +314,8 @@ endif
 	./$(BUILDDIR)/test_tailduel
 	./$(BUILDDIR)/test_b4_prefetch
 	./$(BUILDDIR)/test_traps
+	./$(BUILDDIR)/test_planner_fuzz
+	./$(BUILDDIR)/test_recover_closedform
 
 # Sanitizer build: all tests under ASan+UBSan (leaks, OOB, UB).
 test-asan: clean
@@ -489,3 +492,9 @@ $(BUILDDIR)/test_xorcode: tests/test_xorcode.c $(BUILDDIR)/libraidjit.a $(HDRS) 
 
 $(BUILDDIR)/test_notail_xorsched: tests/test_notail_xorsched.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_notail_xorsched.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_planner_fuzz: tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
