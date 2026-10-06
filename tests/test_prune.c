@@ -96,6 +96,16 @@
  *      by design: pruning only removes); hook_wiring (Part 2b) FAILS:
  *      the verbose prune line disappears. Not a correctness mutation,
  *      but the wiring is now pinned.
+ *
+ * Mutation evidence (run 2026-10-06, I3 uarch cost model):
+ *  M-I3-1: all six uarch weight tables zeroed -> unit_uarch_weights_sane
+ *      FAILS (18 checks: non-positive weights, freq512 < 1) and
+ *      unit_uarch_cost_gfni_nibble_flip FAILS (4 checks: every uarch
+ *      cost collapses to 0.0, so no ordering holds). The veto and
+ *      preservation tests stay green (zeroed weights make the veto
+ *      vacuous, which is the correct fail-safe direction). The Part 5
+ *      ordering tests are therefore non-tautological: they genuinely
+ *      depend on the published port data in the weights.
  */
 #include "../include/raidjit.h"
 #include "../src/plan.h"
@@ -1297,6 +1307,184 @@ static void unit_twin_axes_pinned(void)
     }
 }
 
+/* ---------------- Part 5: uarch-aware cost model (I3) ---------------- */
+
+/* Every uarch tag has a sane weights entry (positive throughputs,
+ * freq derate >= 1); out-of-range tags fall back to the neutral entry,
+ * never NULL. */
+static void unit_uarch_weights_sane(void)
+{
+    for (int u = 0; u < RJ_UARCH_COUNT; u++) {
+        const rj_uarch_weights_t *w = rj_uarch_weights((rj_uarch_t)u);
+        CHECK(w != NULL, "weights null for uarch %d", u);
+        if (!w)
+            continue;
+        CHECK(w->t_ternlog > 0 && w->t_shuffle > 0 && w->t_xor > 0 &&
+                  w->t_gfni > 0 && w->t_ld64 > 0 && w->vec_bw > 0 &&
+                  w->mem_cpb > 0,
+              "non-positive weight for uarch %d", u);
+        CHECK(w->freq512 >= 1.0, "freq512 < 1 for uarch %d", u);
+    }
+    CHECK(rj_uarch_weights((rj_uarch_t)999) != NULL,
+          "out-of-range uarch weights null");
+    CHECK(rj_uarch_weights((rj_uarch_t)-1) != NULL,
+          "negative uarch weights null");
+}
+
+/* Detection is stable and cached; the test override pins the uarch
+ * deterministically and restores cleanly. */
+static void unit_uarch_detect(void)
+{
+    rj_uarch_t a = rj_cpu_uarch();
+    rj_uarch_t b = rj_cpu_uarch();
+    CHECK(a == b, "uarch detection not stable: %d vs %d", (int)a, (int)b);
+    CHECK(a >= RJ_UARCH_UNKNOWN && a < RJ_UARCH_COUNT,
+          "detected uarch %d out of range", (int)a);
+#if defined(__x86_64__)
+    /* This test binary targets x86-64: detection must identify a real
+     * vendor rather than UNKNOWN. (On aarch64/riscv UNKNOWN is the
+     * correct answer and this check is compiled out.) */
+    CHECK(a != RJ_UARCH_UNKNOWN, "x86-64 host detected as UNKNOWN uarch");
+#endif
+    CHECK(rj_uarch_current() == a, "current != detected without override");
+    rj_uarch_override(RJ_UARCH_INTEL_ICELAKE);
+    CHECK(rj_uarch_current() == RJ_UARCH_INTEL_ICELAKE,
+          "uarch override not honored");
+    rj_uarch_override(a); /* restore host detection */
+    CHECK(rj_uarch_current() == a, "uarch override restore failed");
+}
+
+/* I3 adversarial: the uarch-aware cost model keeps (ranks first) a
+ * candidate the generic uop-count model would drop -- and the ranking
+ * differs BY UARCH, from published port asymmetries.
+ *
+ * Hand-constructed pair (P_MULACC, AVX-512, same mem):
+ *   A: MUL_GFNI,   1.00 uops/B   (generic model: A wins -> B "dropped")
+ *   B: MUL_NIBBLE, 1.20 uops/B
+ * Published throughputs (uops.info; per-value sources in the weights
+ * table in src/plan.c):
+ *   Ice Lake: GFNI ops cost 1.0 cyc (p0-bound) while the nibble
+ *     kernel blend is cheaper (shuffles 1.0, xors/loads 0.5), so
+ *     cost(B) < cost(A): the uarch model keeps B.
+ *   Zen4: GFNI and nibble blends tie (0.83 cyc/uop), so fewer uops
+ *     win: cost(A) < cost(B), A kept.
+ *   Zen5: blends tie (0.42 cyc/uop): A kept.
+ * The SAME pair ranks B-first on Intel but A-first on AMD: port
+ * pressure, not uop counts. All figures are static estimates (est.);
+ * the benchmark remains the arbiter. */
+static void unit_uarch_cost_gfni_nibble_flip(void)
+{
+    cand_t ca = { .isa = ISA_AVX512, .mul = MUL_GFNI, .U = 8 };
+    cand_t cb = { .isa = ISA_AVX512, .mul = MUL_NIBBLE, .U = 8 };
+    double mem = 30.0;
+    double costA_icl =
+        plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_INTEL_ICELAKE);
+    double costB_icl =
+        plan_uarch_cost(1.20, mem, P_MULACC, &cb, RJ_UARCH_INTEL_ICELAKE);
+    CHECK(costB_icl < costA_icl,
+          "ICL: uarch model should rank nibble (%.4f) above GFNI (%.4f)",
+          costB_icl, costA_icl);
+    double costA_z4 =
+        plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_AMD_ZEN4);
+    double costB_z4 =
+        plan_uarch_cost(1.20, mem, P_MULACC, &cb, RJ_UARCH_AMD_ZEN4);
+    CHECK(costA_z4 < costB_z4,
+          "Zen4: uarch model should rank GFNI (%.4f) above nibble (%.4f)",
+          costA_z4, costB_z4);
+    double costA_z5 =
+        plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_AMD_ZEN5);
+    double costB_z5 =
+        plan_uarch_cost(1.20, mem, P_MULACC, &cb, RJ_UARCH_AMD_ZEN5);
+    CHECK(costA_z5 < costB_z5,
+          "Zen5: uarch model should rank GFNI (%.4f) above nibble (%.4f)",
+          costA_z5, costB_z5);
+    /* The neutral (UNKNOWN) entry reproduces the generic uop-count
+     * model: there A still wins (1.00 < 1.20), i.e. the generic model
+     * is what would "drop" B on every uarch. */
+    double costA_unk =
+        plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_UNKNOWN);
+    double costB_unk =
+        plan_uarch_cost(1.20, mem, P_MULACC, &cb, RJ_UARCH_UNKNOWN);
+    CHECK(costA_unk < costB_unk,
+          "UNKNOWN: generic fallback should rank GFNI (%.4f) above "
+          "nibble (%.4f)",
+          costA_unk, costB_unk);
+}
+
+/* I3 adversarial, prune level: the uarch veto keeps a candidate the
+ * generic triple would drop.
+ *
+ * Hand-constructed hostile port asymmetry: a hypothetical uarch where
+ * VPTERNLOGD runs on a single slow port (t_ternlog = 2.0 cyc) while
+ * xors stay cheap (t_xor = 0.5) -- i.e. 2*t_xor < t_ternlog, so the
+ * twin's substitution is port-hostile. The generic triple prunes the
+ * plain (unit_twin_prunes_plain proves it on the same fixture); the
+ * uarch-aware gate vetoes. On every REAL modeled uarch the
+ * substitution is port-profitable, so the veto never fires there
+ * (first loop pins this); it guards future twin/codegen changes. */
+static void unit_uarch_veto_hostile(void)
+{
+    version_t twin, plain;
+    mkv(&twin, P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 1, 1.346,
+        32.016, 5440, "twin");
+    mkv(&plain, P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 0, 1.502,
+        32.016, 5824, "plain");
+    for (int u = 0; u < RJ_UARCH_COUNT; u++) {
+        const rj_uarch_weights_t *w = rj_uarch_weights((rj_uarch_t)u);
+        CHECK(prune_twin_uarch_ok(&twin, &plain, w),
+              "veto fired on real uarch %d: the substitution is "
+              "port-profitable on all modeled uarchs",
+              u);
+    }
+    rj_uarch_weights_t hostile = {
+        .t_ternlog = 2.0, /* slow single-port ternlog unit */
+        .t_shuffle = 1.0,
+        .t_xor = 0.5,
+        .t_gfni = 1.0,
+        .t_ld64 = 0.5,
+        .vec_bw = 4.0,
+        .mem_cpb = 0.5 / 64.0,
+        .freq512 = 1.0,
+    };
+    CHECK(!prune_twin_uarch_ok(&twin, &plain, &hostile),
+          "veto must fire under the hostile port asymmetry");
+    /* Non-nibble twins carry no substitution information: no veto even
+     * under hostile weights (vacuous, never drops). */
+    version_t gtwin, gplain;
+    mkv(&gtwin, P_MULACC, ISA_AVX512, MUL_GFNI, 8, 0, 0, 1, 1.0, 30.0,
+        5000, "gtwin");
+    mkv(&gplain, P_MULACC, ISA_AVX512, MUL_GFNI, 8, 0, 0, 0, 1.2, 30.0,
+        5200, "gplain");
+    CHECK(prune_twin_uarch_ok(&gtwin, &gplain, &hostile),
+          "veto must stay vacuous off the nibble twin");
+}
+
+/* The validated P_MULACC twin direction must hold under the
+ * uarch-aware gate on EVERY modeled uarch: the realistic fixture
+ * prunes identically regardless of host. Runs prune_versions
+ * end-to-end with the uarch override pinned per tag. */
+static void unit_uarch_prune_preserved(void)
+{
+    rj_uarch_t host = rj_cpu_uarch();
+    for (int u = 0; u < RJ_UARCH_COUNT; u++) {
+        rj_uarch_override((rj_uarch_t)u);
+        version_t vs[2];
+        mkv(&vs[0], P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 0, 1.502,
+            32.016, 5824, "plain");
+        mkv(&vs[1], P_MULACC, ISA_AVX512, MUL_NIBBLE, 8, 0, 0, 1, 1.346,
+            32.016, 5440, "twin");
+        int n = prune_versions(vs, 2, 0);
+        CHECK(n == 1, "uarch %d: want 1 survivor, got %d", u, n);
+        if (n == 1) {
+            CHECK(find_desc(vs, n, "twin") == 0,
+                  "uarch %d: twin must survive", u);
+            CHECK(find_desc(vs, n, "plain") < 0,
+                  "uarch %d: plain must be pruned", u);
+        }
+    }
+    rj_uarch_override(host); /* restore host detection */
+}
+
 int main(void)
 {
     printf("prune unit:\n");
@@ -1321,6 +1509,12 @@ int main(void)
     unit_pxor_xsched_triple_survives();
     unit_mem_asymmetry_no_prune();
     unit_twin_axes_pinned();
+    printf("prune uarch-aware cost model (I3):\n");
+    unit_uarch_weights_sane();
+    unit_uarch_detect();
+    unit_uarch_cost_gfni_nibble_flip();
+    unit_uarch_veto_hostile();
+    unit_uarch_prune_preserved();
     printf("prune e2e smoke (rj_compile with/without pruning):\n");
     e2e_smoke();
     printf("prune hook wiring (verbose prune line):\n");

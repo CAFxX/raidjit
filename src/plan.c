@@ -1007,3 +1007,250 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
     }
     return n;
 }
+
+/* ============ I3: uarch-aware static cost model ============ */
+
+#if defined(__x86_64__)
+/* Local CPUID helper (src/x86_64/cpu.c has its own static copy; this
+ * TU must not depend on backend internals). */
+static void uarch_cpuid(unsigned leaf, unsigned sub,
+                        unsigned *a, unsigned *b, unsigned *c, unsigned *d)
+{
+    __asm__ volatile("cpuid"
+                     : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
+                     : "a"(leaf), "c"(sub));
+}
+#endif
+
+/* Test-only override (see cpu.h). */
+static rj_uarch_t uarch_override_val = RJ_UARCH_UNKNOWN;
+static int uarch_override_on = 0;
+
+void rj_uarch_override(rj_uarch_t u)
+{
+    uarch_override_val = u;
+    uarch_override_on = 1;
+}
+
+rj_uarch_t rj_cpu_uarch(void)
+{
+#if defined(__x86_64__)
+    static int done = 0;
+    static rj_uarch_t cached = RJ_UARCH_UNKNOWN;
+    if (done)
+        return cached;
+    done = 1;
+    unsigned a, b, c, d;
+    uarch_cpuid(0, 0, &a, &b, &c, &d);
+    if (a < 1)
+        return cached; /* no CPUID leaf 1: unknown */
+    char vendor[13];
+    memcpy(vendor + 0, &b, 4);
+    memcpy(vendor + 4, &d, 4);
+    memcpy(vendor + 8, &c, 4);
+    vendor[12] = '\0';
+    int is_intel = memcmp(vendor, "GenuineIntel", 12) == 0;
+    int is_amd = memcmp(vendor, "AuthenticAMD", 12) == 0;
+    uarch_cpuid(1, 0, &a, &b, &c, &d);
+    /* Family/model with the extended fields (Intel SDM vol. 2A, CPUID):
+     * family = extfam + basefam, model = (extmod << 4) | basemodel. */
+    unsigned family = ((a >> 8) & 0xFu) + ((a >> 20) & 0xFFu);
+    unsigned model = ((a >> 4) & 0xFu) | ((a >> 12) & 0xF0u);
+    if (is_intel && family == 6) {
+        switch (model) {
+        case 0x55: /* Skylake-X / Cascade Lake */
+            cached = RJ_UARCH_INTEL_SKYLAKEX;
+            break;
+        case 0x6A: /* Ice Lake-SP */
+        case 0x6C: /* Ice Lake-SP */
+        case 0x7D: /* Ice Lake client */
+        case 0x7E: /* Ice Lake client */
+            cached = RJ_UARCH_INTEL_ICELAKE;
+            break;
+        case 0x8F: /* Sapphire Rapids */
+        case 0xCF: /* Emerald Rapids */
+            cached = RJ_UARCH_INTEL_SAPPHIRERAPIDS;
+            break;
+        default:
+            cached = RJ_UARCH_INTEL;
+            break;
+        }
+    } else if (is_intel) {
+        cached = RJ_UARCH_INTEL;
+    } else if (is_amd) {
+        if (family == 0x19) {
+            if ((model >= 0x10 && model <= 0x1F) || /* Genoa */
+                (model >= 0xA0 && model <= 0xAF))   /* Bergamo (Zen4c) */
+                cached = RJ_UARCH_AMD_ZEN4;
+            else
+                cached = RJ_UARCH_AMD_ZEN3;
+        } else if (family == 0x1A) {
+            cached = RJ_UARCH_AMD_ZEN5;
+        } else {
+            cached = RJ_UARCH_AMD;
+        }
+    }
+    return cached;
+#else
+    /* AArch64 / RISC-V: no per-uarch port data is modeled (I3 is an
+     * x86-64 cost model); the neutral entry keeps the static model
+     * uarch-independent there. */
+    return RJ_UARCH_UNKNOWN;
+#endif
+}
+
+rj_uarch_t rj_uarch_current(void)
+{
+    if (uarch_override_on)
+        return uarch_override_val;
+    return rj_cpu_uarch();
+}
+
+/* Per-uarch port-pressure weights. Each t_* is cycles per instruction
+ * (reciprocal throughput) for the AVX-512 zmm op class, from published
+ * port data -- NOT measurements. All figures below are static
+ * estimates; the benchmark remains the final arbiter.
+ *
+ * Sources (uops.info per-microarchitecture instruction pages;
+ * "computed" = from the listed port usage, "measured" = nanoBench):
+ * - VPTERNLOGD zmm: https://uops.info/html-instr/VPTERNLOGD_ZMM_ZMM_ZMM_I8.html
+ *     Intel (ICL/EMR/SKX): 0.50, 1 uop, ports p0/p5.
+ *     Zen4: measured 0.57/0.58 (unrolled); the port-implied 0.25 is
+ *       wrong for 512-bit (double-pumped 256-bit pipes: 2x512-bit/cycle
+ *       = 0.50). Zen5: measured 0.28-0.40 -> 0.33.
+ * - VPSHUFB zmm: https://uops.info/html-instr/VPSHUFB_ZMM_ZMM_ZMM.html
+ *     Intel: 1.00, 1 uop, port p5. Zen4: measured 1.00 (AMD doc 1.00).
+ *     Zen5: measured 0.50.
+ * - VPXORD zmm: https://uops.info/html-instr/VPXORD_ZMM_ZMM_ZMM.html
+ *     Intel: 0.50, 1 uop, ports p0/p5. Zen4: measured 0.50 (AMD doc
+ *     0.50). Zen5: 0.25 (AMD doc; measured 0.25/0.37).
+ * - VGF2P8MULB zmm: https://uops.info/html-instr/VGF2P8MULB_ZMM_ZMM_ZMM.html
+ *     Intel: 1.00, 1 uop, port p0. Zen4: measured 1.00 (AMD doc 1.00).
+ *     Zen5: measured 0.50.
+ * - VGF2P8AFFINEQB zmm: https://uops.info/html-instr/VGF2P8AFFINEQB_ZMM_ZMM_ZMM_I8.html
+ *     Intel: 1.00, 1 uop, port p0. Zen4: measured 1.00. Zen5: 0.50.
+ * - 64-byte vector load: Intel 0.50 (two 32B/cycle load ports); Zen4
+ *   1.00 (double-pumped 32B pipes -> one 64B load/cycle; AMD SOG);
+ *   Zen5 0.50 (est.: native 512-bit datapath, two loads/cycle).
+ * - freq512: Intel documents license-based frequency reduction under
+ *   sustained 512-bit execution (Intel 64 and IA-32 Architectures
+ *   Optimization Reference Manual); the numeric derates are rough
+ *   estimates (est.): SKX 1.10, SPR/EMR 1.05, client ICL ~1.0, AMD 1.0
+ *   (no 512-bit downclocking).
+ * - vec_bw (fallback dispatch width): Intel 4, AMD 6 -- approximate,
+ *   only used for candidate classes without a kernel model.
+ * - SKX has no GFNI: t_gfni falls back to the Intel value (unused in
+ *   practice). Zen3 has no AVX-512: it aliases the generic AMD row
+ *   (the 512-bit entries are unused there).
+ * - RJ_UARCH_UNKNOWN reproduces the old generic roofline
+ *   (uops/3.5 + mem/64): all t_* = 1/3.5, vec_bw = 3.5, so the cost
+ *   model degrades gracefully to uarch-independent behavior. */
+static const rj_uarch_weights_t uarch_w_unknown = {
+    1.0 / 3.5, 1.0 / 3.5, 1.0 / 3.5, 1.0 / 3.5, 1.0 / 3.5,
+    3.5, 1.0 / 64.0, 1.0
+};
+static const rj_uarch_weights_t uarch_w_icl = {
+    0.50, 1.00, 0.50, 1.00, 0.50,
+    4.0, 0.50 / 64.0, 1.00
+};
+static const rj_uarch_weights_t uarch_w_skx = {
+    0.50, 1.00, 0.50, 1.00, 0.50,
+    4.0, 0.50 / 64.0, 1.10 /* est. */
+};
+static const rj_uarch_weights_t uarch_w_spr = {
+    0.50, 1.00, 0.50, 1.00, 0.50,
+    4.0, 0.50 / 64.0, 1.05 /* est. */
+};
+static const rj_uarch_weights_t uarch_w_zen4 = {
+    0.50, 1.00, 0.50, 1.00, 1.00,
+    6.0, 1.00 / 64.0, 1.00
+};
+static const rj_uarch_weights_t uarch_w_zen5 = {
+    0.33, 0.50, 0.25, 0.50, 0.50,
+    6.0, 0.50 / 64.0, 1.00
+};
+
+const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u)
+{
+    switch (u) {
+    case RJ_UARCH_INTEL_SKYLAKEX:
+        return &uarch_w_skx;
+    case RJ_UARCH_INTEL_ICELAKE:
+    case RJ_UARCH_INTEL:
+        return &uarch_w_icl;
+    case RJ_UARCH_INTEL_SAPPHIRERAPIDS:
+        return &uarch_w_spr;
+    case RJ_UARCH_AMD_ZEN4:
+    case RJ_UARCH_AMD_ZEN3: /* no AVX-512; 512-bit entries unused */
+    case RJ_UARCH_AMD:
+        return &uarch_w_zen4;
+    case RJ_UARCH_AMD_ZEN5:
+        return &uarch_w_zen5;
+    case RJ_UARCH_UNKNOWN:
+    default:
+        return &uarch_w_unknown;
+    }
+}
+
+double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
+                       plan_kind_t kind, const cand_t *cand, rj_uarch_t u)
+{
+    const rj_uarch_weights_t *w = rj_uarch_weights(u);
+    if (!cand) /* no candidate axes: generic dispatch-width rate */
+        return uops_per_byte / w->vec_bw + mem_per_byte * w->mem_cpb;
+    /* Characteristic multiply-kernel op mix per candidate class.
+     * Counts are per GF multiply (nibble/GFNI) or per folded xor pair
+     * (P_XOR), read off the emitter sequences in src/x86_64/jit.c:
+     * mulacc_column emits 2 pool loads + 2 VPSHUFB + the fold (2 VPXOR,
+     * or 1 VPTERNLOGD in the +ternlog twin); the GFNI path emits
+     * 1 VGF2P8AFFINEQB + 1 VGF2P8MULB + 1 VPXOR with the affine-table
+     * pool load amortized across the column (hence ld 0). P_XOR mixes
+     * are approximate: the body is a pure xor reduction (2 xors per
+     * load in the plain form; the twin folds each pair into one
+     * VPTERNLOGD). The blend covers the uarch-sensitive kernel only;
+     * kernel-external uops (nibble split, loop overhead, stores) are
+     * uarch-neutral to first order and folded into the same per-uop
+     * rate. This is a HEURISTIC for static ordering (est.), not a
+     * cycle-accurate model: the benchmark is the final arbiter. */
+    double n_tl = 0.0, n_shuf = 0.0, n_xor = 0.0, n_gfni = 0.0, n_ld = 0.0;
+    int modeled = 0;
+    if (cand->isa == ISA_AVX512) {
+        if (kind == P_MULACC || kind == P_DELTA || kind == P_HORNER) {
+            if (cand->mul == MUL_GFNI) {
+                n_gfni = 2.0;
+                n_xor = 1.0;
+                modeled = 1;
+            } else if (cand->mul == MUL_NIBBLE) {
+                n_shuf = 2.0;
+                n_ld = 2.0;
+                if (cand->ternlog)
+                    n_tl = 1.0;
+                else
+                    n_xor = 2.0;
+                modeled = 1;
+            }
+        } else if (kind == P_XOR) {
+            n_ld = 1.0;
+            if (cand->ternlog)
+                n_tl = 1.0;
+            else
+                n_xor = 2.0;
+            modeled = 1;
+        }
+    }
+    double w_uop;
+    if (modeled) {
+        double ntot = n_tl + n_shuf + n_xor + n_gfni + n_ld;
+        w_uop = (n_tl * w->t_ternlog + n_shuf * w->t_shuffle +
+                 n_xor * w->t_xor + n_gfni * w->t_gfni +
+                 n_ld * w->t_ld64) / ntot;
+    } else {
+        /* No kernel model for this class (non-AVX512 ISA or exotic
+         * mul): generic dispatch-width rate. */
+        w_uop = 1.0 / w->vec_bw;
+    }
+    double cost = uops_per_byte * w_uop + mem_per_byte * w->mem_cpb;
+    if (cand->isa == ISA_AVX512)
+        cost *= w->freq512;
+    return cost;
+}

@@ -221,6 +221,48 @@ int isa_vl(isa_t isa); /* vector length in bytes */
  * comparing against isa_nregs(ISA_RVV). */
 int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat);
 
+/* Per-microarchitecture port-pressure weights for the static cost
+ * model (I3). Each t_* is cycles per instruction -- the reciprocal
+ * throughput -- for the named AVX-512 op class on that uarch, taken
+ * from published port data (uops.info per-microarchitecture pages and
+ * vendor documentation; see the table in src/plan.c for per-value
+ * sources). vec_bw is the generic vector-uop dispatch width
+ * (uops/cycle), used as the fallback for candidate classes without a
+ * characteristic kernel model. mem_cpb is cycles per memory byte
+ * (load-dominated). freq512 is the sustained-frequency derate applied
+ * to 512-bit-vector candidates (Intel license-based downclocking under
+ * sustained AVX-512; an estimate, >= 1.0).
+ *
+ * These are STATIC ESTIMATES, not measurements: they feed heuristic
+ * ordering and the prune-soundness gate only. The benchmark remains
+ * the final arbiter (Carlo's invariant). */
+typedef struct {
+    double t_ternlog; /* VPTERNLOGD zmm */
+    double t_shuffle; /* VPSHUFB zmm */
+    double t_xor;     /* VPXORD zmm-class logic */
+    double t_gfni;    /* VGF2P8MULB / VGF2P8AFFINEQB zmm */
+    double t_ld64;    /* 64-byte vector load */
+    double vec_bw;    /* generic vector-uop dispatch width (uops/cycle) */
+    double mem_cpb;   /* cycles per memory byte */
+    double freq512;   /* 512-bit sustained-frequency derate (est., >= 1) */
+} rj_uarch_weights_t;
+
+/* Weights for a uarch tag (never NULL; unknown tags fall back to the
+ * neutral entry). */
+const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u);
+
+/* Uarch-aware static cost estimate (cycles/byte, est.) for a candidate:
+ * the static (uops, mem) model re-weighted by the candidate's
+ * characteristic op mix at this uarch's published throughputs, so the
+ * cost reflects port pressure rather than raw uop counts. The op mix
+ * is structural per (kind, isa, mul, ternlog) class, read off the
+ * emitter sequences (see src/plan.c); classes without a kernel model
+ * fall back to the generic dispatch width. Intended for heuristic
+ * candidate ordering (static only -- never a substitute for the
+ * benchmark). */
+double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
+                       plan_kind_t kind, const cand_t *cand, rj_uarch_t u);
+
 /* Coefficient-triviality predicate: 1 iff some coefficient the vector
  * nibble path would multiply by lies outside {0,1} -- i.e. the nibble
  * split, its 0x0F mask register, and the table temps are really needed.

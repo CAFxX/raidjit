@@ -68,4 +68,13 @@
 
 int prune_versions(version_t *vs, int nv, unsigned flags);
 
+/* Uarch-aware leg of the twin dominance gate (I3, prune-soundness P1),
+ * exposed for tests. Returns 1 when the +ternlog twin's 2xVPXOR ->
+ * VPTERNLOGD substitution is not port-hostile under the given
+ * per-uarch weights (i.e. pruning the plain may proceed); 0 when the
+ * substitution costs cycles on that uarch (the plain must be kept).
+ * See src/prune.c for the derivation. */
+int prune_twin_uarch_ok(const version_t *twin, const version_t *plain,
+                        const rj_uarch_weights_t *w);
+
 #endif

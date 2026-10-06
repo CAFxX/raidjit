@@ -43,6 +43,22 @@ Version B (plain, `ternlog=0`) is pruned iff there exists a version A
    `A.code_size     <= B.code_size`,
    with at least one strict (`eps = 1e-9`, float-comparison dust -- NOT
    the 1.5% `select_by_time` noise floor).
+4. **Uarch-aware leg** (I3, prune-soundness P1): the twin's uop saving
+   comes from a single structural substitution -- each saved uop is a
+   `(2 VPXOR -> 1 VPTERNLOGD)` fold of the nibble path's
+   `acc ^= r1 ^ r2` (the twins are otherwise structurally identical).
+   In port-pressure terms the substitution saves
+   `du * (2*t_xor - t_ternlog)` cycles/byte, with the throughputs taken
+   from per-uarch port-pressure weights derived from published data
+   (see "Uarch-aware cost model" below; the uarch tag comes from CPUID).
+   If the substitution is port-HOSTILE on this uarch (the "saved" uop
+   actually costs cycles), the plain candidate may win the benchmark
+   here, so the prune is vetoed and the plain is kept. The veto is
+   veto-only: it keeps candidates, never drops anything the triple
+   gate kept. On current published data the substitution is
+   port-profitable on every modeled uarch, so the veto never fires
+   there -- it guards future twin/codegen changes. A refusal is logged
+   under `PRUNE_VERBOSE`.
 
 Survivors are compacted to `vs[0..ret-1]` preserving original relative
 order; the return value is the new count. Pruned versions are finalized
@@ -50,6 +66,47 @@ inside the call (`jit_free_version`, releasing their executable
 mappings); the caller owns only the survivors. A defensive fallback
 keeps `vs[0]` if the survivor set were ever empty (unreachable: the
 twin itself is never pruned by this rule).
+
+### Uarch-aware cost model (I3)
+
+The planner's static uop model is x86-generic, but Intel vs AMD port
+pressures differ (VPTERNLOGD port count, GFNI throughput, 512-bit
+frequency effects, shuffle-port width). `src/plan.c` therefore carries
+a small uarch-aware cost model, used by the prune gate above and
+exposed for heuristic candidate ordering:
+
+- **Uarch tag** (`rj_uarch_t`, `src/cpu.h`): derived from CPUID vendor
+  + family/model on x86-64 -- Intel vs AMD at minimum, extended to
+  families where port data differs (Skylake-X, Ice Lake,
+  Sapphire Rapids, Zen3/4/5). Other architectures report
+  `RJ_UARCH_UNKNOWN`. A test-only override (`rj_uarch_override`)
+  pins the tag deterministically in tests.
+- **Per-uarch weights** (`rj_uarch_weights_t`): cycles per instruction
+  (reciprocal throughput) for the key AVX-512 op classes --
+  VPTERNLOGD, VPSHUFB, VPXORD-class logic, GFNI
+  (VGF2P8MULB/VGF2P8AFFINEQB), 64-byte loads -- plus a generic
+  dispatch width, a memory-bytes term, and a 512-bit
+  sustained-frequency derate for Intel server parts. Every value is a
+  static estimate from published port data (uops.info
+  per-microarchitecture instruction pages; Intel/AMD documentation),
+  with per-value sources in the table comment in `src/plan.c`. The
+  `RJ_UARCH_UNKNOWN` entry reproduces the old generic roofline
+  (`uops/3.5 + mem/64`), so unmodeled machines behave as before.
+- **Cost function** (`plan_uarch_cost`, declared in `src/plan.h`):
+  re-weights the static `(uops, mem)` model by the candidate's
+  characteristic op mix (structural per `(kind, isa, mul, ternlog)`
+  class, read off the emitter sequences) at the uarch's published
+  throughputs. The cost reflects port pressure, not just uop counts.
+  Static ordering only -- it never replaces the benchmark, which
+  remains the final arbiter (no measured ranking; all figures est.).
+
+The prune gate uses the weights through the exact marginal form
+(`prune_twin_uarch_ok`): because the twins differ only in the fold
+substitution, the uarch comparison needs no op-mix reconstruction --
+it is exact given the uop delta. The blended cost function is the
+heuristic intended for candidate ordering (wiring it into
+`heuristic_select` in `src/bench.c` is a follow-up; that file is
+outside the I3 scope).
 
 ### Why this narrow (rejection of the broader rule)
 
@@ -284,8 +341,10 @@ calls it on its version list before benchmarking.
 
 - The dominance claim is relative to the static cost model and is
   validated host-specifically (AMD EPYC 9D25 + QEMU). The P_XOR twin
-  rejection shows the model can misrank; a CPU where it misranks a
-  P_MULACC twin pair would need `RJ_NO_PRUNE`.
+  rejection shows the model can misrank; the uarch-aware leg (I3)
+  additionally consults the host uarch's published port data before
+  pruning a P_MULACC/P_DELTA twin pair, and `RJ_NO_PRUNE` remains the
+  escape hatch for any CPU where the model still misranks.
 - Pruning runs after `jit_build_version`, so it saves benchmark wall
   time, not codegen time.
 - No-op for P_HORNER, P_XOR, P_DELTA, AArch64, RVV — the win

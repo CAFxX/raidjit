@@ -28,9 +28,15 @@
  * empirically competitive). The plan-kind restriction is enforced by
  * CODE (the kind guard in twin_dominates), not by the current triple
  * values: if the model ever claims a P_XOR twin dominates, pruning is
- * refused (with a verbose log under PRUNE_VERBOSE). The zero-flip ship
- * criterion in tests/test_prune.c is the empirical gate for this rule,
- * with the argmin tripwire (Part 3) as the loud detector for future
+ * refused (with a verbose log under PRUNE_VERBOSE). On top of the
+ * triple, a uarch-aware leg (I3, prune-soundness P1) vetoes the prune
+ * when the twin's 2xVPXOR->VPTERNLOGD substitution is port-hostile on
+ * the host uarch (per-uarch port-pressure weights from published
+ * throughputs; see prune_twin_uarch_ok). The veto is veto-only -- it
+ * keeps candidates, never drops -- so the static model cannot newly
+ * misrank on an unmodeled uarch. The zero-flip ship criterion in
+ * tests/test_prune.c is the empirical gate for this rule, with the
+ * argmin tripwire (Part 3) as the loud detector for future
  * model/codegen drift.
  *
  * Public API (also documented in prune.h for the later survivor-set
@@ -55,12 +61,49 @@ static const char *kind_name(plan_kind_t k)
     return "?";
 }
 
+/* Uarch-aware leg of the twin dominance gate (I3, prune-soundness P1).
+ *
+ * The twin's uop saving over plain comes from ONE structural
+ * substitution: each saved uop is a (2 VPXOR -> 1 VPTERNLOGD) fold of
+ * the nibble path's acc ^= r1 ^ r2 (src/x86_64/jit.c mulacc_column;
+ * the twins are otherwise structurally identical, which is also what
+ * makes the triple gate sound). In port-pressure terms the
+ * substitution saves du*(2*t_xor - t_ternlog) cycles/byte, with the
+ * throughputs taken from this uarch's published port data
+ * (rj_uarch_weights). If that quantity is negative -- the substitution
+ * is port-HOSTILE here, i.e. the "saved" uop actually costs cycles --
+ * the plain candidate may win the benchmark on this uarch, so pruning
+ * must keep it.
+ *
+ * Returns 1 when the substitution is not port-hostile (prune may
+ * proceed); 0 when it is (keep the plain). On current published data
+ * the substitution is port-profitable on every modeled uarch, so the
+ * veto never fires there; it guards future twin/codegen changes whose
+ * substitution might not be. Veto-only: it can keep the plain, never
+ * drop anything the triple gate kept. Exposed non-statically for
+ * tests (declared in prune.h). */
+int prune_twin_uarch_ok(const version_t *twin, const version_t *plain,
+                        const rj_uarch_weights_t *w)
+{
+    /* The substitution analysis is valid only for the AVX-512 nibble
+     * twin -- the only +ternlog twin the planner enumerates
+     * (plan_candidates gates ternlog twins on isa == ISA_AVX512 &&
+     * mul == MUL_NIBBLE). Anything else carries no uarch information:
+     * no veto. */
+    if (twin->cand.isa != ISA_AVX512 || twin->cand.mul != MUL_NIBBLE)
+        return 1;
+    double du = plain->uops_per_byte - twin->uops_per_byte;
+    double margin = du * (2.0 * w->t_xor - w->t_ternlog);
+    return margin >= -PRUNE_EPS;
+}
+
 /* A (the +ternlog twin) dominates B (plain) iff they are the same
  * candidate in every respect except the ternlog flag, their plan kind
- * is one where the twin direction is validated, and A's triple
- * pareto-dominates B's. */
+ * is one where the twin direction is validated, A's triple
+ * pareto-dominates B's, and the twin's uop substitution is not
+ * port-hostile on this uarch (prune_twin_uarch_ok). */
 static int twin_dominates(const version_t *a, const version_t *b,
-                          int verbose)
+                          const rj_uarch_weights_t *w, int verbose)
 {
     /* Plan-kind guard (attacker 17): the twin prune direction is
      * validated only for P_MULACC and P_DELTA
@@ -138,6 +181,19 @@ static int twin_dominates(const version_t *a, const version_t *b,
                     kind_name(a->kind));
         return 0;
     }
+    /* Uarch-aware leg (I3, prune-soundness P1): the twin's 2xVPXOR ->
+     * VPTERNLOGD substitution must not be port-hostile on this uarch
+     * (see prune_twin_uarch_ok). Veto-only: it keeps the plain, never
+     * drops anything the triple gate kept. */
+    if (!prune_twin_uarch_ok(a, b, w)) {
+        if (verbose)
+            fprintf(stderr,
+                    "raidjit: prune: twin's 2xVPXOR->VPTERNLOGD "
+                    "substitution is port-hostile on this uarch "
+                    "(t_ternlog=%.2f > 2*t_xor=%.2f) -- NOT pruning\n",
+                    w->t_ternlog, 2.0 * w->t_xor);
+        return 0;
+    }
     return 1;
 }
 
@@ -160,11 +216,16 @@ int prune_versions(version_t *vs, int nv, unsigned flags)
     if (!dominated)
         return nv; /* allocation failure: prune nothing (safe) */
     int verbose = (flags & PRUNE_VERBOSE) != 0;
+    /* Uarch tag for the port-pressure leg of the dominance gate,
+     * resolved once per call (test override honored via
+     * rj_uarch_current). */
+    const rj_uarch_weights_t *w =
+        rj_uarch_weights(rj_uarch_current());
     for (int i = 0; i < nv; i++) {
         for (int j = 0; j < nv; j++) {
             if (i == j || dominated[j])
                 continue;
-            if (twin_dominates(&vs[i], &vs[j], verbose))
+            if (twin_dominates(&vs[i], &vs[j], w, verbose))
                 dominated[j] = 1;
         }
     }
