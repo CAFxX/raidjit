@@ -518,7 +518,13 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         if (nis == 0)
             return 0;
         static const int Us_neon[] = {8, 7, 6, 5, 4, 3, 2, 1};
-        static const int Us_sve[] = {5, 4, 3, 2, 1};
+        /* SVE unrolls to 8 like NEON/x86: the MUL VL lane immediate is
+         * a signed 4-bit value (u in 0..7 fits), and the exact
+         * register-pressure filter below rejects (n_out,U) combos
+         * that don't fit the 24-reg SVE file. The 24-reg ceiling
+         * ([aarch64-remediation #3]) makes U=6-8 newly feasible where
+         * the old 16-reg assumption rejected them. */
+        static const int Us_sve[] = {8, 7, 6, 5, 4, 3, 2, 1};
         for (int ii = 0; ii < nis && n < maxout; ii++) {
             isa_t isa = isas[ii];
             /* AArch64 register files: NEON v0-v15 (16 regs), SVE
@@ -527,7 +533,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
              * source of truth. */
             int nregs = isa_nregs(isa);
             const int *Us = (isa == ISA_SVE) ? Us_sve : Us_neon;
-            int nU = (isa == ISA_SVE) ? 5 : 8;
+            int nU = 8;
             for (int ui = 0; ui < nU && n < maxout; ui++) {
                 int U = Us[ui];
                 int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0);
@@ -563,7 +569,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
     {
         if (!cpu->rvv)
             return 0;
-        static const int Us[] = {5, 4, 3, 2, 1};
+        /* RVV unrolls to 8 like x86/NEON/SVE: the exact register-pressure
+         * filter below (need * lmul <= 32) rejects (n_out,U,lmul) combos
+         * that don't fit the 32 physical registers. */
+        static const int Us[] = {8, 7, 6, 5, 4, 3, 2, 1};
         /* LMUL is a genuine tuning axis on RVV: each vector instruction
          * processes lmul*NOMVL bytes, so wider groups divide the per-byte
          * uop/mem cost, at the price of lmul physical registers per
@@ -590,7 +599,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             muls[nmuls++] = MUL_ZVBC;
         muls[nmuls++] = MUL_NIBBLE;
         for (int mi = 0; mi < nmuls && n < maxout; mi++) {
-            for (int ui = 0; ui < 5 && n < maxout; ui++) {
+            for (int ui = 0; ui < 8 && n < maxout; ui++) {
                 for (int li = 0; li < 4 && n < maxout; li++) {
                     int U = Us[ui];
                     int lmul = lmuls[li];
@@ -612,7 +621,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
              * Zvbc path has no tables to rematerialize (and needs fewer
              * registers anyway). */
             if (pl->kind == P_HORNER && muls[mi] == MUL_NIBBLE) {
-                for (int ui = 0; ui < 5 && n < maxout; ui++) {
+                for (int ui = 0; ui < 8 && n < maxout; ui++) {
                     for (int li = 0; li < 4 && n < maxout; li++) {
                         int U = Us[ui];
                         int lmul = lmuls[li];

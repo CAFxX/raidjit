@@ -3,15 +3,14 @@
 Date: 2026-10-01. Context: register-pressure binding analysis; the
 non-power-of-2 unroll study (U=9..12) is complete -- rigorous
 repeated/interleaved measurement found no significant win over U=8, so
-candidate lists stay {8,7,6,5,4,3,2,1} on x86/NEON and {5..1} on SVE/RVV.
+candidate lists stay {8,7,6,5,4,3,2,1} on all ISAs (x86, NEON, SVE, RVV).
 
 ## 1. Where pressure actually binds
 
 Measured via `plan_need_regs()` (exact per-candidate accounting; asserted
 by each backend for every variant it implements, including remat on all
 three ISAs). "maxU" = largest U with need <= regfile (formula bound;
-candidate lists additionally cap offered U at 8 on x86/NEON, 5 on
-SVE/RVV).
+candidate lists additionally cap offered U at 8 on every ISA).
 
 **AVX-512 (32 regs):**
 
@@ -96,8 +95,10 @@ pressure problem but a **missing candidate**: U=7 fits where U=8 does not
 regs), yet the candidate list was {8,6,5,4,3,2,1}.
 
 Fix: candidate lists are now {8,7,6,5,4,3,2,1} on x86 and NEON
-(SVE/RVV stay at {5..1}; no binding evidence there yet). The pressure
-filter drops U=7 where it doesn't fit, so this is purely additive.
+(SVE/RVV extended to {8..1} on 2026-10-06: the AArch64 24-reg SVE file
+makes U=6-8 newly feasible, and RVV's (need*lmul <= 32) filter rejects
+infeasible (n_out,U,lmul) combos exactly). The pressure
+filter drops U=6-8 where it doesn't fit, so this is purely additive.
 `tests/test_pressure.c` pins the new boundary.
 
 ## 3. Advanced options evaluated
