@@ -9,7 +9,9 @@
 #include "dispatch.h"
 #include "prefetch_calib.h"
 #include "survivor.h"
-#include "api_batched.h"
+/* Forward declaration for item #9's batched driver (not yet landed);
+ * api_batched.h will provide the full declaration. */
+struct rj_batch;
 #include "planid.h"
 
 #include <stdlib.h>
