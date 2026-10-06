@@ -174,6 +174,42 @@ The `RJ_NO_PRUNE` switch is the escape hatch for CPUs where the model
 misranks a twin pair (as it does for P_XOR, which is why that direction
 is excluded).
 
+### Per-microarchitecture re-validation requirement (2026-10-06)
+
+The tripwire is host-specific by construction, and MUST be re-run per
+microarchitecture family -- not just per code change:
+
+1. The safety precondition ("no pruned version would be the argmin-time
+   candidate") is a statement about measured times on one host. Static
+   uop counts do not capture microarchitectural costs: the P_XOR twin
+   rejection exists precisely because VPTERNLOGD's true cost differs
+   from its static count, and that gap is microarchitecture-dependent
+   (port pressure, uop-cache behavior, and memory-subsystem timing all
+   vary by family). A twin pair that is safely prunable on AMD EPYC 9D25
+   can have a different argmin on Intel Ice Lake, AMD Zen 5, or an ARM
+   Neoverse core.
+2. `tests/test_prune.c` Part 3 therefore qualifies the rule for the
+   host it ran on, not for the rule in the abstract. Deploying raidjit
+   on a new microarchitecture family (different vendor, or a new
+   microarchitecture from the same vendor -- e.g. Zen 4 -> Zen 5)
+   REQUIRES re-running Part 3 there and confirming (a) zero winner
+   flips and (b) the argmin tripwire stays quiet. A tripwire fire on
+   the new host means the prune rule is unsound there: ship with
+   `RJ_NO_PRUNE=1` on that family until the rule is re-validated, and
+   record the family in the Limitations section below.
+3. Code changes that alter any backend's emission, the static cost
+   model (`uops_per_byte` / `mem_per_byte` / `code_size`), or the twin
+   relation in `twin_dominates()` re-arm the tripwire on EVERY
+   supported host: re-run Part 3 per family before shipping.
+4. QEMU results do not qualify a microarchitecture: QEMU's timing is
+   not the silicon's timing. Cross-ISA functional tests under QEMU
+   validate correctness only; the prune tripwire needs real hardware
+   (or a cycle-accurate model of the target family).
+
+This is a MUST, not a SHOULD: a silent argmin flip on an unvalidated
+family is exactly the failure mode the tripwire exists to catch, and
+skipping the per-family run converts it back into a silent one.
+
 ### Disable switch
 
 `prune_versions(vs, nv, flags)` with `flags & PRUNE_DISABLE`, or the
