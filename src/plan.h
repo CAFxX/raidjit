@@ -179,6 +179,18 @@ int plan_build_recover_rows(const topo_int_t *topo, const int *F, int nf,
                             const int *rows, int nrows, const char *opname,
                             plan_t *pl, char *err, size_t errlen);
 
+/* Closed-form small-erasure recovery rows (track A4, phase 1). Fills R
+ * (nf x ns, row-major) directly from the e=1/e=2 closed forms when the
+ * failure pattern admits it; returns 1. Returns 0 (R untouched) when
+ * the closed form does not apply (nf outside 1..2, bad row indices,
+ * singular pivot) -- the caller falls back to solve_recovery_rows. The
+ * pivot choice replicates solve_recovery_rows, so an applied closed
+ * form is bit-identical to the general solve. All inverses (c_f^-1,
+ * det^-1) are plan-time constants baked into R. */
+int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
+                             const int *S, int ns, const int *rows, int nrows,
+                             uint8_t *R);
+
 /* Enumerate version candidates for a plan on this CPU. Returns count. */
 /* allow_nt: also emit a non-temporal twin of every candidate (the
  * jitted code emits no fence; on x86 the caller must SFENCE and on

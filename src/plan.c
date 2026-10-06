@@ -318,6 +318,148 @@ static int plan_select_strategy(plan_t *pl, char *err, size_t errlen)
     return 0;
 }
 
+/* Small-erasure closed forms in recovery (track A4, phase 1: planner
+ * only -- no emitter changes; the plans below are ordinary plan_t the
+ * existing backends already execute).
+ *
+ * Single-disk failure is the dominant recovery case. Instead of the
+ * general Gauss-Jordan solve (solve_recovery_rows), e=1/e=2 use the
+ * closed form of the erasure equations, evaluated once at plan time:
+ *
+ * e=1: one failure f, one equation row r with E[r][f] = c_f != 0.
+ *   f = c_f^-1 * (XOR over survivors s of E[r][s] * S_s):
+ *   one XOR-reduction over the survivors fused with a SINGLE constant
+ *   multiply by c_f^-1. R[s] = E[r][s] * c_f^-1 is filled directly in
+ *   O(ns); c_f^-1 is a plan-time constant baked into R -- no runtime
+ *   division (Carlo's invariant: no runtime computation doable at plan
+ *   time).
+ *
+ * e=2: failures f1 < f2, equation rows r1, r2. The 2x2 system
+ *     [a b] [x1]   [p]      a = E[r1][f1], b = E[r1][f2],
+ *     [c d] [x2] = [q]      c = E[r2][f1], d = E[r2][f2],
+ *   with syndrome terms p = XOR_s E[r1][s]*S_s and
+ *   q = XOR_s E[r2][s]*S_s, inverts in closed form via
+ *   adjugate/determinant: det = a*d ^ b*c,
+ *     x1 = (d*p ^ b*q) * det^-1,   x2 = (c*p ^ a*q) * det^-1.
+ *   R[0][s] = (d*E[r1][s] ^ b*E[r2][s]) * det^-1 and
+ *   R[1][s] = (c*E[r1][s] ^ a*E[r2][s]) * det^-1 share their
+ *   subexpressions at plan time: E[r1][s], E[r2][s] are read once per s
+ *   and feed both output rows, det^-1 is computed once (shared det
+ *   reciprocal). Phase 2 will evaluate the shared syndrome terms p, q
+ *   once at runtime; phase 1 bakes the combined coefficients into the
+ *   plan the existing emitters execute.
+ *
+ * The equation rows replicate solve_recovery_rows' pivot choice (first
+ * suitable row / first suitable pair in rows[] order), so an applied
+ * closed form is bit-identical to the general solve -- the phase-1 win
+ * is JIT-time (O(ns) direct fill vs O(nrows*(nf+ns)) elimination) plus
+ * the structural hook for phase 2. Triggers only for nf == 1/2 with an
+ * invertible pivot (pair); nf >= 3 or a singular pivot falls through to
+ * solve_recovery_rows, which stays as the general fallback.
+ *
+ * Called from plan_build_recover_rows, so closed-form plans flow
+ * through the normal plan -> prune -> select pipeline (A5 survivor
+ * subsets included). Test hook RJ_RECOVER_NO_CLOSEDFORM (non-empty,
+ * != "0") forces the general path for differential testing. */
+static uint8_t recover_eqn_coef(const topo_int_t *topo, int row, int d)
+{
+    /* One entry of the recovery equation system: M[row][d] for a data
+     * disk, 1 on the parity diagonal (row == d-ndata), 0 elsewhere.
+     * Matches solve_recovery_rows' E definition. */
+    int nd = topo->ndata;
+    if (d < nd)
+        return topo->mat[(size_t)row * (size_t)nd + (size_t)d];
+    return (uint8_t)(row == d - nd);
+}
+
+/* Closed-form recovery rows, see the A4 comment above. Fills R
+ * (nf x ns, row-major) and returns 1 when the closed form applied;
+ * returns 0 (R untouched) when it does not apply (nf outside 1..2,
+ * bad row indices, singular pivot) -- the caller falls back to
+ * solve_recovery_rows. */
+int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
+                             const int *S, int ns, const int *rows, int nrows,
+                             uint8_t *R)
+{
+    int np = topo->npar;
+    if (nf < 1 || nf > 2 || nrows < nf || ns < 0)
+        return 0;
+    for (int r = 0; r < nrows; r++)
+        if (rows[r] < 0 || rows[r] >= np)
+            return 0;
+    if (nf == 1) {
+        /* Pivot row: first rows[] entry with a nonzero coefficient on
+         * the failed disk -- solve_recovery_rows' pivot choice, so R
+         * below is exactly its normalized pivot row. */
+        int pr = -1;
+        uint8_t cf = 0;
+        for (int r = 0; r < nrows; r++) {
+            uint8_t c = recover_eqn_coef(topo, rows[r], F[0]);
+            if (c) {
+                pr = rows[r];
+                cf = c;
+                break;
+            }
+        }
+        if (pr < 0)
+            return 0; /* singular: no equation constrains f */
+        uint8_t kinv = gf_inv(cf); /* plan-time constant */
+        for (int s = 0; s < ns; s++)
+            R[s] = gf_mul(recover_eqn_coef(topo, pr, S[s]), kinv);
+        return 1;
+    }
+    /* nf == 2: replicate the solver's pivot pair. p0 = first row with
+     * E[r][F[0]] != 0; p1 = first remaining row whose F[1] coefficient
+     * survives eliminating F[0], i.e. E[r][F[1]] ^ E[r][F[0]]*k != 0
+     * with k = E[p0][F[1]]/E[p0][F[0]] (the normalized pivot row's F[1]
+     * entry). A found p1 guarantees det != 0: the reduced coefficient
+     * is det/E[p0][F[0]]. */
+    int p0 = -1, p1 = -1;
+    uint8_t a = 0, b = 0, c2 = 0, d2 = 0;
+    for (int r = 0; r < nrows; r++) {
+        uint8_t e = recover_eqn_coef(topo, rows[r], F[0]);
+        if (e) {
+            p0 = rows[r];
+            a = e;
+            b = recover_eqn_coef(topo, p0, F[1]);
+            break;
+        }
+    }
+    if (p0 < 0)
+        return 0;
+    uint8_t k = gf_mul(b, gf_inv(a));
+    for (int r = 0; r < nrows; r++) {
+        int rr = rows[r];
+        if (rr == p0)
+            continue;
+        uint8_t e1 = recover_eqn_coef(topo, rr, F[0]);
+        uint8_t e2 = recover_eqn_coef(topo, rr, F[1]);
+        if ((e2 ^ gf_mul(e1, k)) != 0) {
+            p1 = rr;
+            c2 = e1;
+            d2 = e2;
+            break;
+        }
+    }
+    if (p1 < 0)
+        return 0; /* singular pair: fall back (solver fails loudly) */
+    uint8_t det = gf_mul(a, d2) ^ gf_mul(b, c2);
+    if (det == 0)
+        return 0; /* unreachable when p1 exists; defensive */
+    uint8_t dinv = gf_inv(det); /* shared det reciprocal, plan time */
+    for (int s = 0; s < ns; s++) {
+        /* Shared syndrome coefficients: e1/e2 are read once per s and
+         * feed both output rows (the plan-time image of the shared
+         * p, q evaluation phase 2 will do at runtime). */
+        uint8_t e1 = recover_eqn_coef(topo, p0, S[s]);
+        uint8_t e2 = recover_eqn_coef(topo, p1, S[s]);
+        R[s] = gf_mul(gf_mul(d2, e1) ^ gf_mul(b, e2), dinv);
+        R[(size_t)ns + (size_t)s] =
+            gf_mul(gf_mul(c2, e1) ^ gf_mul(a, e2), dinv);
+    }
+    return 1;
+}
+
 /* Build a recovery plan from an explicit parity-row equation set
  * (track A5). F[0..nf-1] is the validated sorted/deduped failed list
  * (1 <= nf <= npar); rows[0..nrows-1] are the parity rows used as
@@ -354,9 +496,20 @@ int plan_build_recover_rows(const topo_int_t *topo, const int *F, int nf,
         snprintf(err, errlen, "out of memory");
         return -1;
     }
-    if (solve_recovery_rows(topo->mat, nd, np, F, nf, S, ns, rows, nrows,
-                            pl->mat, NULL) != 0) {
-        snprintf(err, errlen,
+    /* A4 closed forms first (planner-only phase 1); the general solve
+     * stays as the fallback for nf >= 3 and singular pivots.
+     * RJ_RECOVER_NO_CLOSEDFORM (non-empty, != "0") forces the general
+     * path -- differential test hook. */
+    int use_cf = 1;
+    const char *no_cf = getenv("RJ_RECOVER_NO_CLOSEDFORM");
+    if (no_cf && no_cf[0] != '\0' && strcmp(no_cf, "0") != 0)
+        use_cf = 0;
+    int closed = use_cf ? plan_recover_closed_form(topo, F, nf, S, ns, rows,
+                                                   nrows, pl->mat)
+                        : 0;
+    if (!closed &&
+        solve_recovery_rows(topo->mat, nd, np, F, nf, S, ns, rows, nrows,
+                            pl->mat, NULL) != 0) {        snprintf(err, errlen,
                  "recover: failure set is not recoverable from these "
                  "parity rows (singular system)");
         free(S);
