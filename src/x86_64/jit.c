@@ -318,25 +318,21 @@ static void c_vpternlog_mem(cg_t *cg, int vd, int s1, int b, int x, int sc,
     cg->mem += cg->vl;
 }
 
-/* Legacy 2-uop SSE form (movdqa+pxor) for the xorsched twin only.
- * src/xorsched.c's static model (which this backend may not touch)
- * counts SSE c_vpxor_mem as 2 uops; the folded 1-uop form would break
- * the exact-equality check. All non-xorsched uses take the folded form
- * in c_vpxor_mem. */
+/* Folded XOR-with-memory (one uop on every x86 ISA: pxor m128 on SSE,
+ * vpxor/vpxord with a memory operand on AVX/AVX-512). The static model
+ * in src/xorsched.c counts this as 1 uop on all three ISAs; keep in
+ * lockstep (item 6: the SSE folded form was re-introduced together
+ * with the model update). */
 static void c_vpxor_mem(cg_t *cg, int vd, int vs1, int b, int x, int sc,
                         int disp)
 {
     assert(vd == vs1); /* all our uses accumulate */
     if (is_sse(cg)) {
-        /* Legacy SSE has no PXOR-with-memory form, so emit an aligned
-         * MOVDQA into the temp register followed by a register XOR.
-         * (c_ld/c_vpxor do their own uop/mem accounting.)
-         * NOTE: pxor m128 IS valid SSE (66 0F EF /r), but the folded
-         * 1-uop form is blocked: src/xorsched.c's static model (which
-         * this backend may not touch) counts SSE c_vpxor_mem as 2
-         * uops, and the exact-equality test requires lockstep. */
-        c_ld(cg, cg->t, b, x, sc, disp);
-        c_vpxor(cg, vd, vs1, cg->t);
+        /* PXOR-with-memory is valid legacy SSE (66 0F EF /r): fold the
+         * load into the xor, one uop instead of movdqa+pxor's two. */
+        em_pxor_mem_sse(&cg->em, vd, b, x, sc, disp);
+        cg->uops += 1;
+        cg->mem += cg->vl;
     } else {
         em_t *e = &cg->em;
         em_vpxor_mem(e, vd, vs1, b, x, sc, disp, cg->vl);
@@ -863,15 +859,7 @@ static void gen_body(cg_t *cg)
                 }
                 for (int u = 0; u < U; u++) {
                     c_ld(cg, cg->t, pra, R11, 0, u * vl);
-                    if (is_sse(cg)) {
-                        /* SSE: xorsched.c model counts 3 uops (2 ld +
-                         * xor); use t2 (allocated but otherwise unused
-                         * on the SSE xorsched path) as the temp. */
-                        c_ld(cg, cg->t2, prb, R11, 0, u * vl);
-                        c_vpxor(cg, cg->t, cg->t, cg->t2);
-                    } else {
-                        c_vpxor_mem(cg, cg->t, cg->t, prb, R11, 0, u * vl);
-                    }
+                    c_vpxor_mem(cg, cg->t, cg->t, prb, R11, 0, u * vl);
                     for (int wi = 0; wi < xs->temps[k].nusers; wi++) {
                         int uw = xs->temps[k].users[wi];
                         int acc = xs->first_row[uw] * U + u;
@@ -902,7 +890,7 @@ static void gen_body(cg_t *cg)
                         c_ld(cg, acc, pr, R11, 0, u * vl);
                     } else if (nusers == 1) {
                         /* acc live, single user: folded memory XOR
-                         * (1 uop AVX/AVX512; 2 uops SSE: movdqa+pxor) */
+                         * (1 uop on every ISA) */
                         int acc = xs->first_row[uw0] * U + u;
                         c_vpxor_mem(cg, acc, acc, pr, R11, 0, u * vl);
                     } else {

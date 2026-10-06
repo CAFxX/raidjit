@@ -413,10 +413,11 @@ static void xs_first_in(const plan_t *pl, int *first_in)
 }
 
 /* naive body uops for nu lanes. Mirrors each backend's P_XOR column loop:
- * x86: body_inptr mov when i >= nhoist; SSE mem-XOR degrades to 2 uops.
- * AArch64/RVV: pointer setup uncounted; always load-into-temp + fan-out
- * (RVV additionally folds single-user-first into a direct acc load). */
-static long xs_body_naive(const plan_t *pl, isa_t isa, int nu, int is_sse,
+ * x86: body_inptr mov when i >= nhoist; folded mem-XOR is 1 uop on every
+ * x86 ISA (SSE uses the pxor-m128 form). AArch64/RVV: pointer setup
+ * uncounted; always load-into-temp + fan-out (RVV additionally folds
+ * single-user-first into a direct acc load). */
+static long xs_body_naive(const plan_t *pl, isa_t isa, int nu,
                           int nhoist, const int *first_in)
 {
     int n_in = pl->n_in, n_out = pl->n_out;
@@ -446,7 +447,8 @@ static long xs_body_naive(const plan_t *pl, isa_t isa, int nu, int is_sse,
                 if (i == first_in[uj])
                     uops += 1; /* direct load into acc */
                 else
-                    uops += is_sse ? 2 : 1; /* c_vpxor_mem */
+                    uops += 1; /* c_vpxor_mem: folded pxor-mem (1 uop)
+                                * on every x86 ISA, incl. SSE */
             } else if (nusers == 1) {
                 int uj = -1;
                 for (int j = 0; j < n_out; j++)
@@ -468,10 +470,10 @@ static long xs_body_naive(const plan_t *pl, isa_t isa, int nu, int is_sse,
 }
 
 /* scheduled body uops for nu lanes. Mirrors the schedule-driven emitters:
- * phase 1 forms each temp (2 loads + 1 xor, i.e. 2 uops AVX / 3 uops
- * SSE-AArch64-RVV) and fans out; phase 2 streams surviving inputs;
- * duplicates are moves; dead rows are zeroed. */
-static long xs_body_sched(const xorsched_t *s, isa_t isa, int nu, int is_sse,
+ * phase 1 forms each temp (2 uops on every x86 ISA: ld + folded mem-xor;
+ * 3 uops on AArch64/RVV: 2 ld + xor) and fans out; phase 2 streams
+ * surviving inputs; duplicates are moves; dead rows are zeroed. */
+static long xs_body_sched(const xorsched_t *s, isa_t isa, int nu,
                           int nhoist)
 {
     int is_x86 = (isa == ISA_SSE || isa == ISA_AVX2 || isa == ISA_AVX512);
@@ -484,8 +486,9 @@ static long xs_body_sched(const xorsched_t *s, isa_t isa, int nu, int is_sse,
             if (s->temps[k].b >= nhoist)
                 uops += 1;
         }
-        /* formation: AVX 2 uops (ld + mem-xor), others 3 (2 ld + xor) */
-        uops += (long)(is_x86 && !is_sse ? 2 : 3) * nu;
+        /* formation: 2 uops on every x86 ISA (ld + folded mem-xor;
+         * SSE uses the pxor-m128 form, 1 uop); 3 elsewhere (2 ld + xor) */
+        uops += (long)(is_x86 ? 2 : 3) * nu;
         uops += (long)s->temps[k].nusers * nu; /* fan-out */
     }
     for (int i = 0; i < s->n_in; i++) {
@@ -501,7 +504,7 @@ static long xs_body_sched(const xorsched_t *s, isa_t isa, int nu, int is_sse,
                 if (is_first)
                     uops += 1; /* direct load into dead acc */
                 else if (nusers == 1)
-                    uops += is_sse ? 2 : 1; /* folded mem-xor */
+                    uops += 1; /* folded mem-xor (1 uop every x86 ISA) */
                 else
                     uops += 1 + nusers; /* load t + fan-out */
             } else if (isa == ISA_RVV) {
@@ -522,7 +525,6 @@ static long xs_body_sched(const xorsched_t *s, isa_t isa, int nu, int is_sse,
 long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
                            isa_t isa, int U, int sched, int nt, int notail)
 {
-    int is_sse = (isa == ISA_SSE);
     int n_in = pl->n_in;
     int nhoist = (n_in < 2) ? 0 : (n_in < 5 ? n_in : 5);
     int first_in[RJ_MAX_DISKS];
@@ -542,19 +544,19 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
          * nu=U body is emitted, plus the one prologue vsetvli
          * (src/riscv/jit.c counts exactly one cg->uops += 1 outside
          * gen_body on the notail path). */
-        long bU = sched ? xs_body_sched(s, isa, U, is_sse, nhoist)
-                        : xs_body_naive(pl, isa, U, is_sse, nhoist, first_in);
+        long bU = sched ? xs_body_sched(s, isa, U, nhoist)
+                        : xs_body_naive(pl, isa, U, nhoist, first_in);
         if (notail)
             return (bU + stU) + 1;
-        long b1 = sched ? xs_body_sched(s, isa, 1, is_sse, nhoist)
-                        : xs_body_naive(pl, isa, 1, is_sse, nhoist, first_in);
+        long b1 = sched ? xs_body_sched(s, isa, 1, nhoist)
+                        : xs_body_naive(pl, isa, 1, nhoist, first_in);
         long st1 = (long)pl->n_out;
         return 2 * (bU + stU) + (b1 + st1) + 3;
     }
     /* x86/AArch64: the notail twin omits only the scalar tail, which
      * emits no counted uops, so the notail prediction is identical. */
-    long bU = sched ? xs_body_sched(s, isa, U, is_sse, nhoist)
-                    : xs_body_naive(pl, isa, U, is_sse, nhoist, first_in);
+    long bU = sched ? xs_body_sched(s, isa, U, nhoist)
+                    : xs_body_naive(pl, isa, U, nhoist, first_in);
     return bU + stU; /* stores */
 }
 

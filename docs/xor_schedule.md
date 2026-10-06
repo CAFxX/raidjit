@@ -71,7 +71,7 @@ Temp materialization per ISA (see §5 for why they differ):
 | ISA | formation of `t_k = in_a ^ in_b` | temp regs |
 |---|---|---|
 | x86 AVX2/AVX-512 | `t = load(a); t ^= mem(b)` (folded memory XOR) | 1 (`t`) |
-| x86 SSE | `t = load(a); t2 = load(b); t ^= t2` (no mem-XOR form; and `c_vpxor_mem` on SSE would clobber `t` via its internal load) | 2 (`t`, `t2`) |
+| x86 SSE | `t = load(a); t ^= mem(b)` (folded `pxor m128`, 66 0F EF /r -- valid legacy SSE, 1 uop) | 1 live (`t`); `t2` still allocated (pressure +2) to keep the backend's `vmax` in lockstep with `xorsched_need_regs` |
 | AArch64 NEON/SVE | `t = load(a); t2 = load(b); t ^= t2` (no vector XOR-with-memory) | 2 (`t`, `t2`) |
 | RISC-V RVV | `vd0 = vle(a); vd1 = vle(b); vd0 ^= vd1` | 2 (`vd0`, `vd1`) |
 
@@ -143,9 +143,11 @@ used nowhere else directly) keeps `mem_sched == mem_naive`.
 ## 5. Why the temp budgets differ (ISA notes; QEMU correctness executed)
 
 x86 is the only ISA here with a vector-XOR-with-memory form, so only x86
-AVX can form `t_k = in_a ^ in_b` with one live temp (`t ^= mem(b)`); SSE
-emulates mem-XOR as load-into-`t` + reg-XOR, which would clobber the `t`
-holding `a`. NEON/SVE/RVV have register-only XOR. Hence the +1 temp on
+can form `t_k = in_a ^ in_b` with one live temp (`t ^= mem(b)`); on SSE
+the folded form is the legacy `pxor m128` (66 0F EF /r, 1 uop).
+NEON/SVE/RVV have register-only XOR. The SSE `t2` is still allocated
+(pressure +2 like AArch64/RVV) but unused -- kept so the backend's
+`vmax` stays in lockstep with `xorsched_need_regs`. Hence the +1 temp on
 SSE/AArch64/RVV. The second vector temp is `t2 = n_out*U+1` (NEON `v` /
 SVE `z(16+t2)`), the second pointer is X3 (free in P_XOR bodies; the
 P_DELTA X3 note applies identically). RVV uses `vd1 = vd0+1` and T4 as
