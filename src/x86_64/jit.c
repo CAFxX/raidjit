@@ -23,7 +23,7 @@
 
 /* constant-pool entry kinds */
 enum { CK_NIBLO, CK_NIBHI, CK_AFF, CK_MASK, CK_LOG, CK_EXP,
-         CK_NIBBOTH, CK_OR10, CK_TAILMASK };
+         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE };
 
 typedef struct {
     em_t em;
@@ -43,6 +43,10 @@ typedef struct {
     /* register assignment */
     int t, tlo, thi, r1, r2, tbl, tbl2, t2, mask;
     int *hreg; /* HORNER: 2 regs per row (nibble) or 1 (gfni), -1 if unused */
+    /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
+     * regs, and the 0x01 extract mask. Assigned as n_out*U + {0..3}
+     * (see xorbit_need_regs); the nibble tables are dead on this path. */
+    int xbt_in, xbt_r1, xbt_r2, xbt_mask;
     /* MULACC/DELTA GFNI table-load dedup (pure JIT-time state): the affine
      * table in tbl depends only on the coefficient c = mat[j][i], so it is
      * loop-invariant across the u-loop and across input columns i; nothing
@@ -177,6 +181,11 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
         }
     } else if (kind == CK_MASK) {
         memset(tmp, 0x0F, (size_t)cg->vl);
+        len = (size_t)cg->vl;
+    } else if (kind == CK_ONE) {
+        /* Vector of 0x01 bytes: the bit-extract mask for the bit-program
+         * (xorbit) emitter's ((in_i >> k) & 1) materialization. */
+        memset(tmp, 0x01, (size_t)cg->vl);
         len = (size_t)cg->vl;
     } else if (kind == CK_LOG) {
         memcpy(tmp, cg->logtab, 256);
@@ -398,6 +407,24 @@ static void c_srlw(cg_t *cg, int vd, int s1, unsigned imm)
     cg->uops += 1;
 }
 
+/* Word shift left by immediate. Two-operand on SSE (mov when vd != s1),
+ * three-operand on AVX. Used by the bit-program emitter to move a
+ * bit-0-normalized bit value to its output bit position. */
+static void c_sllw(cg_t *cg, int vd, int s1, unsigned imm)
+{
+    em_t *e = &cg->em;
+    if (is_sse(cg)) {
+        if (vd != s1) {
+            em_movdqa_rr_sse(e, vd, s1);
+            cg->uops += 1;
+        }
+        em_psllw_sse(e, vd, imm);
+    } else {
+        em_vpsllw(e, vd, s1, imm, cg->vl);
+    }
+    cg->uops += 1;
+}
+
 static void c_aff(cg_t *cg, int vd, int s1, int s2)
 {
     assert(!is_sse(cg));
@@ -435,6 +462,12 @@ static void c_vmov(cg_t *cg, int vd, int vs)
 static void gen_const_setup(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: the 0x01 bit-extract mask (the nibble
+         * tables are dead on this path). */
+        raw_ldpool(cg, cg->xbt_mask, pool_get(cg, CK_ONE, 0));
+        return;
+    }
     if ((pl->kind == P_MULACC || pl->kind == P_DELTA) &&
         cg->cand.mul == MUL_NIBBLE) {
         /* With all coefficients in {0,1} (P_DELTA with an all-{0,1} delta
@@ -747,6 +780,179 @@ static int ternlog_pair_columns(const plan_t *pl, int *pa, int *pb)
     return npairs;
 }
 
+/* Bit-program (xorbit) body for GF-multiply rows (track A1). Drives the
+ * vector body from pl->bit_sched instead of the naive nibble emitter.
+ * Input bits are materialized as bit-0-normalized byte vectors
+ * ((in_i >> k) & 1); each temp is one vector XOR; output bytes are
+ * assembled as out_j = XOR_b (P(j,b) << b). Temps are fanned out to
+ * their user output bits immediately after formation (no spilling);
+ * the 1-entry input-byte cache (cur_in) avoids reloading in[i].
+ * u is outermost so the per-byte first-touch state (touched[]) spans
+ * all temps/input bits of the u-slice: the first contribution to a
+ * byte moves (acc was zero), later ones xor. P_DELTA seeds accs from
+ * oldpar, so every contribution xors. All uop accounting mirrors
+ * xorbit_version_uops in src/xorsched.c exactly (lockstep-tested). */
+
+/* Fan out one bit-0-normalized value (vsrc) to a temp's / input bit's
+ * user output bits, grouped by bit position b (users sorted ascending
+ * by output-bit id). */
+static void xorbit_fanout(cg_t *cg, const int *users, int nusers, int vsrc,
+                          int vtmp, int u, int *touched, int is_delta)
+{
+    int U = cg->U;
+    int w = 0;
+    while (w < nusers) {
+        int b = users[w] & 7;
+        int w1 = w;
+        while (w1 < nusers && (users[w1] & 7) == b)
+            w1++;
+        int nj = w1 - w;
+        int j0 = users[w] >> 3;
+        int acc0 = j0 * U + u;
+        if (nj == 1 && !is_delta && !touched[j0]) {
+            /* single first-touch user: shift/place directly into acc */
+            if (b == 0)
+                c_vmov(cg, acc0, vsrc);
+            else
+                c_sllw(cg, acc0, vsrc, (unsigned)b);
+            touched[j0] = 1;
+        } else if (b == 0) {
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                int acc = j * U + u;
+                if (!is_delta && !touched[j]) {
+                    c_vmov(cg, acc, vsrc);
+                    touched[j] = 1;
+                } else {
+                    c_vpxor(cg, acc, acc, vsrc);
+                }
+            }
+        } else {
+            c_sllw(cg, vtmp, vsrc, (unsigned)b);
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                int acc = j * U + u;
+                if (!is_delta && !touched[j]) {
+                    c_vmov(cg, acc, vtmp);
+                    touched[j] = 1;
+                } else {
+                    c_vpxor(cg, acc, acc, vtmp);
+                }
+            }
+        }
+        w = w1;
+    }
+}
+
+/* Load in[i]'s pointer for the xorbit body. P_DELTA uses a raw mov
+ * (uncounted), mirroring the naive DELTA body; otherwise body_inptr
+ * (counted mov when i is not hoisted). */
+static int xorbit_inptr(cg_t *cg, int i, int is_delta)
+{
+    if (is_delta) {
+        em_mov_rm(&cg->em, R10, R8, -1, 0, i * 8);
+        return R10;
+    }
+    return body_inptr(cg, i, R10);
+}
+
+static void gen_body_xorbit(cg_t *cg)
+{
+    const plan_t *pl = cg->pl;
+    const xorbit_t *s = pl->bit_sched;
+    assert(s && s->ntemps > 0);
+    assert(s->kind == pl->kind);
+    int n_out = pl->n_out, U = cg->U, vl = cg->vl;
+    int ni_sched = s->n_in_sched;
+    int is_delta = (pl->kind == P_DELTA);
+    int inreg = cg->xbt_in, r1 = cg->xbt_r1, r2 = cg->xbt_r2;
+    int mask1 = cg->xbt_mask;
+
+    if (!is_delta) {
+        /* zero dead output bytes (no atoms in any of their 8 bits) */
+        for (int j = 0; j < n_out; j++) {
+            int live = 0;
+            for (int b = 0; b < 8; b++)
+                if (s->bit_natoms[8 * j + b] > 0) {
+                    live = 1;
+                    break;
+                }
+            if (!live)
+                for (int u = 0; u < U; u++)
+                    c_vzero(cg, j * U + u);
+        }
+    } else {
+        /* seed accumulators from oldpar (like the naive DELTA body) */
+        int nc = pl->nchanged;
+        for (int j = 0; j < n_out; j++) {
+            em_mov_rm(&cg->em, R10, R8, -1, 0, (2 * nc + j) * 8);
+            for (int u = 0; u < U; u++)
+                c_ld(cg, j * U + u, R10, R11, 0, u * vl);
+        }
+    }
+
+    int pf_done[RJ_MAX_DISKS];
+    for (int i = 0; i < ni_sched; i++)
+        pf_done[i] = 0;
+    int touched[RJ_MAX_DISKS];
+
+    for (int u = 0; u < U; u++) {
+        for (int j = 0; j < n_out; j++)
+            touched[j] = 0;
+        int cur_in = -1;
+        /* phase 1: form each temp, fan out immediately */
+        for (int m = 0; m < s->ntemps; m++) {
+            int a = s->temps[m].a, b = s->temps[m].b;
+            int ia = a >> 3, ka = a & 7;
+            int ib = b >> 3, kb = b & 7;
+            if (cur_in != ia) {
+                int pr = xorbit_inptr(cg, ia, is_delta);
+                if (!pf_done[ia]) {
+                    c_prefetch_in(cg, pr);
+                    pf_done[ia] = 1;
+                }
+                c_ld(cg, inreg, pr, R11, 0, u * vl);
+                cur_in = ia;
+            }
+            c_srlw(cg, r1, inreg, (unsigned)ka);
+            c_and(cg, r1, r1, mask1);
+            if (cur_in != ib) {
+                int pr = xorbit_inptr(cg, ib, is_delta);
+                if (!pf_done[ib]) {
+                    c_prefetch_in(cg, pr);
+                    pf_done[ib] = 1;
+                }
+                c_ld(cg, inreg, pr, R11, 0, u * vl);
+                cur_in = ib;
+            }
+            c_srlw(cg, r2, inreg, (unsigned)kb);
+            c_and(cg, r2, r2, mask1);
+            c_vpxor(cg, r1, r1, r2);
+            xorbit_fanout(cg, s->temps[m].users, s->temps[m].nusers, r1,
+                          r2, u, touched, is_delta);
+        }
+        /* phase 2: surviving input bits, fanned out directly */
+        for (int q = 0; q < 8 * ni_sched; q++) {
+            if (!s->inbit_nusers[q])
+                continue;
+            int i = q >> 3, k = q & 7;
+            if (cur_in != i) {
+                int pr = xorbit_inptr(cg, i, is_delta);
+                if (!pf_done[i]) {
+                    c_prefetch_in(cg, pr);
+                    pf_done[i] = 1;
+                }
+                c_ld(cg, inreg, pr, R11, 0, u * vl);
+                cur_in = i;
+            }
+            c_srlw(cg, r1, inreg, (unsigned)k);
+            c_and(cg, r1, r1, mask1);
+            xorbit_fanout(cg, s->inbit_users[q], s->inbit_nusers[q], r1,
+                          r2, u, touched, is_delta);
+        }
+    }
+}
+
 static void gen_body(cg_t *cg)
 {
     em_t *e = &cg->em;
@@ -767,11 +973,14 @@ static void gen_body(cg_t *cg)
         for (int j = 0; j < n_out; j++)
             for (int u = 0; u < U; u++)
                 c_vzero(cg, j * U + u);
-    } else if ((pl->kind == P_XOR && !cg->cand.ternlog) ||
-               pl->kind == P_MULACC) {
+    } else if (((pl->kind == P_XOR && !cg->cand.ternlog) ||
+                pl->kind == P_MULACC) &&
+               !cg->cand.xorbit) {
         /* P_XOR's ternlog twin zeroes every accumulator up front in its
          * own prologue below (no first-input move logic), so the
-         * dead-row-only zeroing here is skipped for it. */
+         * dead-row-only zeroing here is skipped for it. The xorbit
+         * twin zeroes its own dead bytes (bit-program-based) inside
+         * gen_body_xorbit. */
         for (int j = 0; j < n_out; j++) {
             int live = 0;
             for (int i = 0; i < n_in; i++)
@@ -785,7 +994,13 @@ static void gen_body(cg_t *cg)
         }
     }
 
-    if (pl->kind == P_XOR) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin (track A1): the body follows pl->bit_sched
+         * (cross-row/coefficient CSE at bit granularity) instead of the
+         * naive nibble emitter. gen_body_xorbit handles its own
+         * accumulator seeding/zeroing; stores below are shared. */
+        gen_body_xorbit(cg);
+    } else if (pl->kind == P_XOR) {
         if (cg->cand.ternlog) {
             /* VPTERNLOGD twin (AVX-512 only): fold two input XORs into
              * one ternary-logic uop per row. Columns are processed in
@@ -1713,6 +1928,15 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     assert(!(cand->permi2b && (cand->isa != ISA_AVX512 ||
                                cand->mul != MUL_NIBBLE ||
                                (pl->kind != P_MULACC && pl->kind != P_DELTA))));
+    /* Bit-program twin (track A1): only for GF-multiply rows, only from
+     * a MUL_NIBBLE base, never combined with the other body twins. */
+    assert(!(cand->xorbit &&
+             (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+              pl->kind != P_HORNER)));
+    assert(!(cand->xorbit && cand->mul != MUL_NIBBLE));
+    assert(!(cand->xorbit &&
+             (cand->ternlog || cand->permi2b || cand->remat ||
+              cand->xorsched)));
     memset(v, 0, sizeof(*v));
     v->cand = *cand;
     v->kind = pl->kind;
@@ -1764,8 +1988,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
      * A notail/maskedtail twin never emits the scalar tail, so it never
      * needs the log/exp tables (need_mask stays: the vector body needs
      * it). */
-    if (pl->kind == P_MULACC || pl->kind == P_DELTA ||
-        pl->kind == P_HORNER) {
+    if (cand->xorbit) {
+        /* Bit-program twin: the vector body needs no 0x0F nibble mask,
+         * but the scalar tail still needs log/exp for nontrivial
+         * coefficients. */
+        if (plan_any_nontrivial(pl))
+            cg.need_logexp = !cand->notail && !cand->maskedtail;
+    } else if (pl->kind == P_MULACC || pl->kind == P_DELTA ||
+               pl->kind == P_HORNER) {
         if (plan_any_nontrivial(pl)) {
             cg.need_logexp = !cand->notail && !cand->maskedtail;
             cg.need_mask = 1;
@@ -1776,6 +2006,19 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     int n_out = pl->n_out, U = cand->U;
     cg.t = n_out * U;
     int vmax = cg.t; /* highest assigned vector register index */
+    if (cand->xorbit) {
+        /* Bit-program twin (track A1): n_out*U accumulators + input-byte
+         * reg + two bit temps + 0x01 mask. The nibble tables are dead.
+         * Must stay in lockstep with xorbit_need_regs. */
+        assert(pl->bit_sched && pl->bit_sched->ntemps > 0);
+        assert(pl->kind == P_MULACC || pl->kind == P_DELTA ||
+               pl->kind == P_HORNER);
+        cg.xbt_in = n_out * U;
+        cg.xbt_r1 = n_out * U + 1;
+        cg.xbt_r2 = n_out * U + 2;
+        cg.xbt_mask = n_out * U + 3;
+        vmax = cg.xbt_mask;
+    }
     if (pl->kind == P_XOR && cand->xorsched && is_sse(&cg)) {
         /* XOR-schedule twin on SSE: t2 is allocated (the pressure
          * formula in xorsched.c counts it) but currently unused -- the
@@ -1784,7 +2027,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         cg.t2 = cg.t + 1;
         vmax = cg.t2;
     }
-    if (pl->kind == P_MULACC || pl->kind == P_DELTA) {
+    if (!cand->xorbit && (pl->kind == P_MULACC || pl->kind == P_DELTA)) {
         if (cand->mul == MUL_NIBBLE) {
             if (cg.need_mask) {
                 cg.tlo = cg.t + 1; cg.thi = cg.t + 2; cg.r1 = cg.t + 3;
@@ -1823,7 +2066,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 vmax = cg.t;
             }
         }
-    } else if (pl->kind == P_HORNER) {
+    } else if (pl->kind == P_HORNER && !cand->xorbit) {
         cg.hreg = calloc((size_t)n_out * 2, sizeof(int));
         if (!cg.hreg) {
             snprintf(err, errlen, "out of memory");
@@ -1873,9 +2116,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
      * with this assignment. A drift here once admitted candidates past
      * the regfile, and the emitter wraps reg 32 to 0 silently. The
      * xorsched twin has its own pressure formula (extra temp on SSE). */
-    int want_regs = cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
-                                   : plan_need_regs(cand->isa, cand->mul, pl,
-                                                   U, cand->remat);
+    int want_regs = cand->xorbit ? xorbit_need_regs(cand->isa, pl, U)
+                    : cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
+                                     : plan_need_regs(cand->isa, cand->mul, pl,
+                                                     U, cand->remat);
     assert(vmax + 1 == want_regs);
     assert(vmax < isa_nregs(cand->isa));
 
@@ -1937,14 +2181,15 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                                                : "mulacc";
     if (pl->kind == P_XOR)
     /* %.65s on the plan name: the provable -Wformat-truncation bound
-     * for the 192B desc (fixed suffix <= 71B: " mulacc avx512+nibble"
+     * for the 192B desc (fixed suffix <= 78B: " mulacc avx512+nibble"
      * + " U=8" + "+ternlog+nt+pf+remat" + " notail" + " maskedtail" +
-     * "+permi2b"; plan names can reach 127B since the A5 "[rows ...]"
-     * suffix, capped at 65 by %.65s). 65 + 71 = 136 < 192, so the bound
-     * holds with margin. */
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s", pl->name, strat,
+     * "+permi2b" + "+xorbit"; plan names can reach 127B since the A5
+     * "[rows ...]" suffix, capped at 65 by %.65s). 65 + 78 = 143 < 192,
+     * so the bound holds with margin. */
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa), cand->U, cand->ternlog ? "+ternlog" : "",
                  cand->xorsched ? "+xsched" : "",
+                 cand->xorbit ? "+xorbit" : "",
                  cand->nt ? "+nt" : "",
                  cand->prefetch_dist ? "+pf" : "",
                  cand->remat ? "+remat" : "",
@@ -1952,10 +2197,11 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->maskedtail ? " maskedtail" : "",
                  cand->permi2b ? "+permi2b" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s", pl->name, strat,
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa),
                  cand->mul == MUL_GFNI ? "+gfni" : "+nibble", cand->U,
                  cand->ternlog ? "+ternlog" : "",
+                 cand->xorbit ? "+xorbit" : "",
                  cand->nt ? "+nt" : "",
                  cand->prefetch_dist ? "+pf" : "",
                  cand->remat ? "+remat" : "",

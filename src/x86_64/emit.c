@@ -720,6 +720,20 @@ void em_vpsrlw(em_t *e, int vd, int s1, unsigned imm, int vl)
     em_u8(e, imm & 0xFF);
 }
 
+void em_vpsllw(em_t *e, int vd, int s1, unsigned imm, int vl)
+{
+    /* 66 0F 71 /6 ib: same shape as VPSRLW, /6 = word shift left.
+     * Used by the bit-program (xorbit) emitter to place a
+     * bit-0-normalized bit value at its output bit position. */
+    if (vl == VL64)
+        emit_evex(e, 1, 0, 0, (s1 >> 4) & 1, (s1 >> 3) & 1, 0, vd, 2, 1, 0, 0);
+    else
+        emit_vex(e, 1, 0, 0, 0, (s1 >> 3) & 1, vd, vl == VL32, 1);
+    em_u8(e, 0x71);
+    em_u8(e, (unsigned)(0xF0 | (s1 & 7))); /* mod=11, /6, rm=src */
+    em_u8(e, imm & 0xFF);
+}
+
 void em_vgf2p8affineqb(em_t *e, int vd, int s1, int s2, unsigned imm, int vl)
 {
     /* EVEX.66.0F3A.W1 CE /r ib */
@@ -901,6 +915,19 @@ void em_psrlw_sse(em_t *e, int vd, unsigned imm)
     em_u8(e, 0x0F);
     em_u8(e, 0x71);
     em_u8(e, (unsigned)(0xD0 | (vd & 7))); /* /2 */
+    em_u8(e, imm & 0xFF);
+}
+
+void em_psllw_sse(em_t *e, int vd, unsigned imm)
+{
+    int R, X, B;
+    /* 0F 71 /6: word shift left by immediate (SSE form of VPSLLW). */
+    rxb(0, vd, -1, &R, &X, &B);
+    em_u8(e, 0x66);
+    emit_rex(e, 0, R, X, B);
+    em_u8(e, 0x0F);
+    em_u8(e, 0x71);
+    em_u8(e, (unsigned)(0xF0 | (vd & 7))); /* /6 */
     em_u8(e, imm & 0xFF);
 }
 

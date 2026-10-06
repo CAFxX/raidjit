@@ -59,7 +59,8 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
-        $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b
+        $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b \
+        $(BUILDDIR)/test_xorbit
 ifeq ($(ARCH),x86_64)
 TESTS = $(PORTABLE_TESTS) $(X86_ONLY_TESTS)
 else
@@ -297,6 +298,7 @@ ifeq ($(ARCH),x86_64)
 	./$(BUILDDIR)/test_pxor_ternlog
 	./$(BUILDDIR)/test_maskedtail
 	./$(BUILDDIR)/test_permi2b
+	./$(BUILDDIR)/test_xorbit
 endif
 	./$(BUILDDIR)/test_nt
 	./$(BUILDDIR)/test_pdelta
@@ -494,6 +496,9 @@ $(BUILDDIR)/test_dispatch: tests/test_dispatch.c $(BUILDDIR)/libraidjit.a | $(BU
 
 $(BUILDDIR)/test_xorsched: tests/test_xorsched.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_xorsched.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_xorbit: tests/test_xorbit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_xorbit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_xorsched_e2e: tests/test_xorsched_e2e.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_xorsched_e2e.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

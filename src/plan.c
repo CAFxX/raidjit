@@ -220,6 +220,7 @@ int isa_vl(isa_t isa)
 void plan_free(plan_t *pl)
 {
     xorsched_free(pl->xor_sched);
+    xorbit_free(pl->bit_sched);
     free(pl->mat);
     free(pl->horner_c);
     memset(pl, 0, sizeof(*pl));
@@ -311,11 +312,17 @@ static int plan_select_strategy(plan_t *pl, char *err, size_t errlen)
     }
     if (mat_is_horner_vandermonde(pl->mat, n_out, n_in, pl->horner_c)) {
         pl->kind = P_HORNER;
+        /* Bit-level CSE program for the xorbit candidate twin (NULL
+         * when there is nothing to share). Built once at plan time. */
+        pl->bit_sched = xorbit_build(pl);
         return 0;
     }
     free(pl->horner_c);
     pl->horner_c = NULL;
     pl->kind = P_MULACC;
+    /* Bit-level CSE program for the xorbit candidate twin (NULL when
+     * there is nothing to share). Built once at plan time. */
+    pl->bit_sched = xorbit_build(pl);
     return 0;
 }
 
@@ -612,6 +619,9 @@ int plan_build(const topo_int_t *topo, const rj_op *op, const char *opname,
          * the old parities or form old^new deltas. The P_DELTA mulacc
          * path already emits plain XORs for c == 1, so nothing is lost. */
         pl->kind = P_DELTA;
+        /* Bit-level CSE program for the xorbit candidate twin (NULL
+         * when there is nothing to share). Built once at plan time. */
+        pl->bit_sched = xorbit_build(pl);
         return 0;
     } else if (!op->is_recover) {
         pl->n_in = nd;
@@ -963,6 +973,50 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 continue;
             out[n] = out[i];
             out[n].xorsched = 1;
+            n++;
+        }
+    }
+    /* Bit-program twins for GF-multiply rows (track A1): a bit-schedule-
+     * driven body (cross-row/coefficient CSE at bit granularity) next to
+     * the naive nibble emitter. Enumerated per fitting MUL_NIBBLE base
+     * candidate only when the static model predicts a STRICT uop win
+     * under the emitter's own counting convention -- this is the gate
+     * the dominance-pruning track relies on (a twin exists only if it
+     * strictly beats naive, so naive can never dominate it). Never
+     * combined with ternlog/permi2b/remat (different bodies), and only
+     * on x86 (the bit-program consumer is x86-64-only for now). The
+     * NT/prefetch twin loops below see these and twin them automatically,
+     * so the full ISA x U x xorbit x nt x prefetch product is covered.
+     * NOTE: prune.c's twin_dominates must pin the xorbit axis (like
+     * xorsched/permi2b); that pin is a required follow-up (track A1
+     * follow-up list) -- without it an xorbit twin could form a
+     * cross-axis pruning pair with a ternlog twin. */
+    if ((pl->kind == P_MULACC || pl->kind == P_DELTA ||
+         pl->kind == P_HORNER) &&
+        pl->bit_sched) {
+        int ntemp = n;
+        for (int i = 0; i < ntemp && n < maxout; i++) {
+            if (out[i].ternlog || out[i].permi2b || out[i].remat ||
+                out[i].xorsched)
+                continue;
+            isa_t isa = out[i].isa;
+            if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512)
+                continue;
+            if (out[i].mul != MUL_NIBBLE)
+                continue;
+            int U = out[i].U;
+            if (xorbit_need_regs(isa, pl, U) > isa_nregs(isa))
+                continue;
+            long u_naive = xorbit_version_uops(pl->bit_sched, pl, isa, U,
+                                              0, 0);
+            long u_sched = xorbit_version_uops(pl->bit_sched, pl, isa, U,
+                                              1, 0);
+            if (u_naive < 0 || u_sched < 0)
+                continue;
+            if (u_sched >= u_naive)
+                continue;
+            out[n] = out[i];
+            out[n].xorbit = 1;
             n++;
         }
     }

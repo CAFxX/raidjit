@@ -113,6 +113,7 @@ void em_vpor_mem(em_t *e, int vd, int s1, int b, int x, int sc, int disp,
 void em_vpermi2b(em_t *e, int vd_idx, int vtbl1, int vtbl2, int vl);
 void em_vpand(em_t *e, int vd, int s1, int s2, int vl);
 void em_vpsrlw(em_t *e, int vd, int s1, unsigned imm, int vl);
+void em_vpsllw(em_t *e, int vd, int s1, unsigned imm, int vl);
 /* 512-bit only (GFNI): per-byte GF(2) affine transform y = A.x ^ b, one
  * independent 8x8-bit-matrix transform per byte lane (SDM: VGF2P8AFFINEQB).
  * s2 holds the matrix rows and imm8 the b vector; see gf_affine_matrix()
@@ -142,6 +143,7 @@ void em_pxor_mem_sse(em_t *e, int vd, int b, int x, int sc, int disp);
 void em_pshufb_sse(em_t *e, int vd, int vs);
 void em_pand_sse(em_t *e, int vd, int vs);
 void em_psrlw_sse(em_t *e, int vd, unsigned imm);
+void em_psllw_sse(em_t *e, int vd, unsigned imm);
 /* --- small integer extras --- */
 void em_cmp_rr(em_t *e, int d, int s);   /* cmp r64, r64 */
 void em_mov_r8r8(em_t *e, int d, int s); /* mov r8, r8 */

@@ -1,5 +1,7 @@
-/* XOR-schedule / cross-row CSE (track A3). See xorsched.h for the design. */
+/* XOR-schedule / cross-row CSE (track A3) + bit-level scheduling for
+ * GF-multiply rows (track A1). See xorsched.h for the designs. */
 #include "xorsched.h"
+#include "gf.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -578,4 +580,678 @@ int xorsched_need_regs(isa_t isa, const plan_t *pl, int U)
     if (isa == ISA_AVX2 || isa == ISA_AVX512)
         return base;
     return base + 1;
+}
+
+/* ---- bit-level (gate-level) XOR scheduling for GF-multiply rows ----
+ * (track A1). See xorsched.h for the bit-program format.
+ *
+ * Guards: the greedy pair table is nbits_in*nbits_in ints; beyond these
+ * sizes no schedule is built and the naive emitter is used. ni_sched is
+ * capped at 64 (512 input bits -> 1MB pair table); larger plans keep the
+ * nibble path.
+ */
+#define XB_MAX_TEMPS 1024
+#define XB_MAX_DIMS 131072 /* (8*ni_sched) * (8*n_out) */
+#define XB_MAX_NIN 64
+
+/* Test hook: fail the Nth allocation inside xorbit_build (counting from
+ * 0), to exercise the OOM unwind path. -1 (default) disables. Armed via
+ * xorbit_test_oom_at(); inert otherwise. Not thread-safe: tests only. */
+static int xb_oom_fail_at = -1;
+
+void xorbit_test_oom_at(int n)
+{
+    xb_oom_fail_at = n;
+}
+
+static void *xb_oom_realloc(void *p, size_t n)
+{
+    if (xb_oom_fail_at >= 0) {
+        if (xb_oom_fail_at-- == 0)
+            return NULL;
+    }
+    return realloc(p, n);
+}
+
+static void *xb_oom_calloc(size_t nmemb, size_t size)
+{
+    if (xb_oom_fail_at >= 0) {
+        if (xb_oom_fail_at-- == 0)
+            return NULL;
+    }
+    return calloc(nmemb, size);
+}
+
+/* All xorbit_build allocations go through these so the test hook can
+ * inject a failure at any site. */
+#define XB_MALLOC(n) xb_oom_realloc(NULL, (n))
+#define XB_CALLOC(nmemb, size) xb_oom_calloc((nmemb), (size))
+#define XB_REALLOC(p, n) xb_oom_realloc((p), (n))
+
+/* Scheduler-visible coefficient of output row j, scheduler input i:
+ * the raw matrix for P_MULACC, the delta columns duplicated over
+ * old/new for P_DELTA, the Horner expansion c_j^(n-1-i) for P_HORNER. */
+static uint8_t xb_coeff(const plan_t *pl, int j, int i)
+{
+    if (pl->kind == P_DELTA)
+        return pl->mat[(size_t)j * (size_t)pl->nchanged +
+                       (size_t)(i % pl->nchanged)];
+    if (pl->kind == P_HORNER)
+        return gf_pow(pl->horner_c[j], (unsigned)(pl->n_in - 1 - i));
+    return pl->mat[(size_t)j * (size_t)pl->n_in + (size_t)i];
+}
+
+typedef struct {
+    int *atoms; /* input-bit ids 0..nbits_in-1, temps nbits_in+m */
+    int n, cap;
+} xb_row_t;
+
+/* Returns 0 on success, -1 on allocation failure. */
+static int xb_row_add(xb_row_t *r, int atom)
+{
+    if (r->n == r->cap) {
+        int ncap = r->cap ? r->cap * 2 : 8;
+        int *na = XB_REALLOC(r->atoms, (size_t)ncap * sizeof(int));
+        if (!na)
+            return -1;
+        r->atoms = na;
+        r->cap = ncap;
+    }
+    r->atoms[r->n++] = atom;
+    return 0;
+}
+
+/* remove first occurrence of atom; rows hold each atom at most once */
+static void xb_row_remove(xb_row_t *r, int atom)
+{
+    for (int i = 0; i < r->n; i++) {
+        if (r->atoms[i] == atom) {
+            r->atoms[i] = r->atoms[--r->n];
+            return;
+        }
+    }
+    assert(!"xb_row_remove: atom not present");
+}
+
+static int xb_row_has_atom(const xb_row_t *r, int atom)
+{
+    for (int i = 0; i < r->n; i++)
+        if (r->atoms[i] == atom)
+            return 1;
+    return 0;
+}
+
+static void xb_free_greedy(xb_row_t *rows, long nbits_out, uint8_t *has,
+                           int *counts, int *ta, int *tb)
+{
+    if (rows) {
+        for (long ob = 0; ob < nbits_out; ob++)
+            free(rows[ob].atoms);
+        free(rows);
+    }
+    free(has);
+    free(counts);
+    free(ta);
+    free(tb);
+}
+
+/* Sort output-bit ids by (bit position, byte): the emitter fans a value
+ * out to all users sharing a bit position with one shift, so this order
+ * makes each bit-position group consecutive. */
+static int xb_cmp_bj(const void *pa, const void *pb)
+{
+    int a = *(const int *)pa, b = *(const int *)pb;
+    int ba = a & 7, bb = b & 7;
+    if (ba != bb)
+        return ba - bb;
+    return (a >> 3) - (b >> 3);
+}
+
+xorbit_t *xorbit_build(const plan_t *pl)
+{
+    if (!pl)
+        return NULL;
+    if (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+        pl->kind != P_HORNER)
+        return NULL;
+    int n_out = pl->n_out;
+    int ni_sched =
+        (pl->kind == P_DELTA) ? 2 * pl->nchanged : pl->n_in;
+    if (n_out < 1 || ni_sched < 1)
+        return NULL;
+    if (ni_sched > XB_MAX_NIN)
+        return NULL;
+    if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && !pl->mat)
+        return NULL;
+    if (pl->kind == P_DELTA && pl->nchanged < 1)
+        return NULL;
+    if (pl->kind == P_HORNER && !pl->horner_c)
+        return NULL;
+    long nbits_in = 8L * (long)ni_sched;
+    long nbits_out = 8L * (long)n_out;
+    if (nbits_in * nbits_out > XB_MAX_DIMS)
+        return NULL;
+
+    /* 1. incidence sets: for each output bit (j,b), the input bits
+     * (i,k) with bitmatrix(C[j][i])[b][k] = 1. Column k of the
+     * bitmatrix is gf_mul(C, 1<<k); bit b of that column feeds
+     * output bit b. */
+    xb_row_t *rows = XB_CALLOC((size_t)nbits_out, sizeof(xb_row_t));
+    uint8_t *has =
+        XB_CALLOC((size_t)nbits_out * (size_t)nbits_in, 1);
+    int *counts =
+        XB_CALLOC((size_t)nbits_in * (size_t)nbits_in, sizeof(int));
+    int *ta = XB_MALLOC(XB_MAX_TEMPS * sizeof(int));
+    int *tb = XB_MALLOC(XB_MAX_TEMPS * sizeof(int));
+    if (!rows || !has || !counts || !ta || !tb) {
+        xb_free_greedy(rows, nbits_out, has, counts, ta, tb);
+        return NULL;
+    }
+    int oom = 0;
+    int ntemps = 0;
+    xorbit_t *s = NULL;
+    for (int j = 0; j < n_out && !oom; j++) {
+        for (int b = 0; b < 8 && !oom; b++) {
+            long ob = 8L * (long)j + (long)b;
+            for (int i = 0; i < ni_sched && !oom; i++) {
+                uint8_t c = xb_coeff(pl, j, i);
+                if (!c)
+                    continue;
+                /* columns of the bitmatrix of x -> c*x */
+                uint8_t col[8];
+                for (int k = 0; k < 8; k++)
+                    col[k] = gf_mul(c, (uint8_t)(1u << k));
+                for (int k = 0; k < 8; k++) {
+                    if (!((col[k] >> b) & 1u))
+                        continue;
+                    int q = 8 * i + k;
+                    if (xb_row_add(&rows[ob], q) != 0) {
+                        oom = 1;
+                        break;
+                    }
+                    has[ob * nbits_in + q] = 1;
+                }
+            }
+            for (int x = 0; x < rows[ob].n; x++)
+                for (int y = x + 1; y < rows[ob].n; y++) {
+                    int qa = rows[ob].atoms[x], qb = rows[ob].atoms[y];
+                    int p = qa < qb ? qa : qb, q = qa < qb ? qb : qa;
+                    counts[(size_t)p * (size_t)nbits_in + (size_t)q]++;
+                }
+        }
+    }
+    if (oom)
+        goto done;
+
+    /* 2. greedy flat pair extraction over input-bit pairs (never
+     * nested: temps are pairs of input bits only, like xorsched). */
+    for (;;) {
+        long ba = -1, bb = -1;
+        int best = 0;
+        for (long a = 0; a < nbits_in; a++)
+            for (long b = a + 1; b < nbits_in; b++) {
+                int cc = counts[a * nbits_in + b];
+                if (cc > best) {
+                    best = cc;
+                    ba = a;
+                    bb = b;
+                }
+            }
+        if (best < 2 || ntemps >= XB_MAX_TEMPS)
+            break;
+        ta[ntemps] = (int)ba;
+        tb[ntemps] = (int)bb;
+        int tatom = (int)nbits_in + ntemps;
+        ntemps++;
+        for (long ob = 0; ob < nbits_out; ob++) {
+            uint8_t *h = has + ob * nbits_in;
+            if (!h[ba] || !h[bb])
+                continue;
+            /* the row loses pairs (ba,bb), (ba,x), (bb,x) */
+            counts[ba * nbits_in + bb]--;
+            for (long x = 0; x < nbits_in; x++) {
+                if (!h[x] || x == ba || x == bb)
+                    continue;
+                long p = x < ba ? x : ba, q = x < ba ? ba : x;
+                counts[p * nbits_in + q]--;
+                p = x < bb ? x : bb, q = x < bb ? bb : x;
+                counts[p * nbits_in + q]--;
+            }
+            h[ba] = h[bb] = 0;
+            xb_row_remove(&rows[ob], (int)ba);
+            xb_row_remove(&rows[ob], (int)bb);
+            if (xb_row_add(&rows[ob], tatom) != 0) {
+                oom = 1;
+                break;
+            }
+        }
+        if (oom)
+            break;
+    }
+    if (oom)
+        goto done;
+
+    if (ntemps > 0 && !oom) {
+        s = XB_CALLOC(1, sizeof(*s));
+        if (!s) {
+            oom = 1;
+            goto done;
+        }
+        s->n_in_sched = ni_sched;
+        s->n_out = n_out;
+        s->n_in = pl->n_in;
+        s->ntemps = ntemps;
+        s->kind = pl->kind;
+        s->temps = XB_CALLOC((size_t)ntemps, sizeof(xorbit_temp_t));
+        s->bit_natoms = XB_CALLOC((size_t)nbits_out, sizeof(int));
+        s->bit_atoms = XB_CALLOC((size_t)nbits_out, sizeof(int *));
+        s->inbit_nusers = XB_CALLOC((size_t)nbits_in, sizeof(int));
+        s->inbit_users = XB_CALLOC((size_t)nbits_in, sizeof(int *));
+        if (!s->temps || !s->bit_natoms || !s->bit_atoms ||
+            !s->inbit_nusers || !s->inbit_users) {
+            oom = 1;
+            goto done;
+        }
+        /* temps */
+        for (int m = 0; m < ntemps; m++) {
+            s->temps[m].a = ta[m];
+            s->temps[m].b = tb[m];
+            int nu = 0;
+            for (long ob = 0; ob < nbits_out; ob++)
+                if (xb_row_has_atom(&rows[ob], (int)nbits_in + m))
+                    nu++;
+            s->temps[m].nusers = nu;
+            s->temps[m].users = XB_MALLOC((size_t)nu * sizeof(int));
+            if (!s->temps[m].users && nu > 0) {
+                oom = 1;
+                goto done;
+            }
+            nu = 0;
+            for (long ob = 0; ob < nbits_out; ob++)
+                if (xb_row_has_atom(&rows[ob], (int)nbits_in + m))
+                    s->temps[m].users[nu++] = (int)ob;
+            qsort(s->temps[m].users, (size_t)nu, sizeof(int), xb_cmp_bj);
+        }
+        /* output bits: temps in formation order, then input bits
+         * ascending */
+        for (long ob = 0; ob < nbits_out; ob++) {
+            int nt = 0, nq = 0;
+            for (int i = 0; i < rows[ob].n; i++) {
+                if (rows[ob].atoms[i] >= nbits_in)
+                    nt++;
+                else
+                    nq++;
+            }
+            s->bit_natoms[ob] = nt + nq;
+            s->bit_atoms[ob] = XB_MALLOC((size_t)(nt + nq) * sizeof(int));
+            if (!s->bit_atoms[ob] && nt + nq > 0) {
+                oom = 1;
+                goto done;
+            }
+            int w = 0;
+            for (int m = 0; m < ntemps; m++)
+                if (xb_row_has_atom(&rows[ob], (int)nbits_in + m))
+                    s->bit_atoms[ob][w++] = m; /* temp m -> atom m */
+            for (long q = 0; q < nbits_in; q++)
+                if (has[ob * nbits_in + q])
+                    s->bit_atoms[ob][w++] = ntemps + (int)q;
+            assert(w == nt + nq);
+        }
+        /* per-input-bit direct users */
+        for (long q = 0; q < nbits_in; q++) {
+            int nu = 0;
+            for (long ob = 0; ob < nbits_out; ob++)
+                if (has[ob * nbits_in + q])
+                    nu++;
+            s->inbit_nusers[q] = nu;
+            s->inbit_users[q] = XB_MALLOC((size_t)nu * sizeof(int));
+            if (!s->inbit_users[q] && nu > 0) {
+                oom = 1;
+                goto done;
+            }
+            nu = 0;
+            for (long ob = 0; ob < nbits_out; ob++)
+                if (has[ob * nbits_in + q])
+                    s->inbit_users[q][nu++] = (int)ob;
+            qsort(s->inbit_users[q], (size_t)nu, sizeof(int), xb_cmp_bj);
+        }
+        /* dead output bytes (no atoms in any of their 8 bits) */
+        s->ndead_bytes = 0;
+        for (int j = 0; j < n_out; j++) {
+            int live = 0;
+            for (int b = 0; b < 8; b++)
+                if (s->bit_natoms[8 * j + b] > 0) {
+                    live = 1;
+                    break;
+                }
+            if (!live)
+                s->ndead_bytes++;
+        }
+    }
+
+done:
+    xb_free_greedy(rows, nbits_out, has, counts, ta, tb);
+    if (oom) {
+        if (s) {
+            if (s->temps) {
+                for (int m = 0; m < ntemps; m++)
+                    free(s->temps[m].users);
+                free(s->temps);
+            }
+            if (s->bit_atoms) {
+                for (long ob = 0; ob < nbits_out; ob++)
+                    free(s->bit_atoms[ob]);
+                free(s->bit_atoms);
+            }
+            free(s->bit_natoms);
+            if (s->inbit_users) {
+                for (long q = 0; q < nbits_in; q++)
+                    free(s->inbit_users[q]);
+                free(s->inbit_users);
+            }
+            free(s->inbit_nusers);
+            free(s);
+        }
+        return NULL;
+    }
+    if (ntemps == 0 || !s) {
+        xorbit_free(s);
+        return NULL;
+    }
+    return s;
+}
+
+void xorbit_free(xorbit_t *s)
+{
+    if (!s)
+        return;
+    for (int m = 0; m < s->ntemps; m++)
+        free(s->temps[m].users);
+    free(s->temps);
+    for (int ob = 0; ob < 8 * s->n_out; ob++)
+        free(s->bit_atoms[ob]);
+    free(s->bit_natoms);
+    free(s->bit_atoms);
+    for (long q = 0; q < 8L * (long)s->n_in_sched; q++)
+        free(s->inbit_users[q]);
+    free(s->inbit_nusers);
+    free(s->inbit_users);
+    free(s);
+}
+
+/* ---- static cost model for the bit-program twin ---- */
+
+int xorbit_need_regs(isa_t isa, const plan_t *pl, int U)
+{
+    (void)isa;
+    /* n_out*U accumulators + inreg + r1 + r2 + mask1. The nibble
+     * tables are dead on this path. */
+    return pl->n_out * U + 4;
+}
+
+/* ---- static cost model for the bit-program twin ----
+ * (plan_candidates gate + emitter lockstep tests).
+ * Mirrors the x86_64 emitter's counting convention exactly:
+ * body + stores per group; prologue const setup uncounted; prefetch
+ * excluded (the gate passes prefetch_dist=0). Only x86 ISAs (the twin
+ * is x86-only); -1 otherwise. */
+
+/* nhoist mirror of ptr_hoist_count (x86_64): P_DELTA never hoists. */
+static int xb_nhoist(const plan_t *pl)
+{
+    if (pl->kind == P_DELTA)
+        return 0;
+    int n_in = pl->n_in;
+    return (n_in < 2) ? 0 : (n_in < 5 ? n_in : 5);
+}
+
+/* Fan-out uops for one (b, jlist) group, mirroring xorbit_fanout.
+ * touched[j] is updated exactly like the emitter's. */
+static long xb_fanout_uops(const int *users, int nusers, int is_sse,
+                           int is_delta, int *touched)
+{
+    long uops = 0;
+    long sh = is_sse ? 2 : 1; /* c_sllw (vd != s1: mov + shift on SSE) */
+    int w = 0;
+    while (w < nusers) {
+        int b = users[w] & 7;
+        int w1 = w;
+        while (w1 < nusers && (users[w1] & 7) == b)
+            w1++;
+        int nj = w1 - w;
+        int j0 = users[w] >> 3;
+        if (nj == 1 && !is_delta && !touched[j0]) {
+            /* single first-touch user: shift/move straight into acc */
+            uops += (b == 0) ? 1 : sh;
+            touched[j0] = 1;
+        } else if (b == 0) {
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                uops += 1; /* c_vmov / c_vpxor */
+                if (!is_delta && !touched[j])
+                    touched[j] = 1;
+            }
+        } else {
+            uops += sh; /* c_sllw(vtmp, vsrc): vd != s1 */
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                uops += 1; /* c_vmov / c_vpxor */
+                if (!is_delta && !touched[j])
+                    touched[j] = 1;
+            }
+        }
+        w = w1;
+    }
+    return uops;
+}
+
+/* Scheduled body uops for U vectors. Direct simulation of
+ * gen_body_xorbit's emission order and 1-entry input-byte cache. */
+static long xb_body_sched(const xorbit_t *s, int is_sse, int U, int nhoist)
+{
+    int n_out = s->n_out;
+    int ni_sched = s->n_in_sched;
+    int is_delta = (s->kind == P_DELTA);
+    long uops = 0;
+    if (!is_delta)
+        uops += (long)s->ndead_bytes * U; /* prologue c_vzero */
+    else
+        uops += (long)n_out * U; /* seed accs: c_ld (mov uncounted) */
+    int touched[RJ_MAX_DISKS];
+    for (int u = 0; u < U; u++) {
+        for (int j = 0; j < n_out; j++)
+            touched[j] = 0;
+        int cur_in = -1;
+        /* phase 1: temps */
+        for (int m = 0; m < s->ntemps; m++) {
+            int ia = s->temps[m].a >> 3, ib = s->temps[m].b >> 3;
+            if (cur_in != ia) {
+                if (!is_delta && ia >= nhoist)
+                    uops += 1; /* body_inptr mov */
+                uops += 1;     /* c_ld */
+                cur_in = ia;
+            }
+            uops += 3; /* c_srlw (2) + c_and (1) */
+            if (cur_in != ib) {
+                if (!is_delta && ib >= nhoist)
+                    uops += 1;
+                uops += 1;
+                cur_in = ib;
+            }
+            uops += 3; /* c_srlw (2) + c_and (1) */
+            uops += 1; /* c_vpxor */
+            uops += xb_fanout_uops(s->temps[m].users, s->temps[m].nusers,
+                                   is_sse, is_delta, touched);
+        }
+        /* phase 2: surviving input bits */
+        for (long q = 0; q < 8L * (long)ni_sched; q++) {
+            if (!s->inbit_nusers[q])
+                continue;
+            int i = (int)(q >> 3);
+            if (cur_in != i) {
+                if (!is_delta && i >= nhoist)
+                    uops += 1;
+                uops += 1;
+                cur_in = i;
+            }
+            uops += 3; /* c_srlw (2) + c_and (1) */
+            uops += xb_fanout_uops(s->inbit_users[q],
+                                   s->inbit_nusers[q], is_sse, is_delta,
+                                   touched);
+        }
+    }
+    return uops;
+}
+
+/* first contributing column per row (-1 if none), from the matrix */
+static void xb_first_col(const plan_t *pl, int ncols, int *first_col)
+{
+    int n_out = pl->n_out;
+    for (int j = 0; j < n_out; j++) {
+        first_col[j] = -1;
+        for (int i = 0; i < ncols; i++) {
+            if (pl->mat[(size_t)j * (size_t)ncols + (size_t)i]) {
+                first_col[j] = i;
+                break;
+            }
+        }
+    }
+}
+
+/* Naive nibble body uops for U vectors (MUL_NIBBLE, no ternlog/permi2b/
+ * remat). Mirrors the x86_64 naive emitter's main path exactly,
+ * including its quirks (DELTA pointer movs uncounted; AVX512-DELTA
+ * NIBHI pinning). */
+static long xb_body_naive(const plan_t *pl, isa_t isa, int U, int nhoist)
+{
+    int n_in = pl->n_in, n_out = pl->n_out;
+    int is_sse = (isa == ISA_SSE);
+    int is_avx512 = (isa == ISA_AVX512);
+    long uops = 0;
+    int first_col[RJ_MAX_DISKS];
+
+    if (pl->kind == P_MULACC) {
+        xb_first_col(pl, n_in, first_col);
+        for (int j = 0; j < n_out; j++)
+            if (first_col[j] < 0)
+                uops += U; /* dead-row prologue vzero */
+        for (int i = 0; i < n_in; i++) {
+            int any = 0, neednib = 0;
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->mat[(size_t)j * (size_t)n_in + (size_t)i];
+                if (c) {
+                    any = 1;
+                    if (c != 1)
+                        neednib = 1;
+                }
+            }
+            if (!any)
+                continue;
+            if (i >= nhoist)
+                uops += 1; /* body_inptr mov */
+            for (int u = 0; u < U; u++) {
+                uops += 1; /* c_ld t */
+                if (neednib)
+                    uops += 3; /* and, srlw, and */
+                for (int j = 0; j < n_out; j++) {
+                    uint8_t c =
+                        pl->mat[(size_t)j * (size_t)n_in + (size_t)i];
+                    if (!c)
+                        continue;
+                    if (c == 1) {
+                        uops += 1;
+                    } else {
+                        uops += 4; /* 2 ldpool + 2 shuf */
+                        uops += (i == first_col[j]) ? 1 : 2;
+                    }
+                }
+            }
+        }
+    } else if (pl->kind == P_DELTA) {
+        int nc = pl->nchanged;
+        uops += (long)n_out * U; /* seed accs: c_ld (mov uncounted) */
+        int nib_c = -1;          /* AVX512 NIBHI pinning (mulacc_nib_c) */
+        for (int i = 0; i < nc; i++) {
+            int any = 0, neednib = 0;
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->mat[(size_t)j * (size_t)nc + (size_t)i];
+                if (c) {
+                    any = 1;
+                    if (c != 1)
+                        neednib = 1;
+                }
+            }
+            if (!any)
+                continue;
+            /* two raw pointer movs (uncounted, like the emitter) */
+            for (int u = 0; u < U; u++) {
+                uops += is_sse ? 3 : 2; /* delta formation */
+                if (neednib)
+                    uops += 3;
+                for (int j = 0; j < n_out; j++) {
+                    uint8_t c =
+                        pl->mat[(size_t)j * (size_t)nc + (size_t)i];
+                    if (!c)
+                        continue;
+                    if (c == 1) {
+                        uops += 1;
+                    } else {
+                        uops += 1 + 1; /* NIBLO ldpool + shuf */
+                        if (is_avx512) {
+                            if (nib_c != c) {
+                                uops += 1; /* NIBHI ldpool */
+                                nib_c = c;
+                            }
+                        } else {
+                            uops += 1; /* NIBHI ldpool */
+                        }
+                        uops += 1 + 2; /* shuf + 2 xor */
+                    }
+                }
+            }
+        }
+    } else { /* P_HORNER */
+        for (int i = 0; i < n_in; i++) {
+            if (i >= nhoist)
+                uops += 1; /* body_inptr mov */
+            for (int u = 0; u < U; u++) {
+                if (i == 0) {
+                    uops += 1; /* c_ld into acc[0] */
+                    uops += n_out - 1; /* moves to the other accs */
+                    continue;
+                }
+                uops += 1; /* c_ld t */
+                for (int j = 0; j < n_out; j++) {
+                    uint8_t c = pl->horner_c[j];
+                    if (c == 1 || c == 0) {
+                        uops += 1;
+                    } else {
+                        /* nibble split of acc (3) + 2 shuf from hreg
+                         * (non-remat) + 2 xor */
+                        uops += 3 + 2 + 2;
+                    }
+                }
+            }
+        }
+    }
+    return uops;
+}
+
+long xorbit_version_uops(const xorbit_t *s, const plan_t *pl,
+                         isa_t isa, int U, int sched, int nt)
+{
+    if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512)
+        return -1;
+    if (!pl || U < 1)
+        return -1;
+    if (sched && !s)
+        return -1;
+    /* nt is a wash on x86 (one uop per vector store either way);
+     * accepted so tests can check +nt twins against the model. */
+    (void)nt;
+    int nhoist = xb_nhoist(pl);
+    long stU = (long)pl->n_out * U; /* stores */
+    long body = sched ? xb_body_sched(s, isa == ISA_SSE, U, nhoist)
+                      : xb_body_naive(pl, isa, U, nhoist);
+    return body + stU;
 }

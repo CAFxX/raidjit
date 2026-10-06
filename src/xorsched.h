@@ -103,6 +103,105 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
  * x86-SSE / AArch64 / RVV (two temps: t and t2/vd1). */
 int xorsched_need_regs(isa_t isa, const plan_t *pl, int U);
 
+/* ---- bit-level (gate-level) XOR scheduling for GF-multiply rows ----
+ * (track A1).
+ *
+ * The byte-level xorsched above only applies to P_XOR rows. For
+ * GF-multiply rows (P_MULACC / P_DELTA / P_HORNER) each coefficient c
+ * expands to its 8x8 bitmatrix (column k = bits of gf_mul(c, 1<<k)),
+ * turning the whole plan into a GF(2)-linear circuit: every output bit
+ * is an XOR of input bits (bit k of input byte i). The scheduler runs
+ * greedy pair-CSE at bit granularity over these incidence sets --
+ * flat pairs of INPUT BITS only (never nested; A3 is the follow-on) --
+ * deduplicating identical output-bit rows, and emits a straight-line
+ * bit program (xorbit_t) with cross-row AND cross-coefficient sharing:
+ * a pair of input bits shared between different coefficients'
+ * bitmatrices (e.g. the xtime(x) subexpression inside gf_mul(3,x) =
+ * xtime(x)^x) is computed once. This subsumes strength reduction.
+ *
+ * Bit-program format:
+ *   input bit id: q = i*8+k  (0 <= i < n_in_sched, 0 <= k < 8), where
+ *     n_in_sched = n_in for P_MULACC/P_HORNER and 2*nchanged for P_DELTA
+ *     (the scheduler sees the raw old/new inputs; old^new delta pairs
+ *     are discovered by the pair-CSE itself, and oldpar bits never
+ *     enter the program -- P_DELTA accumulators are seeded from oldpar
+ *     by the emitter).
+ *   temp m: t_m = in[a_m] ^ in[b_m]  (input-bit ids, a_m < b_m).
+ *   atom ids: temp m -> m (0 <= m < ntemps); input bit q -> ntemps + q.
+ *   output bit (j,b) (0 <= j < n_out, 0 <= b < 8) = XOR of the atoms in
+ *     bit_atoms[ubit_of[j*8+b]].
+ *
+ * Backend contract (all ISAs): the emitter materializes each input bit
+ * as a bit-0-normalized byte vector ((in_i >> k) & 1), evaluates each
+ * temp with vector XORs, and assembles output bytes as
+ * out_j = XOR_b (P(j,b) << b) where P(j,b) is the output bit's value.
+ * Accumulators start zero (P_MULACC/P_HORNER: dead bytes zeroed by the
+ * prologue, live bytes written on first touch, never XORed with zero;
+ * P_DELTA: seeded from oldpar, always XORed). All CSE/scheduling is
+ * plan-time; the emitter walks the program with no runtime decisions.
+ *
+ * Build returns NULL when there is nothing to share (wrong kind, no
+ * temps extracted), when the plan exceeds the guards
+ * (8*n_in_sched*n_out > 131072 bit-rows... see XB_MAX_DIMS, or
+ * n_in_sched > 256), or on allocation failure (fail-stop, like
+ * xorsched_build). The caller owns the result (xorbit_free). */
+
+typedef struct {
+    int a, b;      /* input-bit ids (a < b) */
+    int nusers;
+    int *users;    /* [nusers] output-bit ids (j*8+b), sorted by (b, j) so
+                    * each bit-position group is consecutive for the
+                    * emitter's fan-out */
+} xorbit_temp_t;
+
+typedef struct xorbit {
+    int n_in_sched;  /* scheduler input bytes (see above) */
+    int n_out;       /* output bytes */
+    int n_in;        /* plan n_in (emitter input count; == n_in_sched
+                      * except P_DELTA, where the trailing oldpar inputs
+                      * are seed-only) */
+    int ntemps;
+    xorbit_temp_t *temps; /* [ntemps], formation order */
+    int nunique;          /* deduplicated output-bit count */
+    int *ubit_of;   /* [8*n_out] unique-bit index for each output bit */
+    int *first_bit; /* [nunique] canonical (first) output bit id = j*8+b */
+    int *mult;      /* [nunique] multiplicity (>= 1) */
+    int *bit_natoms;  /* [nunique] */
+    int **bit_atoms;  /* [nunique][k]: atom ids, temps (formation order)
+                       * then input bits (ascending) */
+    int *bit_first; /* [nunique]: first atom id, -1 if the bit is empty */
+    int *inbit_nusers; /* [8*n_in_sched] unique bits where input bit q
+                        * survives directly */
+    int **inbit_users; /* [8*n_in_sched][k]: output-bit ids (j*8+b) */
+    int ndead_bytes; /* output bytes with no atoms (zeroed by prologue) */
+    plan_kind_t kind; /* plan kind (P_DELTA seeds accs from oldpar) */
+} xorbit_t;
+
+xorbit_t *xorbit_build(const plan_t *pl);
+void xorbit_free(xorbit_t *s);
+
+/* Test hook: fail the Nth allocation inside xorbit_build (counting from
+ * 0), to exercise the OOM unwind path. -1 (default) disables; inert
+ * otherwise. Not thread-safe: tests only. */
+void xorbit_test_oom_at(int n);
+
+/* Static cost model for the bit-program twin (plan_candidates gate).
+ * sched=0 models the naive nibble body, sched=1 the bit-program body,
+ * under the x86_64 emitter's counting convention (body + stores per
+ * group; prologue const setup uncounted; prefetch excluded -- the gate
+ * always passes prefetch_dist=0). nt selects non-temporal store
+ * accounting (x86: one uop per vector either way). Only x86 ISAs are
+ * modeled (the twin is x86-only for now); returns -1 otherwise.
+ * Used by the plan_candidates gate (strict <) and by tests to check
+ * the emitter against the model. */
+long xorbit_version_uops(const xorbit_t *s, const plan_t *pl,
+                         isa_t isa, int U, int sched, int nt);
+
+/* Register need for the bit-program twin: n_out*U accumulators + 4
+ * (input-byte reg, two bit temps, 0x01 mask). The nibble tables are
+ * dead on this path. */
+int xorbit_need_regs(isa_t isa, const plan_t *pl, int U);
+
 #ifdef __cplusplus
 }
 #endif

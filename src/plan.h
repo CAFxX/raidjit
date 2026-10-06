@@ -108,6 +108,13 @@ typedef struct {
                    * emitter. Enumerated only when the static model
                    * predicts a strict uop win; the benchmark picks the
                    * twin empirically, never forced. */
+    int xorbit; /* 1 = P_MULACC/P_DELTA/P_HORNER: drive the body from the
+                 * plan's bit_sched program (bit-level cross-row and
+                 * cross-coefficient CSE, track A1) instead of the naive
+                 * nibble emitter. Enumerated only when the static model
+                 * predicts a strict uop win; the benchmark picks the
+                 * twin empirically, never forced. Never combined with
+                 * ternlog/permi2b/remat/xorsched. */
     int lmul;    /* RVV only: vector register group multiplier (LMUL).
                   * 1/2/4/8 (0 = 1, the default for zero-initialized
                   * candidates). Enumerated by plan_candidates for RVV;
@@ -138,6 +145,11 @@ typedef struct {
                                  * there is nothing to share); built by
                                  * plan_build, freed by plan_free. The
                                  * xorsched candidate twin reads it. */
+    struct xorbit *bit_sched; /* P_MULACC/P_DELTA/P_HORNER bit-level CSE
+                               * program (track A1; NULL when there is
+                               * nothing to share); built by plan_build,
+                               * freed by plan_free. The xorbit candidate
+                               * twin reads it. */
 } plan_t;
 
 typedef struct {
