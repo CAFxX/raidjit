@@ -134,19 +134,24 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat)
                ((pl->kind == P_DELTA && isa == ISA_SSE) ? 2 : 1);
     }
     if (a64) {
-        /* src/aarch64/jit.c: t,(tlo,thi,r1,r2,tbl,mask); HORNER compacts
-         * its 2 table regs to nontrivial rows only, unless remat (tables
-         * reloaded into tbl; no hreg). */
+        /* [aarch64-remediation #4, 2026-10-06] src/aarch64/jit.c:
+         * t,(tlo,thi,r1,r2,tbl_lo,tbl_hi,mask). The MULACC table hoisting
+         * keeps one row's NIBLO/NIBHI tables live across the lane loop,
+         * so two table regs are allocated (was one). The backend asserts
+         * vmax+1 == this count; keep in lockstep. HORNER compacts its 2
+         * table regs to nontrivial rows only, unless remat (tables
+         * reloaded into tbl_lo; no hreg). */
         if (pl->kind == P_HORNER) {
             if (remat)
                 return n_out * U + 6;
             return n_out * U + 5 + 2 * horner_ntriv(pl);
         }
-        /* P_MULACC / P_DELTA: all-trivial kills tlo/thi/r2/tbl/mask, but
-         * r1 stays live as the P_DELTA delta temp on both NEON and SVE
-         * (old^new is formed into r1 for every column unconditionally).
-         * (P_MULACC all-trivial is unreachable; its r1 would be dead.) */
-        return n_out * U + (nontriv ? 7 : (pl->kind == P_DELTA ? 2 : 1));
+        /* P_MULACC / P_DELTA: all-trivial kills tlo/thi/r2/tbl_lo/tbl_hi/
+         * mask, but r1 stays live as the P_DELTA delta temp on both NEON
+         * and SVE (old^new is formed into r1 for every column
+         * unconditionally). (P_MULACC all-trivial is unreachable; its r1
+         * would be dead.) */
+        return n_out * U + (nontriv ? 8 : (pl->kind == P_DELTA ? 2 : 1));
     }
     /* RVV: the backend stages U input chunks in vd0..vd0+U-1, then the
      * usual temps (tlo,thi,r1,r2,tbl_lo,tbl_hi,mask for MULACC/DELTA;

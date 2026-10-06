@@ -52,7 +52,7 @@ typedef struct {
     int is_sve;
     int vl;          /* vector length in bytes: 16 (NEON) or sve_vl (bytes) */
     int U, group;    /* group = U*vl bytes per vector-loop iteration */
-    int t, tlo, thi, r1, r2, tbl, mask; /* logical vector regs */
+    int t, tlo, thi, r1, r2, tbl_lo, tbl_hi, mask; /* logical vector regs */
     int t2; /* XOR-schedule 2nd temp (P_XOR xorsched twin only) */
     int *hreg;       /* P_HORNER table regs, 2 per row */
     int vmax;        /* highest logical vector reg touched (NEON save/restore) */
@@ -404,60 +404,92 @@ static void mulacc_col_info(const plan_t *pl, int col, int ncols,
 }
 
 /* Multiply-accumulate one matrix column into the accumulators.
- * cg->t holds the per-lane multiplicand (tlo/thi already split when the
- * nibble path is needed); mat is n_out x ncols row-major.
+ * mat is n_out x ncols row-major.
+ *
+ * Loop nest is (column -> row -> lane): for each row j with a nonzero
+ * coefficient, the nibble tables are loaded ONCE per (j,col) into the
+ * two persistent table regs (tbl_lo/tbl_hi) -- they depend only on
+ * (j,col), not on the lane -- and then the u-lane loop runs the input
+ * load, nibble split, TBL and accumulate. This hoisting saves 4*(U-1)
+ * table-load uops per nontrivial (j,col) on SVE (2*(U-1) on NEON) at
+ * the price of reloading the input lane per row (L1 hits; the input
+ * pointer X10/X3 stays fixed across lanes via MUL VL addressing, set
+ * up once per column by the caller).
+ *
  * first_col[j] is the first column with a nonzero entry in row j, or
  * NULL when accumulators are not provably zero (P_DELTA seeds from
  * oldpar). At the first contributing column the accumulator is known
- * zero, so the update is a move instead of an xor-with-zero. */
-static void mulacc_column(cg_t *cg, int col, int ncols, int u,
-                          const int *first_col)
+ * zero, so the update is a move instead of an xor-with-zero.
+ * is_delta selects the P_DELTA input formation (t = old^new via X10/X3)
+ * versus P_MULACC (t = input via X10).
+ * HORNER never reaches this function: it uses the inline i-loop in
+ * gen_body, not mulacc_column. */
+static void mulacc_column(cg_t *cg, int col, int ncols,
+                          const int *first_col, int is_delta)
 {
     const plan_t *pl = cg->pl;
     int n_out = pl->n_out;
+    int U = cg->U;
+    /* Predicated-tail mode processes one lane per chunk (the u=0 slice). */
+    int ulanes = cg->pred ? 1 : U;
+    assert(pl->kind != P_HORNER);
     for (int j = 0; j < n_out; j++) {
         uint8_t c = pl->mat[(size_t)j * (size_t)ncols + (size_t)col];
         if (!c)
             continue;
-        int acc = j * cg->U + u;
-        /* HORNER never reaches this function: it uses the inline i-loop
-         * in gen_body, not mulacc_column. */
-        assert(pl->kind != P_HORNER);
         int first = first_col && col == first_col[j];
-        if (c == 1) {
-            if (first)
-                c_copy(cg, acc, cg->t); /* acc was 0 */
-            else
-                c_xor(cg, acc, cg->t);
-        } else {
-            c_ldpool(cg, cg->tbl, CK_NIBLO, c);
-            c_tbl_into(cg, cg->r1, cg->tbl, cg->tlo);
-            c_ldpool(cg, cg->tbl, CK_NIBHI, c);
-            c_tbl_into(cg, cg->r2, cg->tbl, cg->thi);
-            if (first) {
-                /* acc is dead on this path (first contributing column;
-                 * the accumulator is overwritten before its first read),
-                 * so acc = r1^r2 is a single unpredicated EOR on SVE --
-                 * no mov needed, and the unpredicated form never reads
-                 * the dead acc. EOR3 is NOT usable here: it computes
-                 * Zdn^Zm^Za, i.e. it folds acc's current value in, but
-                 * acc is merely dead (uninitialized), not zero. NEON
-                 * keeps mov+eor (its EOR is already 3-operand but the
-                 * c_xor helper is destructive). */
-                if (cg->is_sve) {
-                    em_sve_eor_unpred(&cg->em, V(cg, acc), V(cg, cg->r1),
-                                      V(cg, cg->r2));
-                    cg->uops += 1;
+        if (c != 1) {
+            /* Hoisted table load: depends only on (j,col). */
+            c_ldpool(cg, cg->tbl_lo, CK_NIBLO, c);
+            c_ldpool(cg, cg->tbl_hi, CK_NIBHI, c);
+        }
+        for (int u = 0; u < ulanes; u++) {
+            int acc = j * U + u;
+            if (is_delta) {
+                c_ld_to(cg, cg->t, u, X10);
+                c_ld_to(cg, cg->r1, u, X3);
+                c_xor(cg, cg->t, cg->r1);
+            } else {
+                c_ld_to(cg, cg->t, u, X10);
+            }
+            if (c == 1) {
+                if (first)
+                    c_copy(cg, acc, cg->t); /* acc was 0 */
+                else
+                    c_xor(cg, acc, cg->t);
+            } else {
+                /* Nontrivial: split t into nibbles, then TBL. The
+                 * split is per (j,u) -- only rows with c != 1 need it. */
+                c_and3(cg, cg->tlo, cg->t);
+                c_lsr4(cg, cg->thi, cg->t);
+                c_tbl_into(cg, cg->r1, cg->tbl_lo, cg->tlo);
+                c_tbl_into(cg, cg->r2, cg->tbl_hi, cg->thi);
+                if (first) {
+                    /* acc is dead on this path (first contributing
+                     * column; the accumulator is overwritten before its
+                     * first read), so acc = r1^r2 is a single
+                     * unpredicated EOR on SVE -- no mov needed, and the
+                     * unpredicated form never reads the dead acc. EOR3
+                     * is NOT usable here: it computes Zdn^Zm^Za, i.e. it
+                     * folds acc's current value in, but acc is merely
+                     * dead (uninitialized), not zero. NEON keeps mov+eor
+                     * (its EOR is already 3-operand but the c_xor helper
+                     * is destructive). */
+                    if (cg->is_sve) {
+                        em_sve_eor_unpred(&cg->em, V(cg, acc), V(cg, cg->r1),
+                                          V(cg, cg->r2));
+                        cg->uops += 1;
+                    } else {
+                        c_copy(cg, acc, cg->r1);
+                        c_xor(cg, acc, cg->r2);
+                    }
+                } else if (cg->use_eor3) {
+                    /* acc live: acc ^= r1 ^ r2 in one instruction */
+                    c_eor3(cg, acc, cg->r1, cg->r2);
                 } else {
-                    c_copy(cg, acc, cg->r1);
+                    c_xor(cg, acc, cg->r1);
                     c_xor(cg, acc, cg->r2);
                 }
-            } else if (cg->use_eor3) {
-                /* acc live: acc ^= r1 ^ r2 in one instruction */
-                c_eor3(cg, acc, cg->r1, cg->r2);
-            } else {
-                c_xor(cg, acc, cg->r1);
-                c_xor(cg, acc, cg->r2);
             }
         }
     }
@@ -603,18 +635,10 @@ static void gen_body(cg_t *cg)
             for (int u = 0; u < ulanes; u++) {
                 /* Load once per (i,u) into t; each row then either
                  * initializes its accumulator from t (first contributing
-                 * column) or XORs t in. The old code loaded per (j,u)
-                 * (2x input traffic for multi-row P_XOR). t = n_out*U
-                 * never aliases an acc and is dead across the j-loop
-                 * except as the shared source. The load's uops/mem
-                 * accounting moves from per-(j,u) to per-(i,u); the
-                 * per-row mov/xor account themselves. */
-                if (cg->is_sve)
-                    em_sve_ld1b(e, V(cg, cg->t), cg->pred ? 1 : 0, X10);
-                else
-                    em_neon_ldr(e, cg->t, X10, (unsigned)u * 16);
-                cg->uops += 1;
-                cg->mem += cg->vl;
+                 * column) or XORs t in. t = n_out*U never aliases an acc
+                 * and is dead across the j-loop except as the shared
+                 * source. */
+                c_ld_to(cg, cg->t, u, X10);
                 for (int j = 0; j < n_out; j++) {
                     if (!pl->mat[(size_t)j * (size_t)n_in + (size_t)i])
                         continue;
@@ -624,8 +648,6 @@ static void gen_body(cg_t *cg)
                     else
                         c_xor(cg, acc, cg->t);
                 }
-                if (cg->is_sve && !cg->pred)
-                    em_add_rr(e, X10, X10, X12);  /* bump by runtime VL */
             }
         }
         /* zero accumulators for all-zero rows */
@@ -657,28 +679,20 @@ static void gen_body(cg_t *cg)
             mulacc_col_info(pl, i, nc, &any, &neednib);
             if (!any)
                 continue;
-            for (int u = 0; u < ulanes; u++) {
-                if (u == 0) {
-                    c_inptr(cg, X10, i);
-                    /* NOTE: the 2nd delta pointer MUST NOT use x14: on the
-                     * SVE path x14 is the loop iteration counter
-                     * (udiv x14, x2, x13 in the prologue; subs x14 at loop
-                     * end). x15 is also unusable here: c_ldpool clobbers it
-                     * on the SVE path (called by mulacc_column below for
-                     * nontrivial coefficients). x3 is otherwise unused in
-                     * generated code (no calls emitted), so it is safe. */
-                    em_ldr64(e, X3, X8, (unsigned)(nc + i) * 8);
-                    em_add_rr(e, X3, X3, X11);
-                }
-                c_ld_to(cg, cg->t, u, X10);
-                c_ld_to(cg, cg->r1, u, X3);
-                c_xor(cg, cg->t, cg->r1);
-                if (neednib) {
-                    c_and3(cg, cg->tlo, cg->t);
-                    c_lsr4(cg, cg->thi, cg->t);
-                }
-                mulacc_column(cg, i, nc, u, NULL);
-            }
+            /* Input pointers set once per column; the MUL VL lane
+             * addressing keeps them fixed across the u-loop inside
+             * mulacc_column. */
+            c_inptr(cg, X10, i);
+            /* NOTE: the 2nd delta pointer MUST NOT use x14: on the
+             * SVE path x14 is the loop iteration counter
+             * (udiv x14, x2, x13 in the prologue; subs x14 at loop
+             * end). x15 is also unusable here: c_ldpool clobbers it
+             * on the SVE path (called by mulacc_column below for
+             * nontrivial coefficients). x3 is otherwise unused in
+             * generated code (no calls emitted), so it is safe. */
+            em_ldr64(e, X3, X8, (unsigned)(nc + i) * 8);
+            em_add_rr(e, X3, X3, X11);
+            mulacc_column(cg, i, nc, NULL, 1);
         }
     } else { /* P_MULACC, P_HORNER */
         int *first_col = NULL;
@@ -699,10 +713,21 @@ static void gen_body(cg_t *cg)
             mulacc_col_info(pl, i, n_in, &any, &neednib);
             if (!any)
                 continue;
+            if (pl->kind == P_MULACC) {
+                /* Hoisted-table nest (column -> row -> lane): the input
+                 * pointer is set once per column and stays fixed across
+                 * lanes via MUL VL addressing; mulacc_column loads each
+                 * row's tables once per (j,i) and runs the lane loop. */
+                c_inptr(cg, X10, i);
+                mulacc_column(cg, i, n_in, first_col, 0);
+                continue;
+            }
+            /* P_HORNER keeps its (column -> lane -> row) nest: tables
+             * live in hreg (or are rematerialized per use). */
             for (int u = 0; u < ulanes; u++) {
                 if (u == 0)
                     c_inptr(cg, X10, i);
-                if (pl->kind == P_HORNER && i > 0) {
+                if (i > 0) {
                     c_ld_to(cg, cg->r1, u, X10);
                     /* acc = acc*c_j ^ r1, per row j */
                     for (int j = 0; j < n_out; j++) {
@@ -731,17 +756,17 @@ static void gen_body(cg_t *cg)
                             int lo_dst = acc;
                             if (cg->cand.remat) {
                                 /* NIBLO/NIBHI ping-pong through the single
-                                 * tbl scratch: every (i,j,u) needs both
-                                 * tables, and tbl is shared across rows, so
-                                 * the 2 loads per use are inherent -- the
-                                 * table cannot be hoisted out of the u-loop
-                                 * (same tradeoff as the x86 backend: a
-                                 * second scratch would change the proven
+                                 * tbl_lo scratch: every (i,j,u) needs both
+                                 * tables, and the scratch is shared across
+                                 * rows, so the 2 loads per use are inherent
+                                 * -- the table cannot be hoisted out of the
+                                 * u-loop (same tradeoff as the x86 backend:
+                                 * a second scratch would change the proven
                                  * n_out*U+6 pressure formula). */
-                                c_ldpool(cg, cg->tbl, CK_NIBLO, c);
-                                c_tbl_into(cg, lo_dst, cg->tbl, cg->tlo);
-                                c_ldpool(cg, cg->tbl, CK_NIBHI, c);
-                                c_tbl_into(cg, cg->r2, cg->tbl, cg->thi);
+                                c_ldpool(cg, cg->tbl_lo, CK_NIBLO, c);
+                                c_tbl_into(cg, lo_dst, cg->tbl_lo, cg->tlo);
+                                c_ldpool(cg, cg->tbl_lo, CK_NIBHI, c);
+                                c_tbl_into(cg, cg->r2, cg->tbl_lo, cg->thi);
                             } else {
                                 c_tbl_into(cg, lo_dst, cg->hreg[2 * j],
                                            cg->tlo);
@@ -757,19 +782,11 @@ static void gen_body(cg_t *cg)
                         }
                     }
                 } else {
+                    /* Horner i==0: acc = d0 (no multiply) */
                     c_ld_to(cg, cg->t, u, X10);
-                    if (pl->kind == P_HORNER && i == 0) {
-                        /* Horner i==0: acc = d0 (no multiply) */
-                        for (int j = 0; j < n_out; j++) {
-                            int acc = j * U + u;
-                            c_copy(cg, acc, cg->t);
-                        }
-                    } else {
-                        if (neednib) {
-                            c_and3(cg, cg->tlo, cg->t);
-                            c_lsr4(cg, cg->thi, cg->t);
-                        }
-                        mulacc_column(cg, i, n_in, u, first_col);
+                    for (int j = 0; j < n_out; j++) {
+                        int acc = j * U + u;
+                        c_copy(cg, acc, cg->t);
                     }
                 }
             }
@@ -1159,15 +1176,15 @@ static void compute_regs(cg_t *cg)
              * and is never read (gen_const_setup and the body both
              * branch on cand.remat; the c_ldpool assert would fire if a
              * -1 ever reached the emitter). Tables are reloaded from the
-             * pool into tbl on each use.
+             * pool into tbl_lo on each use.
              * Pressure proof: n_out*U accumulators (0..n_out*U-1) plus
              * t/r1 (n_out*U), tlo (+1), thi (+2), r2 (+3), mask (+4),
-             * tbl (+5): exactly n_out*U+6 vector regs, matching the
+             * tbl_lo (+5): exactly n_out*U+6 vector regs, matching the
              * plan_need_regs P_HORNER remat branch (asserted below). */
             for (int j = 0; j < n_out; j++)
                 cg->hreg[2 * j] = cg->hreg[2 * j + 1] = -1;
-            cg->tbl = n_out * U + 5;
-            cg->vmax = cg->tbl;
+            cg->tbl_lo = n_out * U + 5;
+            cg->vmax = cg->tbl_lo;
         } else {
             /* Table registers are compacted to nontrivial rows only:
              * rows with coefficient 0/1 are pure XOR and need no table.
@@ -1189,20 +1206,24 @@ static void compute_regs(cg_t *cg)
     } else { /* P_MULACC, P_DELTA */
         cg->t = n_out * U;
         if (cg->need_mask) {
+            /* Hoisted tables: tbl_lo/tbl_hi hold one row's NIBLO/NIBHI
+             * tables across the lane loop (mulacc_column), so both are
+             * live together with t,tlo,thi,r1,r2,mask: n_out*U+8 regs. */
             cg->tlo = n_out * U + 1;
             cg->thi = n_out * U + 2;
             cg->r1 = n_out * U + 3;
             cg->r2 = n_out * U + 4;
-            cg->tbl = n_out * U + 5;
-            cg->mask = n_out * U + 6;
+            cg->tbl_lo = n_out * U + 5;
+            cg->tbl_hi = n_out * U + 6;
+            cg->mask = n_out * U + 7;
             cg->vmax = cg->mask;
         } else {
             /* All coefficients in {0,1} (only P_DELTA reaches here: the
              * planner guarantees a nontrivial coefficient for
              * P_MULACC). The nibble split, its tables and the mask never
-             * execute, so tlo/thi/r2/tbl/mask are dead and not allocated.
-             * r1 survives as the delta temp: the body forms old^new into
-             * r1 for every column on both NEON and SVE. */
+             * execute, so tlo/thi/r2/tbl_lo/tbl_hi/mask are dead and not
+             * allocated. r1 survives as the delta temp: the body forms
+             * old^new into r1 for every column on both NEON and SVE. */
             if (pl->kind == P_DELTA) {
                 cg->r1 = n_out * U + 1;
                 cg->vmax = cg->r1;

@@ -306,9 +306,14 @@ int main(void)
             CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0) == 11,
                   "delta-nontriv avx512 gfni: got %d want 11",
                   plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0) == 15,
-                  "delta-nontriv neon: got %d want 15",
+            CHECK(plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0) == 16,
+                  "delta-nontriv neon: got %d want 16",
                   plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0));
+            /* SVE shares the a64 logical formula (n_out*U+8 with hoisted
+             * tables); the 24-reg file is enforced via isa_nregs. */
+            CHECK(plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0) == 16,
+                  "delta-nontriv sve: got %d want 16",
+                  plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0));
             CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0) == 19,
                   "delta-nontriv rvv: got %d want 19",
                   plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0));
