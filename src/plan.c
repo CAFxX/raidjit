@@ -27,9 +27,13 @@ int isa_nregs(isa_t isa)
     case ISA_AVX512: return 32;
     case ISA_RVV: return 32;
     case ISA_PEXT: return 32;
-    /* NEON/SVE backends only use 16 logical vector registers (NEON v0-v15;
-     * SVE maps logical r to z16+r). The AArch64 candidate filter uses 16
-     * for the same reason; keep this consistent. */
+    /* [aarch64-remediation #3, 2026-10-06] SVE uses 24 vector registers:
+     * z0-z7 plus z16-z31 (z8-z15 are callee-saved per AAPCS64 and never
+     * touched; src/aarch64/jit.c V() maps logical r<16 to z(16+r) and
+     * r in [16,24) to z(r-16)). The backend asserts vmax < 24, in
+     * lockstep with this bound. NEON stays at 16 (v0-v15). */
+    case ISA_SVE: return 24;
+    /* NEON backend uses 16 logical vector registers (v0-v15). */
     default: return 16;
     }
 }
@@ -496,9 +500,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
 #if defined(__aarch64__)
     /* AArch64: NEON baseline, SVE/SVE2 if present. Nibble method for all
      * multiplies (TBL). SVE is VL-agnostic: conservative unrolls.
-     * The SVE backend maps logical vector reg r to z(16+r) and uses p0
-     * only, so only 16 vector registers are available (z8-z15 are
-     * callee-saved and p1-p15 unused). */
+     * The SVE backend maps logical vector reg r to z(16+r) for r<16 and
+     * to z(r-16) for r in [16,24) -- 24 regs total (z0-z7 + z16-z31;
+     * z8-z15 are callee-saved and p1-p15 unused). */
     {
         isa_t isas[2];
         int nis = 0;
@@ -512,8 +516,8 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         static const int Us_sve[] = {5, 4, 3, 2, 1};
         for (int ii = 0; ii < nis && n < maxout; ii++) {
             isa_t isa = isas[ii];
-            /* AArch64 backends (NEON and SVE) use only 16 vector regs:
-             * NEON v0-v15, SVE z16-z31 (p0 only). Use isa_nregs() rather
+            /* AArch64 register files: NEON v0-v15 (16 regs), SVE
+             * z0-z7+z16-z31 (24 regs, p0 only). Use isa_nregs() rather
              * than a hardcoded constant so the filter tracks the planner's
              * source of truth. */
             int nregs = isa_nregs(isa);

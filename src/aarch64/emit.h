@@ -9,7 +9,8 @@
  *   x10     pointer temp, x11 byte offset, x12/x13/x14 temps / VL / group
  *   x15     log-table base (scalar tail), x16 pool base, x17 exp-table base
  *   v0..    NEON accumulators/temps (v8..v15 saved/restored when touched)
- *   z16..z31 SVE accumulators/temps (logical reg r maps to z(16+r))
+ *   z0-z7,z16-z31 SVE accumulators/temps (logical reg r maps to z(16+r)
+ *   for r<16, z(r-16) for r in [16,24); z8-z15 callee-saved, never used)
  *   p0      all-true predicate (SVE)
  */
 #pragma once
@@ -132,9 +133,12 @@ void em_sve_whilelt(em_t *e, int pd, int rn, int rm);  /* whilelt pd.b, xRn, xRm
 void em_sve_ptrue(em_t *e, int pd);                    /* ptrue pd.b, all */
 void em_sve_cntb(em_t *e, int xd);                     /* cntb xD, all, mul #1 */
 void em_sve_ld1b(em_t *e, int zt, int pg, int rn);     /* ld1b zt.b, pg/z, [xRn] */
+void em_sve_ld1b_off(em_t *e, int zt, int pg, int rn, int off); /* ld1b zt.b, pg/z, [xRn, #off, MUL VL]; off in -8..7 */
 void em_sve_ld1rqb(em_t *e, int zt, int pg, int rn);   /* replicate 16B across VL */
 void em_sve_st1b(em_t *e, int zt, int pg, int rn);
+void em_sve_st1b_off(em_t *e, int zt, int pg, int rn, int off); /* st1b zt.b, pg, [xRn, #off, MUL VL]; off in -8..7 */
 void em_sve_stnt1b(em_t *e, int zt, int pg, int rn);   /* non-temporal store */
+void em_sve_stnt1b_off(em_t *e, int zt, int pg, int rn, int off); /* stnt1b zt.b, pg, [xRn, #off, MUL VL]; off in -8..7 */
 void em_sve_eor(em_t *e, int zdn, int pg, int zm);     /* destructive: zdn^=zm */
 void em_sve_eor_unpred(em_t *e, int zd, int zn, int zm); /* eor zd.d,zn.d,zm.d, unpredicated */
 void em_sve_eor3(em_t *e, int zdn, int zm, int za);   /* SVE2: zdn^=zm^za */

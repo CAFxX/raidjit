@@ -105,7 +105,7 @@ ASan+UBSan. `make test-qemu` runs the ISA matrix under qemu-user.
 ### AArch64 (NEON / SVE / SVE2)
 
 - **ISA levels**: NEON baseline (16 vector regs v0–v15), SVE (VL-agnostic,
-  16 regs z16–z31, p0 only), SVE2 (adds EOR3).
+  24 regs z0–z7+z16–z31, p0 only), SVE2 (adds EOR3).
 - **Multiply methods**: nibble-shuffle tables (`TBL`); SVE2 uses `EOR3`
   to fold the nibble-multiply reduction (one instruction instead of
   MOV + 2×EOR).
@@ -116,7 +116,8 @@ ASan+UBSan. `make test-qemu` runs the ISA matrix under qemu-user.
   `+predtail` (fully-predicated SVE vector tail under `whilelt`,
   stage-2 duel).
 - **Callee-saved**: x19 (Horner tail only), v8–v15 (NEON, when used).
-  SVE uses only caller-saved z16–z31 and p0/p1.
+  SVE uses only caller-saved z0–z7, z16–z31 and p0/p1 (z8–z15 are
+  callee-saved per AAPCS64 and never touched).
 
 ### RISC-V (RVV 1.0)
 

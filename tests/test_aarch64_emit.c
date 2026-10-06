@@ -122,11 +122,26 @@ static void t_sve(void)
     em_sve_whilelt(&e, 3, 16, 17); CHECK_WORD(&e, 0x25311603u);
     em_sve_ptrue(&e, 1);           CHECK_WORD(&e, 0x2518E3E1u);
     em_sve_cntb(&e, 12);           CHECK_WORD(&e, 0x0420E3ECu);
+    em_sve_cntb(&e, 0);            CHECK_WORD(&e, 0x0420E3E0u);
     em_sve_ld1b(&e, 16, 0, 10);    CHECK_WORD(&e, 0xA400A150u);
     em_sve_ld1rqb(&e, 16, 0, 10);  CHECK_WORD(&e, 0xA4002150u);
     em_sve_st1b(&e, 16, 0, 10);    CHECK_WORD(&e, 0xE400E150u);
     em_sve_stnt1b(&e, 18, 0, 10);  CHECK_WORD(&e, 0xE410E152u);
     em_sve_stnt1b(&e, 19, 3, 11);  CHECK_WORD(&e, 0xE410ED73u);
+    /* MUL VL offset forms (lane addressing). Words cross-checked against
+     * aarch64-linux-gnu-as:
+     *   ld1b z16.b, p0/z, [x10, #3, mul vl]  -> 0xA403A150
+     *   ld1b z24.b, p1/z, [x3, #7, mul vl]   -> 0xA407A478
+     *   ld1b z5.b, p2/z, [x9, #-1, mul vl]   -> 0xA40FA925
+     *   st1b z20.b, p0, [x10, #5, mul vl]    -> 0xE405E154
+     *   stnt1b z0.b, p0, [x0, #7, mul vl]    -> 0xE417E000
+     *   stnt1b z21.b, p1, [x10, #0, mul vl]  -> 0xE410E555 */
+    em_sve_ld1b_off(&e, 16, 0, 10, 3);   CHECK_WORD(&e, 0xA403A150u);
+    em_sve_ld1b_off(&e, 24, 1, 3, 7);    CHECK_WORD(&e, 0xA407A478u);
+    em_sve_ld1b_off(&e, 5, 2, 9, -1);    CHECK_WORD(&e, 0xA40FA925u);
+    em_sve_st1b_off(&e, 20, 0, 10, 5);    CHECK_WORD(&e, 0xE405E154u);
+    em_sve_stnt1b_off(&e, 0, 0, 0, 7);    CHECK_WORD(&e, 0xE417E000u);
+    em_sve_stnt1b_off(&e, 21, 1, 10, 0);  CHECK_WORD(&e, 0xE410E555u);
     em_sve_eor(&e, 25, 0, 26);     CHECK_WORD(&e, 0x04190359u);
     /* EOR3 words cross-checked against aarch64-linux-gnu-as:
      *   eor3 z16.d,z16.d,z17.d,z18.d -> 0x04313a50
@@ -161,6 +176,9 @@ static void t_sve(void)
     em_sve_tbl(&e, 25, 26, 27);    CHECK_WORD(&e, 0x053B3359u);
     em_sve_dup(&e, 30, 15);        CHECK_WORD(&e, 0x2538C1FEu);
     em_sve_dup(&e, 21, -128);      CHECK_WORD(&e, 0x2538D015u);
+    /* z0-z7 encodings (the old base ORed Zd and misencoded low regs) */
+    em_sve_dup(&e, 0, 15);         CHECK_WORD(&e, 0x2538C1E0u);
+    em_sve_dup(&e, 7, -1);         CHECK_WORD(&e, 0x2538DFE7u);
     em_free(&e);
 }
 

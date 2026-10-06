@@ -5,7 +5,8 @@
  * pool, scalar tail) with AArch64 instruction selection:
  *
  *  - NEON: 128-bit vectors, TBL (nibble method) for GF multiplies.
- *  - SVE:  VL-agnostic, z16-z31 only (logical r -> z(16+r)), p0 only.
+ *  - SVE:  VL-agnostic, z0-z7 + z16-z31 (logical r -> z(16+r) for r<16,
+ *    z(r-16) for r in [16,24); z8-z15 callee-saved, never used), p0 only.
  *    LD1RQB replicates 16-byte pool tables across the vector length.
  *
  * Register conventions (also see src/aarch64/emit.h):
@@ -90,10 +91,17 @@ typedef struct {
     double uops, mem;
 } cg_t;
 
-/* logical vector reg -> physical: NEON identity, SVE z(16+r) */
+/* logical vector reg -> physical: NEON identity; SVE: r in [0,15] ->
+ * z(16+r), r in [16,23] -> z(r-16), i.e. z0-z7. z8-z15 are callee-saved
+ * per AAPCS64 and are never touched. This gives SVE 24 usable vector
+ * registers (z0-z7 + z16-z31), raising the (n_out,U) ceiling by 50%
+ * over the old z16-z31-only mapping. */
 static int V(const cg_t *cg, int r)
 {
-    return cg->is_sve ? 16 + r : r;
+    if (!cg->is_sve)
+        return r;
+    assert(r >= 0 && r < 24);
+    return r < 16 ? 16 + r : r - 16;
 }
 
 /* ---------------- constant pool ---------------- */
@@ -173,18 +181,21 @@ static void c_ldpool(cg_t *cg, int r, int kind, unsigned c)
 
 /* ---------------- vector helpers ---------------- */
 
-/* load lane u of the vector at ptr into logical reg r (ptr already holds
- * base+offset). SVE bumps ptr by the runtime VL (x12); the compile-time
- * cg->vl must NOT be used for SVE address arithmetic. In predicated-tail
- * mode (cg->pred) the load runs under p1 and the bump is skipped: the
- * chunk loop recomputes every pointer from x11 each iteration. */
+/* load lane u of the vector at ptr into logical reg r (ptr holds the
+ * lane-0 address: base+offset, never bumped). SVE addresses lane u with
+ * the contiguous [xRn, #u, MUL VL] offset form, so the base pointer stays
+ * fixed and no per-lane ADD executes in the loop. The MUL VL immediate
+ * is a signed 4-bit value (-8..7); U <= 8 always fits (asserted in the
+ * emitter). In predicated-tail mode (cg->pred) the load runs under p1
+ * with u == 0 (plain [xRn] form). */
 static void c_ld_to(cg_t *cg, int r, int u, int ptr)
 {
     em_t *e = &cg->em;
     if (cg->is_sve) {
-        em_sve_ld1b(e, V(cg, r), cg->pred ? 1 : 0, ptr);
-        if (!cg->pred)
-            em_add_rr(e, ptr, ptr, X12);   /* x12 = runtime VL bytes */
+        if (cg->pred)
+            em_sve_ld1b(e, V(cg, r), 1, ptr);
+        else
+            em_sve_ld1b_off(e, V(cg, r), 0, ptr, u);
     } else {
         assert(!cg->pred); /* predicated tails are SVE-only */
         em_neon_ldr(e, r, ptr, (unsigned)u * 16);
@@ -197,12 +208,16 @@ static void c_st_to(cg_t *cg, int r, int u, int ptr)
 {
     em_t *e = &cg->em;
     if (cg->is_sve) {
-        if (cg->nt)
-            em_sve_stnt1b(e, V(cg, r), cg->pred ? 1 : 0, ptr);
-        else
-            em_sve_st1b(e, V(cg, r), cg->pred ? 1 : 0, ptr);
-        if (!cg->pred)
-            em_add_rr(e, ptr, ptr, X12);   /* x12 = runtime VL bytes */
+        if (cg->pred) {
+            if (cg->nt)
+                em_sve_stnt1b(e, V(cg, r), 1, ptr);
+            else
+                em_sve_st1b(e, V(cg, r), 1, ptr);
+        } else if (cg->nt) {
+            em_sve_stnt1b_off(e, V(cg, r), 0, ptr, u);
+        } else {
+            em_sve_st1b_off(e, V(cg, r), 0, ptr, u);
+        }
     } else {
         assert(!cg->pred); /* predicated tails are SVE-only */
         em_neon_str(e, r, ptr, (unsigned)u * 16);
@@ -343,11 +358,17 @@ static void gen_const_setup(cg_t *cg)
             em_neon_movi(e, cg->mask, 15);
         cg->uops += 1;
     } else if (pl->kind == P_HORNER) {
-        if (cg->is_sve)
-            em_sve_dup(e, V(cg, cg->mask), 15);
-        else
-            em_neon_movi(e, cg->mask, 15);
-        cg->uops += 1;
+        /* The nibble mask is only needed when some row coefficient is
+         * nontrivial (outside {0,1}); gate the dup on the planner's
+         * nontrivial predicate (same source of truth as MULACC/DELTA's
+         * need_mask). Saves 1 prologue uop for all-trivial Horner. */
+        if (plan_any_nontrivial(pl)) {
+            if (cg->is_sve)
+                em_sve_dup(e, V(cg, cg->mask), 15);
+            else
+                em_neon_movi(e, cg->mask, 15);
+            cg->uops += 1;
+        }
         /* In remat mode hreg[] stays -1 (no persistent table regs);
          * tables are reloaded into tbl on each use instead. */
         if (!cg->cand.remat) {
@@ -1031,10 +1052,20 @@ static void gen_function(cg_t *cg)
         int empty_lab = cg->notail ? done : tail;
         if (cg->is_sve) {
             em_sve_cntb(e, X12);              /* x12 = VL bytes */
-            /* x13 = x12 * U = group bytes. U is a compile-time constant
-             * but not necessarily a power of two, so use mul. */
-            em_movz(e, X13, (unsigned)cg->U);
-            em_mul(e, X13, X12, X13);
+            /* x13 = x12 * U = group bytes. U is a JIT-time constant:
+             * fold the multiply at compile time. Powers of two use a
+             * single LSL, U=1 is a mov; only non-pow2 U needs movz+mul.
+             * (The prologue is not uop-counted; this saves 1 executed
+             * instruction per kernel call.) */
+            if (cg->U == 1) {
+                em_mov_rr(e, X13, X12);
+            } else if (cg->U == 2 || cg->U == 4 || cg->U == 8) {
+                em_lsl_ri(e, X13, X12,
+                          (unsigned)(cg->U == 2 ? 1 : cg->U == 4 ? 2 : 3));
+            } else {
+                em_movz(e, X13, (unsigned)cg->U);
+                em_mul(e, X13, X12, X13);
+            }
             em_udiv(e, X14, X2, X13);        /* x14 = niter */
             em_sve_whilelo(e, 0, XZR, X12);  /* p0 = all true */
             /* Vector constants (mask, nibble tables) are set up before
@@ -1181,9 +1212,11 @@ static void compute_regs(cg_t *cg)
         }
     }
     assert(cg->vmax < 16 || cg->is_sve);
-    /* SVE maps logical r -> z(16+r); p0-only keeps 16 regs live */
+    /* SVE uses 24 vector regs (z0-z7 + z16-z31; z8-z15 callee-saved, never
+     * touched). The logical count must fit: plan_need_regs (via
+     * isa_nregs) enforces the same bound in the planner filter. */
     if (cg->is_sve)
-        assert(cg->vmax < 16);
+        assert(cg->vmax < 24);
     /* Single source of truth: the planner's filter must agree exactly
      * with this assignment, or candidates could be wrongly dropped or
      * (worse) admitted past the regfile. The xorsched twin has its own

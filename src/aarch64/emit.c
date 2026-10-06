@@ -434,11 +434,27 @@ void em_sve_ptrue(em_t *e, int pd) /* ptrue pd.b, all */
 }
 void em_sve_cntb(em_t *e, int xd) /* cntb xD, all, mul #1 */
 {
-    em_word(e, 0x0420E3ECu | ((uint32_t)xd & 31u));
+    /* Base has the Xd field (bits 4:0) cleared; the old base 0x0420E3EC
+     * had Xd=12 baked in and ORed xd (worked by accident for X12). */
+    em_word(e, 0x0420E3E0u | ((uint32_t)xd & 31u));
 }
 void em_sve_ld1b(em_t *e, int zt, int pg, int rn)
 {
     em_word(e, 0xA400A000u | (((uint32_t)pg & 7u) << 10) |
+                     (((uint32_t)rn & 31u) << 5) | ((uint32_t)zt & 31u));
+}
+/* LD1B (scalar + immediate, MUL VL): ld1b zt.b, pg/z, [xRn, #off, MUL VL].
+ * The offset is a signed 4-bit immediate in units of the runtime vector
+ * length (bits 19:16; GAS rejects anything outside -8..7, verified).
+ * This is the lane-addressing workhorse: with the base pointer held at
+ * the lane-0 address, lane u is [xRn, #u, MUL VL] with no pointer bump.
+ * GAS-verified (4 combos incl. p1 and non-zero offsets); the #0 form
+ * assembles to the identical word as the plain [xRn] form above. */
+void em_sve_ld1b_off(em_t *e, int zt, int pg, int rn, int off)
+{
+    assert(off >= -8 && off <= 7);
+    em_word(e, 0xA400A000u | ((((uint32_t)off & 0xfu)) << 16) |
+                     (((uint32_t)pg & 7u) << 10) |
                      (((uint32_t)rn & 31u) << 5) | ((uint32_t)zt & 31u));
 }
 void em_sve_ld1rqb(em_t *e, int zt, int pg, int rn)
@@ -451,9 +467,27 @@ void em_sve_st1b(em_t *e, int zt, int pg, int rn)
     em_word(e, 0xE400E000u | (((uint32_t)pg & 7u) << 10) |
                      (((uint32_t)rn & 31u) << 5) | ((uint32_t)zt & 31u));
 }
+/* ST1B (scalar + immediate, MUL VL): st1b zt.b, pg, [xRn, #off, MUL VL].
+ * Same imm4 encoding/range note as em_sve_ld1b_off. GAS-verified. */
+void em_sve_st1b_off(em_t *e, int zt, int pg, int rn, int off)
+{
+    assert(off >= -8 && off <= 7);
+    em_word(e, 0xE400E000u | ((((uint32_t)off & 0xfu)) << 16) |
+                     (((uint32_t)pg & 7u) << 10) |
+                     (((uint32_t)rn & 31u) << 5) | ((uint32_t)zt & 31u));
+}
 void em_sve_stnt1b(em_t *e, int zt, int pg, int rn)
 {
     em_word(e, 0xE410E000u | (((uint32_t)pg & 7u) << 10) |
+                     (((uint32_t)rn & 31u) << 5) | ((uint32_t)zt & 31u));
+}
+/* STNT1B (scalar + immediate, MUL VL): stnt1b zt.b, pg, [xRn, #off, MUL VL].
+ * Same imm4 encoding/range note as em_sve_ld1b_off. GAS-verified. */
+void em_sve_stnt1b_off(em_t *e, int zt, int pg, int rn, int off)
+{
+    assert(off >= -8 && off <= 7);
+    em_word(e, 0xE410E000u | ((((uint32_t)off & 0xfu)) << 16) |
+                     (((uint32_t)pg & 7u) << 10) |
                      (((uint32_t)rn & 31u) << 5) | ((uint32_t)zt & 31u));
 }
 void em_sve_eor(em_t *e, int zdn, int pg, int zm) /* destructive */
@@ -528,6 +562,10 @@ void em_sve_tbl(em_t *e, int zd, int zn, int zm) /* zd = tbl({zn}, zm) */
 }
 void em_sve_dup(em_t *e, int zd, int imm8) /* dup zd.b, #imm8 (signed) */
 {
-    em_word(e, 0x2538C010u | ((((uint32_t)imm8 & 0xffu) << 5)) |
+    /* Base 0x2538C000 has the Zd field (bits 4:0) cleared; the old base
+     * 0x2538C010 had Zd=16 baked in and ORed zd, which worked by accident
+     * for z16-z31 (16|x == x for x >= 16) but misencodes z0-z7
+     * (e.g. zd=0 gave z16). GAS-verified: dup z0.b,#15 -> 0x2538C1E0. */
+    em_word(e, 0x2538C000u | ((((uint32_t)imm8 & 0xffu) << 5)) |
                      ((uint32_t)zd & 31u));
 }
