@@ -1,18 +1,52 @@
-# Generator-matrix search (track A6)
+# Generator-matrix search (track A2 — matrix_search 2.0)
 
-- [What it is](#what-it-is) · [Design](#design) · [Cost metric](#cost-metric-dogfooding-the-planner) · [MDS proof method](#mds-proof-method)
-- [Analytical result: the search's fixed point is the old matrix](#analytical-result-the-searchs-fixed-point-is-the-old-matrix) ([one-count bound](#the-one-count-bound-is-n3-not-n2-corrected) · [why the extra one does not win](#why-the-extra-one-does-not-win-placement-constraints--horner-floor) · [scope](#what-this-section-does-and-does-not-prove))
-- [Old-vs-new cost table](#old-vs-new-cost-table-static-uopsbyte-mem-bytesbyte) · [Uncovered topologies](#uncovered-topologies) · [Falsifiable ship criterion](#falsifiable-ship-criterion) · [Tests](#tests) ([mutation evidence](#mutation-evidence-all-performed-all-reverted)) · [Perf guard](#perf-guard) · [Limitations](#limitations)
+- [What it is](#what-it-is) · [The objective: bitmatrix weight](#the-objective-bitmatrix-weight) · [Design](#design) · [MDS proof method](#mds-proof-method)
+- [Old-vs-new weight table](#old-vs-new-weight-table) · [Uncovered topologies](#uncovered-topologies) · [Falsifiable ship criterion](#falsifiable-ship-criterion) · [Tests](#tests) ([mutation evidence](#mutation-evidence-all-performed-all-reverted)) · [Perf guard](#perf-guard) · [Limitations](#limitations) · [History: the 1.0 uops objective](#history-the-10-uops-objective)
 
 ## What it is
 
 `src/matrix_search.c` / `src/matrix_search.h`: a plan-time search for
-low-cost MDS generator matrices over GF(2^8). `rj_topo_rs()` (and
-`rj_topo_raid6()`, which shared the same default) now emit the searched
+low-bitweight MDS generator matrices over GF(2^8). `rj_topo_rs()` (and
+`rj_topo_raid6()`, which shared the same default) emit the searched
 matrix **outright** — there is no opt-in, and no constructor hardcodes
-the legacy default anymore (`rs_default_matrix()` survives as a
-non-static helper in `src/gf.c`, used only by tests — see Uncovered
-topologies).
+any fixed matrix (`rs_default_matrix()` survives as a non-static helper
+in `src/gf.c`, used only by tests — see Uncovered topologies).
+
+**2.0 is a deliberate parity-format change.** The 1.0 search minimized
+a static nibble-backend uops model whose fixed point was the
+historical Vandermonde default, so 1.0 emitted byte-identical matrices.
+The 2.0 objective (below) is different and finds strictly lighter
+matrices that are *not* Vandermonde, so the emitted bytes change. There
+is no backward compatibility: the parity format is whatever the search
+emits. Downstream tests that pinned the old format's consequences (e.g.
+`tests/test_remat.c`'s `P_HORNER` strategy expectations) are the
+tripwire firing as designed — they must be updated deliberately, not
+worked around.
+
+## The objective: bitmatrix weight
+
+Each GF(2^8) entry `c` expands to the 8x8 binary matrix of the GF-linear
+map `x -> c*x`: column `k` holds the bits of `gf_mul(c, 1<<k)`, i.e.
+bit `r` of column `k` is 1 iff input bit `k` feeds output bit `r`. The
+weight `wt(c)` is the number of 1s in that matrix; the matrix objective
+is
+
+    W(P) = Σ_{j,i} wt(P[j][i])
+
+(`matrix_search_bitweight()`; pinned constants: `wt(0)=0`, `wt(1)=8`,
+`wt(2)=11`, `wt(3)=19`, `wt(4)=14`, `wt(128)=30` — hand-derived in
+`tests/test_matrix_search.c`, and `wt(c) > 8` for every other nonzero
+`c`, so 1 is the unique minimizer).
+
+**Why this objective.** In a bit-level (gate-level) XOR schedule each 1
+is one input bit XORed into one parity bit. Every parity bit has
+nonzero fan-in (each 8x8 bitmatrix is nonsingular, so every one of its
+rows holds at least one 1), hence the straightforward bit-level
+schedule uses exactly `W − 8·npar` two-input XOR gates — a structural
+identity, not a measurement. Minimizing `W` minimizes the thing a
+bit-level scheduler (track A1) has to work with; cross-coefficient
+sharing can only do better from a lighter starting point. The objective
+is static and deterministic; it is never presented as a measurement.
 
 ## Design
 
@@ -23,77 +57,66 @@ topologies).
      (MDS by proof inside the envelope -- see below);
   2. a Cauchy matrix `C[j][i] = inv((i+1) ^ (128+j))` (MDS by proof --
      see below);
-  3. a fixed-seed pseudorandom row-geometric matrix. This seed is
-     **not** MDS by proof: random distinct-base row-geometric matrices
-     are not MDS in general (sampling found singular 2x2 minors --
-     e.g. two rows whose base ratio has small order dividing a small
-     column gap), so the seed carries no proof. The true mechanism is
-     rejection sampling: up to 1000 candidates from a fixed xorshift64
-     stream, each verified by the full MDS check, first success wins;
-     on total failure the seed is skipped, never emitted unproven.
-- **Why seeds 0 and 1 are MDS by proof.** Seed 0: a 2x2 minor on rows
-  r1<r2, columns i1<i2 factors as
+  3. a fixed-seed pseudorandom row-geometric matrix, rejection-sampled
+     to MDS (up to 1000 candidates from a fixed xorshift64 stream, each
+     verified by the full MDS check, first success wins; on total
+     failure the seed is skipped, never emitted unproven).
+- **Why seeds 0 and 1 are MDS by proof.** `ord(2) = 51` in
+  GF(2^8)/0x11B (src/gf.c documents this; an earlier version of this
+  note wrongly said 255 — corrected 2026-10-06). Seed 0: a 2x2 minor on
+  rows r1<r2, columns i1<i2 factors as
   `2^(r1*k2+r2*k1) * (2^((r2-r1)(i2-i1)) - 1)` with `k_t = ndata-1-i_t`,
-  nonsingular iff `ord(2) = 255` does not divide `(r2-r1)(i2-i1)`; the
-  product is at most `2*50 = 100 < 255`. A 3x3 minor is Vandermonde in
+  nonsingular iff `ord(2) = 51` does not divide `(r2-r1)(i2-i1)`; with
+  `(r2-r1) ∈ {1,2}` and `(i2-i1) ∈ [1,50]` the product is never a
+  multiple of 51 (51 = 3·17; the factor-2 case needs `(i2-i1)` itself
+  to be a multiple of 51). A 3x3 minor is Vandermonde in
   `x_t = 2^(ndata-1-i_t)`, nonsingular iff the bases are pairwise
-  distinct, i.e. no column gap in `[1,50]` is a multiple of
-  `ord(2) = 255`. Minors mixing data and identity columns reduce to
-  these cases (a data column paired with unit vectors needs a nonzero
-  entry, and `2^k != 0` always). Seed 1: the Cauchy determinant
+  distinct, i.e. no column gap in `[1,50]` is a multiple of 51. Minors
+  mixing data and identity columns reduce to these cases (a data column
+  paired with unit vectors needs a nonzero entry, and `2^k != 0`
+  always). Seed 1: the Cauchy determinant
   `det(inv(x_i ^ y_j)) = prod(x_b^x_a)(y_b^y_a)/prod(x_a^y_b)` is
   nonzero iff the x's are distinct, the y's are distinct, and no
   `x_a ^ y_b = 0`; here `x_i = i+1 in [1,51]`, `y_j = 128+j in
   [128,130]`, pairwise distinct with disjoint ranges.
-- **Improvement step:** greedy single-entry 1-ization to fixpoint
-  (at most 8 sweeps). This is complete for strict improvements *within
-  one planner strategy*, not a heuristic: under the planner's cost
-  model an entry's cost depends only on its class ({0}, {1}, other —
-  all nontrivial values cost identically), so a strict improvement at
-  fixed strategy must 1-ize some entry; and a 1-ization that breaks MDS
-  is rejected by the check. `0` is never tried: every entry must be
-  nonzero for MDS in the envelope (for npar == 1 the 1x1 minors of H
-  are the entries themselves; for npar >= 2 the 2x2 minors pairing
-  each data column with an identity column force every entry nonzero),
-  so it is always rejected. NOT in the neighborhood: single-entry
-  other→other' moves that would change the planner's strategy choice
-  (e.g. completing a Vandermonde structure to flip P_MULACC to
-  P_HORNER) — latent only, since any P_HORNER-coded matrix costs at
-  least the default (see the analytical note).
-- **Acceptance:** strict improvement in uops/byte (`u < best - 1e-12`).
-  A challenger also wins on a uops-tie (within 1e-12) plus a mem/byte
-  win; full ties keep seed 0 — no gratuitous parity-format churn.
+- **Improvement step:** greedy single-entry weight minimization to a
+  fixpoint (at most 8 sweeps). For each entry in fixed row-major order
+  the search computes the set of MDS-forbidden values and jumps
+  straight to the lightest allowed one. The forbidden set is exact, not
+  sampled: only minors containing the changed data column can change
+  status (C(ndata+npar-1, npar-1) instead of C(ndata+npar, npar)), and
+  each such minor's determinant is affine in the changed entry —
+  `det(v) = A·v ^ B` with `A` the cofactor of the entry's position —
+  so a minor forbids at most one value (`B/A` when `A != 0`; when
+  `A == 0` the determinant is v-independent and, the matrix being
+  MDS, nonzero for all `v`).
+- **Completeness claim (exact scope).** The objective is separable per
+  entry, so a strict *single-entry* improvement must replace some entry
+  with a lighter allowed value, and the step moves each entry to its
+  lightest allowed value. A fixpoint therefore has no single-entry
+  strict improvement left — this is proven by the move definition, not
+  heuristic. NOT in the neighborhood: multi-entry coordinated moves
+  (changing two entries at once can preserve MDS where neither change
+  alone does). `0` is always forbidden (for npar == 1 the 1x1 minors of
+  H are the entries themselves; for npar >= 2 the 2x2 minors pairing
+  each data column with an identity column force every entry nonzero).
+- **Acceptance:** strict weight improvement (`w < best_w`); full ties
+  keep seed 0 — no gratuitous parity-format churn beyond what the
+  objective demands.
 - **Proof gate:** the winner is verified by *full* minor enumeration
-  (`early_exit = 0`, honored by the code: every minor is examined and
-  counted even after a singular minor is found) before emission, so a
-  positive verdict always implies full enumeration — the tests assert
-  the minor counts (35/35 … 24804/24804). On failure the search falls
-  back to the verified seed instead of emitting an unproven matrix.
+  (`early_exit = 0`) before emission, so a positive verdict always
+  implies full enumeration — the tests assert the minor counts (10/10
+  … 24804/24804). On failure the search falls back to the verified
+  seed instead of emitting an unproven matrix.
 - **Budget / cache:** the work is bounded (8 greedy sweeps × 3 seeds,
-  each step one MDS check + one `plan_build`); worst case is ~1–3 s on
-  a shared VM for the first (51,3) call, dominated by vCPU contention
-  rather than anything algorithmic — not a stable number, and it does
-  not need to be: results are cached process-wide per (ndata, npar)
-  (C11 `atomic_flag` spinlock, no pthread dependency), so repeat calls
-  are a `memcpy` (~0 ms). `npar == 1` short-circuits to the all-ones
-  row (unique optimum).
-  For scale: `rj_compile` for rs(20,3) takes ~12 s, so the one-time
-  search cost is noise next to codegen.
-
-## Cost metric (dogfooding the planner)
-
-`matrix_search_cost()` builds the **real** encode plan with `plan_build`
-(the planner's actual P_XOR/P_HORNER/P_MULACC selection), then evaluates
-a static model of the encode body transcribed 1:1 from the x86-64
-nibble backend (`src/x86_64/jit.c`): per-u-lane vector uops/mem plus
-per-group-iteration pointer reloads, at reference U=8, vl=64. Ranking of
-same-shape MDS matrices is U/vl-independent (reload terms cancel), and
-the transcription is pinned by an exact-equality cross-check against
-real `jit_build_version` codegen (see Tests).
-
-This is a *static* model used only for ranking. It is never presented
-as a measurement; the shipped performance evidence is the perf-guard
-before/after comparison (below).
+  each entry paying one forbidden-set computation over
+  C(ndata+npar-1, npar-1) minors); worst case is a few seconds once per
+  process for (51,3) on a shared VM (vCPU contention, not algorithmic —
+  not a stable number, and it does not need to be: results are cached
+  process-wide per (ndata, npar) (C11 `atomic_flag` spinlock, no pthread
+  dependency), so repeat calls are a `memcpy`). `npar == 1`
+  short-circuits to the all-ones row (unique optimum: MDS needs every
+  entry nonzero and 1 uniquely minimizes the weight).
 
 ## MDS proof method
 
@@ -104,135 +127,25 @@ enumeration is exact integer arithmetic over GF(2^8) — no sampling, no
 randomization. An independent path (the library's own `solve_recovery`
 over all erasure subsets) agrees on the test corpus.
 
-## Analytical result: the search's fixed point is the old matrix
+## Old-vs-new weight table
 
-Derived before coding and confirmed empirically: within the envelope,
-the search's fixed point is the historical default, so it emits
-byte-identical matrices (no parity-format change). Read this section
-as a *bound + mechanism* sketch, not a closed-form optimality proof:
-the conclusion "the search emits the historical default" is carried
-empirically by the dense envelope tripwire in
-`tests/test_matrix_search.c` (`test_search_deterministic` asserts
-byte-identity on every in-envelope shape — npar=2,3 × ndata=1..51,
-npar=1 sampled), not by this analysis alone.
+Static integer weights (the search is deterministic, so these are exact,
+not measurements). "Old" is the historical default — the 1.0 objective's
+proven fixed point, i.e. the old objective's selection:
 
-### The one-count bound is n+3, not n+2 (corrected)
+| shape    | old W | new W |
+|----------|------:|------:|
+| (2,1)    |    16 |    16 |
+| (255,1)  |  2040 |  2040 |
+| (3,2)    |    57 |    54 |
+| (8,2)    |   215 |   175 |
+| (51,2)   |  1944 |  1518 |
+| (4,3)    |   151 |   120 |
+| (10,3)   |   582 |   373 |
+| (51,3)   |  3480 |  3085 |
 
-For rows a<b let `D_ab = { i : P[a][i] = P[b][i] = 1 }`, the columns
-holding a 1 in both rows. `|D_ab| ≤ 1`: two such columns would make
-the 2×2 minor `|1 1; 1 1|` singular. Then:
-
-- If some column is `(1,1,1)`, it sits in `D_01 ∩ D_02 ∩ D_12` and
-  exhausts all three pair-budgets at once: no other column may hold
-  two ones, so the total one-count is at most `3 + (n-1) = n+2`.
-- Otherwise each pair admits at most one two-one column, and a
-  two-one column belongs to exactly one pair: at most three two-one
-  columns, every other column at most one one, so at most
-  `2·3 + (n-3) = n+3`.
-
-The maximal feasible one-count is therefore **n+3** for npar=3 (n+1
-for npar=2, same argument on the single pair), and n+3 is tight.
-Counterexample to the old, false n+2 bound — this 3×4 matrix has
-7 = n+3 ones (`D_01 = {0}`, `D_02 = {1}`, `D_12 = {2}`) and is MDS
-(full enumeration: 35/35 nonsingular minors):
-
-        1   1 218   1
-        1 147   1 207
-       36   1   1 197
-
-The historical default attains n+2 for npar=3: row 0 is all ones, and
-rows 1 and 2 each hold a single 1 at `i = n-1` (both `2^(n-1-i) = 1`
-and `2^(2(n-1-i)) = 1` force `i = n-1` for `n ≤ 51`). Its all-ones
-column at `i = n-1` exhausts all three pair-budgets, so n+2 is the
-maximum for any matrix *with an all-ones column* — and the planner's
-own Horner detector (`mat_is_horner_vandermonde` in `src/gf.c`)
-*requires* an all-ones last column, so every P_HORNER-coded matrix is
-capped at n+2 ones exactly like the default.
-
-### Why the extra one does not win: placement constraints + Horner floor
-
-Per-nontrivial-entry costs under the transcribed model (x86-64 nibble,
-VEX) — corrected; the old note's "MULACC ≥ Horner" was false on uops:
-
-- P_HORNER: 7 uops, 0 extra mem bytes per nontrivial entry.
-- P_MULACC: 5–6 uops **+ 128 mem bytes** (two 64 B constant-pool
-  loads) per nontrivial entry, **plus** 3 uops per column containing
-  any nontrivial entry (the nibble split, shared across rows) and
-  1 uop + 64 B per such column (the input load).
-
-Two structural facts do the real work:
-
-1. **Horner floor = default.** Under P_HORNER the per-column cost is
-   `1 + Σ_j t(c_j)` with `t = 1` for `c_j ∈ {0,1}` else 7, where
-   `c_j` is row j's Horner coefficient (`0` is MDS-infeasible). The
-   minimum is attained at `c = (1, nontrivial, nontrivial)` —
-   i.e. row 0 all ones — and the default is such a matrix. Every
-   other P_HORNER matrix with row 0 all ones ties it *exactly* (same
-   per-row classes, same loads), and the acceptance rule keeps seed 0
-   on full ties; any P_HORNER matrix with `c_0 ≠ 1` pays 7 instead of
-   1 for row 0 and is strictly worse. The Horner basin is therefore
-   closed: the default is optimal, up to ties, among all
-   P_HORNER-coded matrices.
-2. **An n+3-one matrix cannot be Horner-coded** (no all-ones column is
-   possible — one would cap the count at n+2), so the planner codes it
-   P_MULACC, where the `D_ab ≤ 1` placement constraint forces the
-   nontrivial entries to *spread*: an n+3 attainer has `2n-3`
-   nontrivial entries occupying all n columns (three columns with one
-   nontrivial, n−3 with two), paying the 3-uop split in every column.
-   The one extra 1 over the default cannot buy back the split terms
-   and the 128 B-per-nontrivial mem penalty — and even a uops tie
-   would lose on the mem tiebreak.
-
-Worked example — reviewer 2 independently found a (6,3) MDS matrix
-with 9 = n+3 ones; sampling found this one (full enumeration: 84/84
-nonsingular minors):
-
-        1   1   8   1 104 107
-        1  75   1 241   1 185
-       58   1   1 144 209   1
-
-The planner codes it P_MULACC. Measured under the transcribed model:
-challenger 1.3926 uops/B and 27.0156 mem/B vs default (P_HORNER)
-1.3613 uops/B and 9.0156 mem/B — it loses on uops and 3× on mem.
-Biased random sampling (90k matrices with one-count ≥ n+1 at (6,3)
-and (10,3), MDS-verified) found no challenger beating the default on
-uops either (best: 1.3770 vs 1.3613 at (6,3)).
-
-### What this section does and does not prove
-
-Proven: the one-count bound (n+3, tight), the Horner-basin optimum
-(default, up to full ties), the per-class costs, and the placement
-constraint forcing MULACC challengers to spread their nontrivial
-entries across columns. NOT proven in closed form: that no
-MULACC-coded MDS matrix anywhere in the envelope beats the default on
-uops. The fixed-point conclusion therefore rests on this analysis
-**plus** the empirical tripwire: `test_search_deterministic` pins
-byte-identity on the full envelope, so any future planner or
-cost-model change that *would* find something better fails loudly
-instead of silently changing the parity format. The search exists so
-that such a change re-derives the optimum instead of trusting a
-hardcoded matrix.
-
-Consequence: the old-vs-new table below is all ties, which is the
-*expected* outcome.
-
-## Old-vs-new cost table (static uops/byte; mem bytes/byte)
-
-| shape    | old uops/B | new uops/B | old mem/B | new mem/B |
-|----------|-----------:|-----------:|----------:|----------:|
-| (2,1)    |     0.0469 |     0.0469 |    3.0000 |    3.0000 |
-| (255,1)  |     4.4883 |     4.4883 |  259.9062 | 259.9062 |
-| (3,2)    |     0.3594 |     0.3594 |    5.0000 |    5.0000 |
-| (8,2)    |     1.0684 |     1.0684 |   10.0469 |  10.0469 |
-| (51,2)   |     7.1992 |     7.1992 |   53.7188 |  53.7188 |
-| (4,3)    |     0.8594 |     0.8594 |    7.0000 |    7.0000 |
-| (10,3)   |     2.3691 |     2.3691 |   13.0781 |  13.0781 |
-| (51,3)   |    12.6992 |    12.6992 |   54.7188 |  54.7188 |
-
-(The search output is byte-identical to the historical default on every
-tested shape; `test_search_deterministic` pins this with a tripwire:
-any future strict improvement that changes the bytes fails loudly so
-the format change is deliberate and documented.)
+Every multi-parity shape is strictly lighter; npar=1 ties (all-ones is
+the unique optimum under both objectives).
 
 ## Uncovered topologies
 
@@ -244,7 +157,7 @@ in two places: `rs_default_matrix()` is still a non-static function in
 implementation, legitimately used by `tests/test_remat.c` (custom
 RS(6,4), outside the search envelope) — and the search's seed 0 plus
 the static copy in `tests/test_matrix_search.c` replicate its formula
-(`M[j][i] = 2^(j*(ndata-1-i))`) for seeding and old-vs-new cost
+(`M[j][i] = 2^(j*(ndata-1-i))`) for seeding and old-vs-new weight
 comparison.
 
 ## Falsifiable ship criterion
@@ -253,17 +166,16 @@ Ship iff **all** of these hold:
 
 1. `tests/test_matrix_search.c` passes: every searched matrix in the
    envelope is proven MDS by full minor enumeration (minor count ==
-   C(ndata+npar, npar)), the independent solver agrees, and searched
-   cost <= old-default cost on the corpus.
-2. The cost-model cross-check passes with exact equality against real
-   `jit_build_version` uops/mem on the corpus (pins transcription drift).
-3. The full suite is green: `make test`, `make test-asan`,
-   `make test-qemu` (+aarch64, +aarch64-sve, +riscv64).
-4. Perf guard: 64 KiB / 1 MiB medians on affected configs stay inside
-   the baseline pass-to-pass [min,max] bands (no throughput
-   regression; format is unchanged so no re-baseline is needed beyond
-   recording the numbers).
-5. All four mutation probes fail as designed (below).
+   C(ndata+npar, npar)), the independent solver agrees, the weight
+   table pins match, and the searched weight is strictly below the old
+   default's on every multi-parity corpus shape.
+2. The greedy's fixpoint is brute-force verified as a true
+   single-entry local optimum on the corpus (independent check, not
+   the greedy's own logic).
+3. The full suite is green: `make test`, `make test-asan`
+   (test_remat's `P_HORNER` expectations are the known deliberate
+   tripwire — see "What it is" — and must be updated by its owner).
+4. All three 2.0 mutation probes fail as designed (below).
 
 ## Tests
 
@@ -279,17 +191,20 @@ Ship iff **all** of these hold:
   (two matrices with EXACTLY ONE singular minor, at enumeration indices
   1 and 44 of 45, counts verified by the independent solver) — the
   tripwire that catches count-preserving skipped-minor mutations.
-- **cost_le_old**: searched cost <= old cost on 8 shapes (table above);
-  Cauchy strictly pricier than default (cost is not constant).
-- **cost_model_crosscheck** (x86-64): 9 matrices (Horner/MULACC/XOR,
-  ndata <= 5 and > 5 to cover hoist/reload branches, plus the ndata=1
-  hoist corner (1,1)/(2,1)) — model vs real codegen uops/mem per byte,
-  exact equality (< 1e-9).
+- **bitweight_table**: weight-table pins against hand-derived constants
+  (`wt(0)=0`, `wt(1)=8`, `wt(2)=11`, `wt(3)=19`, `wt(4)=14`,
+  `wt(128)=30`; derivations in the test comments, independent of the
+  table code); 1 pinned as the unique minimizer over nonzero values
+  (exhaustive check); bad args return -1.
+- **bitweight_beats_old**: the old-vs-new weight table above, asserted:
+  searched weight <= old everywhere, strictly < on every multi-parity
+  shape, == on npar=1.
 - **search_deterministic**: repeated calls byte-identical (cache path);
-  dense envelope tripwire: search output byte-identical to the
-  historical default on every in-envelope shape (npar=2,3 x
-  ndata=1..51, npar=1 sampled) — the empirical guard behind the
-  fixed-point conclusion.
+  byte pins for (8,2) and (6,3) — deliberate-change detectors: any
+  future search change that moves these bytes fails loudly so the
+  parity-format change is deliberate and documented; moderate envelope
+  sweep (npar=2,3 × ndata ∈ {1,2,5,13,25,37,51}): search succeeds and
+  never exceeds the old default's weight.
 - **end_to_end**: ISA x topology x op x length combination test via the
   public API (`rj_compile`) vs an independent scalar reference:
   raid6(8), rs(6,3), rs(10,2), raid5(4); encode + 11 recovery combos;
@@ -299,50 +214,67 @@ Ship iff **all** of these hold:
 
 ### Mutation evidence (all performed, all reverted)
 
-- **A** — `src/matrix_search.c`: Horner nontrivial entry cost 7 -> 6:
-  `cost_model_crosscheck` FAILS
-  (`default(8,2) horner: uops/byte model=0.9590 codegen=1.0684`).
-- **B** — force the winner to the Cauchy matrix (still MDS):
-  `cost_le_old` FAILS on all 6 multi-parity shapes (e.g.
-  `(51,3): searched 17.6211 > old 12.6992`) and `search_deterministic`
-  FAILS (format-change tripwire).
-- **C** — neuter the singular-minor rejection in `matrix_is_mds`:
-  `mds_rejects` FAILS on all 5 bad matrices, `mds_proof` FAILS via the
-  independent solver check (defense in depth), and the search itself
-  wanders to a non-default matrix (proof gate matters).
-- **D** — count-preserving skipped-minor mutation in `matrix_is_mds`
-  (`if (n != SKIP && !minor_nonsingular(...))`, the minor counter still
-  counts every minor): with SKIP=44 the pre-hardening suite PASSED
-  SILENTLY — full evasion, because every old bad matrix has singular
-  minors at other positions. The hardened single-singular-minor corpus
-  (`test_mds_rejects`: matrix B, whose only singular minor is {7,9} at
-  enumeration index 44 of 45) FAILS the mutated build ("matrix B
-  accepted as MDS"). With SKIP=1 the old suite failed only
-  incidentally (the blinded search wandered for (3,2), caught by the
-  independent solver check); the hardened suite fails directly on
-  matrix A (only singular minor {0,1}, index 1). Mutation reverted;
-  suite green.
+- **E** — `src/matrix_search.c`: bitweight table forced constant
+  (`bitw[c] = 8` for all nonzero c): the greedy degenerates (no strict
+  improvement is ever possible), the winner is seed 0 = the historical
+  default, and `bitweight_beats_old` FAILS on all six strict-<
+  checks (e.g. `(8,2): new weight 128 not < old weight 128` under the
+  mutated table). The table pins in `bitweight_table` fail first.
+  Mutation reverted; suite green.
+- **F** — `src/matrix_search.c`: weight-table column computation
+  perturbed (column k built from `1u << ((k+1) % 8)` instead of
+  `1u << k`): `bitweight_table` FAILS on the pinned constants
+  (`wt(2) = 14, want 11`). Mutation reverted; suite green.
+- **G** — `src/matrix_search.c`: `forbidden_values` neutered to
+  "nothing forbidden": the greedy 1-izes every entry into a non-MDS
+  all-ones matrix; the full-enumeration proof gate catches it and falls
+  back to the verified seed (defense in depth holds — `mds_proof`
+  still passes), but the suite FAILS anyway via `bitweight_beats_old`
+  (no strict improvement: new weight == old weight on all six shapes)
+  and the `search_deterministic` byte pins. Mutation reverted; suite
+  green.
 
 ## Perf guard
 
-- BEFORE: `tools/perf_guard/baseline_2026-10-02.json` (18 configs,
-  AMD EPYC 9D25, 0 failures) — true pre-change baseline.
-- AFTER: run after the change; expected outcome is zero throughput
-  change (parity format is byte-identical). Record the numbers.
+Benchmarks are postponed per standing rules — no measured numbers are
+claimed here. The shipped evidence is static: the weight table above
+(exact integers from the deterministic search) and the structural
+`W − 8·npar` gate-count identity. Note the parity format changed
+deliberately (2.0), so any before/after throughput comparison must
+re-baseline rather than assume byte-identity.
 
 ## Limitations
 
-- The search is single-threaded and uninterruptible; worst case ~1–3 s
-  once per process for (51,3) on a shared VM (vCPU contention, not
-  algorithmic). Bounded (8 sweeps × 3 seeds) and cached; acceptable
+- The search is single-threaded and uninterruptible; worst case a few
+  seconds once per process for (51,3) on a shared VM (vCPU contention,
+  not algorithmic). Bounded (8 sweeps × 3 seeds) and cached; acceptable
   next to multi-second `rj_compile` times for the same shapes.
-- The static cost model is x86-64-nibble-specific in its constants.
-  Ranking agreement with other backends is verified for the nibble
-  path by the exact-equality cross-check against real codegen;
-  GFNI/SSE ranking agreement was checked by hand only (the nibble
-  5–6-vs-7 uop margin for MULACC-vs-Horner nontrivial entries
-  collapses to 2-vs-2 under GFNI) — moot while the search output is
-  byte-identical to the historical default, at which point every
-  backend compiles the same bytes.
+- The greedy is complete only for single-entry moves; multi-entry
+  coordinated improvements are outside the neighborhood (stated
+  exactly, not hand-waved).
+- The weight objective is backend-agnostic by construction (it counts
+  bit-level XORs, not vector uops). The planner still codes the new
+  matrices with its existing strategies (P_MULACC for the
+  non-Vandermonde winners); the bit-level scheduling track (A1) is the
+  intended consumer of the lighter matrices.
 - `npar > 3` is not supported by the proof (or the old default);
   constructors return NULL there, unchanged.
+
+## History: the 1.0 uops objective
+
+The 1.0 search (2026-10-02 – 2026-10-06) minimized a static encode-cost
+model: the real encode plan built by `plan_build` (so the
+P_XOR/P_HORNER/P_MULACC strategy choice was the planner's actual code),
+evaluated under a cost model transcribed 1:1 from the x86-64 nibble
+backend (`src/x86_64/jit.c`) at reference U=8, vl=64. Its analytical
+result: the search's fixed point was the historical default
+(byte-identical on the whole envelope — proven empirically by a dense
+tripwire, with a one-count bound + placement-constraint + Horner-floor
+argument explaining the mechanism). 2.0 supersedes the objective; the
+1.0 cost model (`matrix_search_cost`, `matrix_search_cost_parts`) was
+removed. 1.0 mutation evidence (A: Horner cost 7→6 caught by the
+codegen cross-check; B: forced Cauchy winner caught by cost_le_old and
+the format tripwire; C: neutered minor rejection caught by mds_rejects
+and the proof gate; D: count-preserving skipped-minor mutation caught
+by the single-singular-minor corpus) is archived here for the record;
+all were performed and reverted.

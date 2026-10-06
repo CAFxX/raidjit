@@ -1,19 +1,19 @@
-/* Plan-time search for low-cost MDS generator matrices over GF(2^8).
+/* Plan-time search for low-bitweight MDS generator matrices over GF(2^8).
  *
- * rj_topo_rs()/rj_topo_raid6() no longer hardcode the historical
- * Vandermonde default (M[j][i] = 2^(j*(ndata-1-i))). Instead they call
- * matrix_search_default(), which runs a deterministic, bounded,
- * host-independent search for the lowest-cost MDS systematic generator
- * matrix and caches the result per (ndata, npar).
+ * rj_topo_rs()/rj_topo_raid6() do not hardcode a generator matrix.
+ * Instead they call matrix_search_default(), which runs a deterministic,
+ * bounded, host-independent search for the lowest-bitweight MDS
+ * systematic generator matrix and caches the result per (ndata, npar).
  *
  * Design summary (full note: docs/matrix_search.md):
- *  - Cost = the planner's own static cost model: x86-64 nibble-backend
- *    vector uops / mem-bytes per stripe byte, transcribed 1:1 from
- *    src/x86_64/jit.c and cross-checked against real codegen by
- *    tests/test_matrix_search.c (exact-equality, so any backend
- *    accounting drift breaks the test instead of silently diverging).
- *    Strategy selection (P_XOR/P_HORNER/P_MULACC) is the planner's real
- *    plan_build, not a reimplementation.
+ *  - Cost = total bitmatrix weight: each GF(2^8) entry c expands to the
+ *    8x8 binary matrix of the GF-linear map x -> c*x (column k = bits
+ *    of c*2^k); the objective is the total number of 1s over all
+ *    entries. Each 1 is one input bit feeding one parity bit, so the
+ *    weight is (up to a per-output-bit constant) the XOR-gate count of
+ *    a straightforward bit-level schedule -- the quantity a bit-level
+ *    XOR scheduler (track A1) minimizes. Static and deterministic;
+ *    never presented as a measurement.
  *  - MDS = exact minor enumeration: every npar x npar minor of the
  *    parity-check matrix H=[-P|I] is checked nonsingular over GF(2^8).
  *    For the supported envelope (npar <= 3, ndata <= 51) that is at most
@@ -21,12 +21,12 @@
  *    matrix, not a randomized check.
  *  - Search = greedy single-entry hill climbing from several fixed
  *    seeds (historical default, Cauchy, fixed-seed random MDS),
- *    accepting only strict cost improvements. The historical default is
- *    seed 0 and wins all ties, so the output is byte-identical to the
- *    old default unless a strictly cheaper MDS matrix is found (none
- *    is: the default is the search's fixed point -- see the design note
- *    for the one-count bound + placement-constraint argument and the
- *    empirical tripwire that carries the conclusion).
+ *    accepting only strict weight improvements. The objective is
+ *    separable per entry, so the fixpoint has no single-entry strict
+ *    improvement left (multi-entry coordinated moves are outside the
+ *    neighborhood). The historical default is seed 0 and wins all
+ *    ties, so the output changes only where the weight objective
+ *    demands it.
  */
 #pragma once
 #include <stdint.h>
@@ -43,33 +43,26 @@
 int matrix_is_mds(const uint8_t *P, int ndata, int npar, int early_exit,
                   long *nminors_out);
 
-/* Static encode cost of a generator matrix under the planner's own cost
- * model. Builds the real encode plan with plan_build (so the
- * P_XOR/P_HORNER/P_MULACC strategy choice is the planner's actual
- * code), then evaluates the transcribed x86-64 nibble-backend static
- * model (vector uops and mem-bytes per stripe byte) at the reference
- * shape (U=8, vl=64, 5 hoisted input pointers, VEX encoding).
- * Returns 0 on success, -1 on bad args/OOM. */
-int matrix_search_cost(const uint8_t *P, int ndata, int npar,
-                       double *uops_per_byte, double *mem_per_byte);
+/* Bitmatrix-weight objective of a generator matrix: each GF(2^8) entry c
+ * expands to the 8x8 binary matrix of the GF-linear map x -> c*x
+ * (column k = bits of c*2^k); *w_out receives the total number of 1s
+ * over all npar*ndata entries. Returns 0 on success, -1 on bad args. */
+int matrix_search_bitweight(const uint8_t *P, int ndata, int npar,
+                            uint64_t *w_out);
 
-/* Lower-level cost components behind matrix_search_cost, exposed for the
- * exact cross-check test: per-u-lane (uops_u/mem_u) and
- * per-group-iteration (uops_g/mem_g) vector uops and mem-bytes of the
- * encode body at the reference shape. The test combines them with the
- * real candidate's (U, vl) and compares against real codegen. */
-int matrix_search_cost_parts(const uint8_t *P, int ndata, int npar,
-                             double *uops_u, double *mem_u,
-                             double *uops_g, double *mem_g);
-
-/* Deterministic bounded search for the lowest-cost MDS generator matrix
- * for (ndata, npar) inside the supported envelope (npar <= 3;
+/* Deterministic bounded search for the lowest-bitweight MDS generator
+ * matrix for (ndata, npar) inside the supported envelope (npar <= 3;
  * ndata <= 51 for npar >= 2; ndata <= 255 for npar == 1).
  * Fills out[] (npar*ndata bytes) and returns 0 on success, -1 on bad
  * args or OOM. Results are cached per (ndata, npar) for the process
  * lifetime (thread-safe); the search runs at most once per shape.
  * The output is deterministic and host-independent: fixed seeds, fixed
  * move order, strict-improvement acceptance with the historical
- * default as seed 0 (so ties keep the old bytes -- no gratuitous
- * parity-format churn). */
+ * default as seed 0 (so ties keep the old bytes).
+ *
+ * NOTE (matrix_search 2.0): the objective changed from the 1.0 static
+ * uops model to the bitmatrix weight, so the emitted bytes deliberately
+ * differ from the historical default wherever the weight objective
+ * finds something lighter. There is no backward compatibility: the
+ * parity format is whatever this search emits. */
 int matrix_search_default(int ndata, int npar, uint8_t *out /*npar*ndata*/);

@@ -1,5 +1,6 @@
 /* tests/test_matrix_search.c — tests for the plan-time generator-matrix
- * search (src/matrix_search.c).
+ * search (src/matrix_search.c), matrix_search 2.0 (bitmatrix-weight
+ * objective).
  *
  *  1. test_mds_proof: every searched matrix in the envelope is PROVEN MDS
  *     by exact minor enumeration (all C(ndata+npar, npar) minors), and an
@@ -11,19 +12,25 @@
  *     singular minor (at enumeration indices 1 and 44 of 45), which
  *     catch count-preserving skipped-minor mutations that evade the
  *     rest of the corpus.
- *  3. test_cost_le_old: searched cost <= historical-default cost on a
- *     corpus (the old generator's formula is replicated here as a
- *     static copy for comparison; the canonical implementation
- *     rs_default_matrix() remains non-static in src/gf.c).
- *  4. test_cost_model_crosscheck (x86-64): the transcribed static cost
- *     model matches real jit_build_version uops/mem per byte with exact
- *     equality on a corpus of matrices -- pins the transcription
- *     against backend accounting drift.
+ *  3. test_bitweight_table: the weight table is pinned against
+ *     hand-derived constants (wt(0)=0, wt(1)=8, wt(2)=11, wt(3)=19,
+ *     wt(4)=14, wt(128)=30); derivations in the comments below -- not
+ *     computed by the table code), and 1 is pinned as the UNIQUE
+ *     minimizer over nonzero values (the npar==1 short-circuit relies
+ *     on it). Bad args to matrix_search_bitweight return -1.
+ *  4. test_bitweight_beats_old: on a fixed corpus the searched matrix
+ *     has weight <= the historical default's weight everywhere, and
+ *     STRICTLY less on every multi-parity shape. (The 1.0 search's
+ *     fixed point was byte-identical to the historical default on the
+ *     whole envelope -- proven by the 1.0 dense tripwire -- so the
+ *     historical default below *is* the old objective's selection.)
  *  5. test_search_deterministic: repeated calls return identical bytes
- *     (exercises the cache path); dense envelope tripwire: search
- *     output is byte-identical to the historical default on EVERY
- *     in-envelope shape (npar=2,3 x ndata=1..51, npar=1 sampled) --
- *     the empirical guard behind the fixed-point conclusion.
+ *     (exercises the cache path); byte pins for (8,2) and (6,3) --
+ *     deliberate-change detectors: any future search change that moves
+ *     these bytes fails loudly so the parity-format change is
+ *     deliberate and documented. Moderate envelope sweep: the search
+ *     succeeds everywhere sampled and never exceeds the old default's
+ *     weight.
  *  6. test_end_to_end: ISA x topology x op x length combination test --
  *     rj_compile (public API, searched matrices) vs an independent
  *     scalar reference. Runs natively and under QEMU (aarch64/riscv64).
@@ -31,26 +38,23 @@
  *
  * Mutation evidence (done by hand during development, recorded in
  * docs/matrix_search.md):
- *  - A: matrix_search.c Horner nontrivial entry cost 7 -> 6:
- *    cost_model_crosscheck FAILS
- *    (default(8,2) horner: uops/byte model=0.9590 codegen=1.0684).
- *  - B: matrix_search.c winner forced to the Cauchy matrix (still MDS):
- *    cost_le_old FAILS on all multi-parity shapes
- *    (e.g. (51,3): searched 17.6211 > old 12.6992) and
- *    search_deterministic FAILS on the format-change tripwire.
- *  - C: matrix_search.c singular-minor rejection neutered (&& 0):
- *    mds_rejects FAILS on all 5 bad matrices, mds_proof FAILS via the
- *    independent solver check, and the search itself wanders to a
- *    non-default matrix (the proof gate matters).
- *  - D (T1): matrix_search.c count-preserving skipped-minor mutation
- *    (`if (n != SKIP && !minor_nonsingular(...))`, n still counts every
- *    minor): with SKIP=44 the pre-hardening suite PASSES SILENTLY
- *    (full evasion -- every old bad matrix has singular minors at
- *    other positions); the hardened suite FAILS on the
- *    single-singular-minor corpus ("matrix B accepted as MDS").
- *    With SKIP=1 the old suite fails only incidentally (the blind
- *    search wanders for (3,2), caught by the solver check); the
- *    hardened suite fails directly on matrix A. Mutation reverted.
+ *  - E: matrix_search.c bitweight table forced constant (bitw[c] = 8
+ *    for all c): the greedy degenerates (no strict improvement
+ *    possible), the winner is seed 0 = the historical default, and
+ *    test_bitweight_beats_old FAILS on the strict-< checks
+ *    ("(8,2): new weight 215 not < old weight 215"). Mutation reverted.
+ *  - F: matrix_search.c weight-table column computation perturbed
+ *    (column k built from (1u << ((k+1) % 8)) instead of (1u << k)):
+ *    test_bitweight_table FAILS on the pinned constants
+ *    (wt(2) = 14, want 11). Mutation reverted.
+ *  - G: matrix_search.c forbidden_values neutered to "nothing
+ *    forbidden": the greedy 1-izes every entry into a non-MDS matrix;
+ *    the full-enumeration proof gate catches it and falls back to the
+ *    verified seed (mds_proof still passes -- defense in depth holds),
+ *    but the suite FAILS via bitweight_beats_old (no strict improvement)
+ *    and the search_deterministic byte pins. Mutation reverted.
+ *  (1.0 mutation evidence A-D, for the superseded uops objective, is
+ *  archived in docs/matrix_search.md.)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,9 +67,6 @@
 #include "../src/plan.h"
 #include "../src/gf.h"
 #include "../src/ref.h"
-#if defined(__x86_64__)
-#include "../src/jit.h"
-#endif
 
 static int failures = 0;
 #define CHECK(c, ...) do {                                             \
@@ -80,24 +81,16 @@ static int failures = 0;
 } while (0)
 
 /* ---- the historical default generator, test-only copy ----
- * M[j][i] = 2^(j*(ndata-1-i)). This is the pre-search generator,
- * kept here solely for old-vs-new cost comparison; it is not used by
- * the shipped library. */
+ * M[j][i] = 2^(j*(ndata-1-i)). This was the pre-2.0 generator AND the
+ * 1.0 search's proven fixed point (byte-identical on the envelope), so
+ * it is used here solely as "the old objective's selection" for the
+ * weight comparison; it is not used by the shipped library. */
 static void old_default_matrix(int ndata, int npar, uint8_t *m)
 {
     for (int j = 0; j < npar; j++)
         for (int i = 0; i < ndata; i++)
             m[(size_t)j * (size_t)ndata + (size_t)i] =
                 gf_pow(2, (unsigned)(j * (ndata - 1 - i)));
-}
-
-/* Cauchy matrix for cost comparison: MDS by proof, not Vandermonde. */
-static void cauchy_matrix(int ndata, int npar, uint8_t *m)
-{
-    for (int j = 0; j < npar; j++)
-        for (int i = 0; i < ndata; i++)
-            m[(size_t)j * (size_t)ndata + (size_t)i] =
-                gf_inv((uint8_t)((i + 1) ^ (128 + j)));
 }
 
 static long binom2(int n, int k)
@@ -296,169 +289,111 @@ static void test_mds_rejects(void)
     TEST_OK("mds_rejects");
 }
 
-/* ---- 3. searched cost <= old default cost ---- */
+/* ---- 3. the weight table ---- */
 
-static void test_cost_le_old(void)
+/* Hand-derived weight pins (independent of the table code: each column
+ * k of the 8x8 matrix of c is the bits of gf_mul(c, 1<<k) over
+ * GF(2^8)/0x11B, weight = popcount summed over k):
+ *  - c=0: zero matrix -> 0.
+ *  - c=1: identity -> 8.
+ *  - c=2: cols 0..6 are single bits (2,4,...,128), col 7 = 0x1B
+ *    (x^8 = x^4+x^3+x+1, popcount 4) -> 7+4 = 11.
+ *  - c=3: cols 0..6 are 3,6,12,24,48,96,192 (popcount 2 each),
+ *    col 7 = 3*128 = 384 = 0x180 -> 0x1B^0x80 = 0x9B (popcount 5)
+ *    -> 14+5 = 19.
+ *  - c=4: cols 0..5 single bits, col 6 = 0x1B (4), col 7 = 2*0x1B =
+ *    0x36 (popcount 4) -> 6+4+4 = 14.
+ *  - c=128: cols = 0x80,0x1B,0x36,0x6C,0xD8,0xAB,0x4D,0x9A with
+ *    popcounts 1,4,4,4,4,5,4,4 -> 30. */
+static void test_bitweight_table(void)
 {
     TEST_BEGIN;
+    uint8_t m[1];
+    uint64_t w;
     static const struct {
-        int nd, np;
-    } shapes[] = { { 2, 1 }, { 255, 1 }, { 3, 2 }, { 8, 2 },   { 51, 2 },
-                   { 4, 3 }, { 10, 3 },  { 51, 3 } };
-    printf("%-10s %12s %12s %12s %12s\n", "shape", "old_uops/B",
-           "new_uops/B", "old_mem/B", "new_mem/B");
+        uint8_t c;
+        uint64_t want;
+    } pins[] = { { 0, 0 }, { 1, 8 }, { 2, 11 },
+                 { 3, 19 }, { 4, 14 }, { 128, 30 } };
+    for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        m[0] = pins[i].c;
+        CHECK(matrix_search_bitweight(m, 1, 1, &w) == 0,
+              "bitweight failed for c=%u", pins[i].c);
+        CHECK(w == pins[i].want, "wt(%u) = %llu, want %llu", pins[i].c,
+              (unsigned long long)w, (unsigned long long)pins[i].want);
+    }
+    /* 1 is the UNIQUE minimizer over nonzero values: every other
+     * nonzero c has a nonsingular 8x8 bitmatrix, hence >= 1 one per
+     * row (>= 8 total), with equality only for a permutation matrix,
+     * i.e. c = 1 (any higher power of x wraps through the reduction
+     * polynomial; any other c has a multi-bit column 0). The npar==1
+     * all-ones short-circuit in the search relies on this. */
+    for (int c = 2; c < 256; c++) {
+        m[0] = (uint8_t)c;
+        CHECK(matrix_search_bitweight(m, 1, 1, &w) == 0,
+              "bitweight failed for c=%d", c);
+        if (w <= 8)
+            CHECK(0, "wt(%d) = %llu <= 8: 1 is not the unique minimizer",
+                  c, (unsigned long long)w);
+    }
+    /* bad args */
+    m[0] = 1;
+    CHECK(matrix_search_bitweight(NULL, 1, 1, &w) == -1,
+          "NULL matrix not rejected");
+    CHECK(matrix_search_bitweight(m, 1, 1, NULL) == -1,
+          "NULL out not rejected");
+    CHECK(matrix_search_bitweight(m, 0, 1, &w) == -1,
+          "ndata=0 not rejected");
+    CHECK(matrix_search_bitweight(m, 1, 4, &w) == -1,
+          "npar=4 not rejected");
+    CHECK(matrix_search_default(0, 2, m) == -1,
+          "search ndata=0 not rejected");
+    CHECK(matrix_search_default(8, 2, NULL) == -1,
+          "search NULL out not rejected");
+    TEST_OK("bitweight_table");
+}
+
+/* ---- 4. searched weight vs the old objective's selection ---- */
+
+static void test_bitweight_beats_old(void)
+{
+    TEST_BEGIN;
+    /* (ndata, npar, expect_strict): the multi-parity shapes must be
+     * STRICTLY lighter than the historical default (the 1.0 objective's
+     * proven fixed point); npar=1 ties (all-ones is the unique
+     * bitweight optimum too). */
+    static const struct {
+        int nd, np, strict;
+    } shapes[] = { { 2, 1, 0 }, { 255, 1, 0 }, { 3, 2, 1 }, { 8, 2, 1 },
+                   { 51, 2, 1 }, { 4, 3, 1 }, { 10, 3, 1 }, { 51, 3, 1 } };
+    printf("%-10s %10s %10s\n", "shape", "old_w", "new_w");
     for (unsigned s = 0; s < sizeof(shapes) / sizeof(shapes[0]); s++) {
         int nd = shapes[s].nd, np = shapes[s].np;
         uint8_t om[3 * 256], nm[3 * 256];
         old_default_matrix(nd, np, om);
         CHECK(matrix_search_default(nd, np, nm) == 0,
               "search failed for (%d,%d)", nd, np);
-        double ou, omm, nu, nmm;
-        CHECK(matrix_search_cost(om, nd, np, &ou, &omm) == 0,
-              "old cost failed (%d,%d)", nd, np);
-        CHECK(matrix_search_cost(nm, nd, np, &nu, &nmm) == 0,
-              "new cost failed (%d,%d)", nd, np);
-        printf("(%3d,%d)    %12.4f %12.4f %12.4f %12.4f\n", nd, np, ou, nu,
-               omm, nmm);
-        CHECK(nu <= ou + 1e-12,
-              "(%d,%d): searched cost %.4f > old %.4f", nd, np, nu, ou);
+        uint64_t ow, nw;
+        CHECK(matrix_search_bitweight(om, nd, np, &ow) == 0,
+              "old weight failed (%d,%d)", nd, np);
+        CHECK(matrix_search_bitweight(nm, nd, np, &nw) == 0,
+              "new weight failed (%d,%d)", nd, np);
+        printf("(%3d,%d)    %10llu %10llu\n", nd, np,
+               (unsigned long long)ow, (unsigned long long)nw);
+        CHECK(nw <= ow, "(%d,%d): searched weight %llu > old %llu", nd,
+              np, (unsigned long long)nw, (unsigned long long)ow);
+        if (shapes[s].strict)
+            CHECK(nw < ow,
+                  "(%d,%d): new weight %llu not < old weight %llu", nd,
+                  np, (unsigned long long)nw, (unsigned long long)ow);
+        else
+            CHECK(nw == ow, "(%d,%d): npar=1 weight %llu != %llu", nd,
+                  np, (unsigned long long)nw, (unsigned long long)ow);
     }
-    /* the cost function distinguishes matrices: Cauchy (MULACC) must be
-     * strictly pricier than the default (Horner) -- the cost is not
-     * a constant. */
-    {
-        uint8_t cm[2 * 16], dm[2 * 16];
-        cauchy_matrix(16, 2, cm);
-        old_default_matrix(16, 2, dm);
-        double cu, du, cmm, dmm;
-        CHECK(matrix_search_cost(cm, 16, 2, &cu, &cmm) == 0, "cauchy cost");
-        CHECK(matrix_search_cost(dm, 16, 2, &du, &dmm) == 0, "default cost");
-        CHECK(cu > du + 1e-9,
-              "cost does not distinguish Cauchy (%.4f) from default (%.4f)",
-              cu, du);
-    }
-    TEST_OK("cost_le_old");
+    TEST_OK("bitweight_beats_old");
 }
 
-/* ---- 4. cost model vs real codegen (x86-64) ---- */
-
-#if defined(__x86_64__)
-static void crosscheck_one(const uint8_t *P, int ndata, int npar,
-                           const char *mname)
-{
-    char err[256];
-    topo_int_t ti;
-    ti.ndata = ndata;
-    ti.npar = npar;
-    ti.mat = malloc((size_t)npar * (size_t)ndata);
-    CHECK(ti.mat != NULL, "oom");
-    if (!ti.mat)
-        return;
-    memcpy(ti.mat, P, (size_t)npar * (size_t)ndata);
-    rj_op op = rj_op_encode();
-    plan_t pl;
-    CHECK(plan_build(&ti, &op, mname, &pl, err, sizeof(err)) == 0,
-          "plan_build %s: %s", mname, err);
-    if (failures) {
-        topo_int_free(&ti);
-        return;
-    }
-    rj_cpu_info cpu;
-    rj_cpu_detect(&cpu);
-    cand_t cands[128];
-    int nc = plan_candidates(&pl, &cpu, cands, 128, 0, 0);
-    /* first plain AVX-512 nibble candidate (vl=64, VEX accounting) */
-    cand_t *cp = NULL;
-    for (int i = 0; i < nc; i++)
-        if (cands[i].isa == ISA_AVX512 && cands[i].mul == MUL_NIBBLE &&
-            !cands[i].nt && !cands[i].prefetch_dist && !cands[i].ternlog &&
-            !cands[i].remat) {
-            cp = &cands[i];
-            break;
-        }
-    CHECK(cp != NULL, "%s: no plain avx512 nibble candidate", mname);
-    if (!cp) {
-        plan_free(&pl);
-        rj_op_free(&op);
-        topo_int_free(&ti);
-        return;
-    }
-    rj_options opts;
-    rj_options_default(&opts);
-    version_t v;
-    memset(&v, 0, sizeof(v));
-    CHECK(jit_build_version(&pl, cp, &cpu, &opts, &v, err, sizeof(err)) == 0,
-          "jit_build_version %s: %s", mname, err);
-    if (!failures) {
-        double uu, mu, ug, mg;
-        CHECK(matrix_search_cost_parts(P, ndata, npar, &uu, &mu, &ug,
-                                      &mg) == 0,
-              "cost_parts %s", mname);
-        double grp = (double)cp->U * isa_vl(cp->isa);
-        double eu = (cp->U * uu + ug) / grp;
-        double em = (cp->U * mu + mg) / grp;
-        CHECK(fabs(v.uops_per_byte - eu) < 1e-9,
-              "%s: uops/byte model=%.12f codegen=%.12f (U=%d)", mname, eu,
-              v.uops_per_byte, cp->U);
-        CHECK(fabs(v.mem_per_byte - em) < 1e-9,
-              "%s: mem/byte model=%.12f codegen=%.12f (U=%d)", mname, em,
-              v.mem_per_byte, cp->U);
-    }
-    jit_free_version(&v);
-    plan_free(&pl);
-    rj_op_free(&op);
-    topo_int_free(&ti);
-}
-
-static void test_cost_model_crosscheck(void)
-{
-    TEST_BEGIN;
-    /* corpus: Horner (old default), MULACC (Cauchy), XOR (npar=1),
-     * and a non-Vandermonde MDS matrix; ndata both <=5 (all pointers
-     * hoisted) and >5 (reload terms), exercising every branch of the
-     * transcription. The ndata=1 shapes pin the ptr_hoist_count corner:
-     * with a single input nothing is hoisted, so in[0]'s pointer is
-     * reloaded every group iteration (1 uop + 8 mem bytes). */
-    uint8_t m[3 * 256];
-    old_default_matrix(8, 2, m);
-    crosscheck_one(m, 8, 2, "default(8,2) horner");
-    old_default_matrix(16, 2, m);
-    crosscheck_one(m, 16, 2, "default(16,2) horner reloads");
-    old_default_matrix(8, 3, m);
-    crosscheck_one(m, 8, 3, "default(8,3) horner");
-    cauchy_matrix(8, 2, m);
-    crosscheck_one(m, 8, 2, "cauchy(8,2) mulacc");
-    cauchy_matrix(12, 3, m);
-    crosscheck_one(m, 12, 3, "cauchy(12,3) mulacc reloads");
-    old_default_matrix(8, 1, m);
-    crosscheck_one(m, 8, 1, "default(8,1) xor");
-    old_default_matrix(1, 1, m);
-    crosscheck_one(m, 1, 1, "default(1,1) xor hoist-corner");
-    old_default_matrix(1, 2, m);
-    crosscheck_one(m, 1, 2, "default(1,2) hoist-corner");
-    /* hand-built sparse-but-MDS matrix: exercises first_col != 0 rows?
-     * (MDS forbids zero columns; use a permuted Cauchy instead) */
-    cauchy_matrix(6, 2, m);
-    /* permute columns deterministically: still MDS, different bytes */
-    {
-        uint8_t t[2 * 6];
-        for (int j = 0; j < 2; j++)
-            for (int i = 0; i < 6; i++)
-                t[j * 6 + i] = m[j * 6 + (i * 5 + 1) % 6];
-        crosscheck_one(t, 6, 2, "cauchy-permuted(6,2) mulacc");
-    }
-    TEST_OK("cost_model_crosscheck");
-}
-#else
-static void test_cost_model_crosscheck(void)
-{
-    TEST_BEGIN;
-    printf("skip cost_model_crosscheck (needs x86-64 backend)\n");
-    TEST_OK("cost_model_crosscheck (skipped)");
-}
-#endif
-
-/* ---- 5. determinism / cache ---- */
+/* ---- 5. determinism / cache / byte pins ---- */
 
 static void test_search_deterministic(void)
 {
@@ -476,53 +411,57 @@ static void test_search_deterministic(void)
         CHECK(memcmp(a, b, (size_t)np * (size_t)nd) == 0,
               "search not deterministic for (%d,%d)", nd, np);
     }
-    /* stability vs the historical default: the search's fixed point is
-     * the old bytes (no gratuitous parity-format churn). If the search
-     * ever finds something strictly better, this CHECK is the tripwire
-     * that forces the format change to be deliberate and documented. */
+    /* Byte pins: deliberate-change detectors. The search is fully
+     * deterministic (fixed seeds, fixed candidate order,
+     * strict-improvement acceptance), so these bytes are stable; any
+     * future search change that moves them fails loudly so the
+     * parity-format change is deliberate and documented. */
     {
-        uint8_t o[3 * 256];
-        old_default_matrix(51, 3, o);
-        CHECK(matrix_search_default(51, 3, a) == 0, "search (51,3)");
-        CHECK(memcmp(a, o, 3 * 51) == 0,
-              "search output differs from historical default: "
-              "parity format change must be deliberate");
+        static const uint8_t want82[2][8] = {
+            { 1, 1, 1, 1, 1, 1, 1, 1 },
+            { 141, 203, 140, 70, 8, 4, 2, 1 },
+        };
+        CHECK(matrix_search_default(8, 2, a) == 0, "search (8,2)");
+        CHECK(memcmp(a, want82, sizeof(want82)) == 0,
+              "(8,2) bytes changed: parity-format change must be "
+              "deliberate and documented");
     }
-    /* dense envelope tripwire (T2): byte-identity on EVERY in-envelope
-     * shape -- npar=2,3 x ndata=1..51, npar=1 sampled. This is the
-     * empirical guard that carries the fixed-point conclusion in
-     * docs/matrix_search.md: the analytical note bounds the one-count
-     * and explains the mechanism, but the claim "the search emits the
-     * historical default" is proven here, by exhaustion, not by the
-     * analysis. ~20 s on this VM; the cache makes each shape pay the
-     * search exactly once. */
-    for (int np = 2; np <= 3; np++)
-        for (int nd = 1; nd <= 51; nd++) {
-            uint8_t o[3 * 256], s[3 * 256];
-            old_default_matrix(nd, np, o);
-            CHECK(matrix_search_default(nd, np, s) == 0,
-                  "search failed for (%d,%d)", nd, np);
-            if (failures)
-                return;
-            CHECK(memcmp(s, o, (size_t)np * (size_t)nd) == 0,
-                  "search output != historical default for (%d,%d): "
-                  "parity format change must be deliberate and documented",
-                  nd, np);
-        }
-    { /* npar=1: the search short-circuits to the all-ones row, which is
-       * exactly the historical default -- sample the ndata range. */
-        static const int nds[] = { 1, 2, 3, 7, 51, 128, 200, 255 };
-        for (unsigned k = 0; k < sizeof(nds) / sizeof(nds[0]); k++) {
-            int nd = nds[k];
-            uint8_t o[256], s[256];
-            old_default_matrix(nd, 1, o);
-            CHECK(matrix_search_default(nd, 1, s) == 0,
-                  "search failed for (%d,1)", nd);
-            if (failures)
-                return;
-            CHECK(memcmp(s, o, (size_t)nd) == 0,
-                  "search output != historical default for (%d,1)", nd);
-        }
+    {
+        static const uint8_t want63[3][6] = {
+            { 1, 1, 1, 1, 1, 1 },
+            { 141, 203, 8, 4, 2, 1 },
+            { 203, 8, 2, 141, 4, 1 },
+        };
+        CHECK(matrix_search_default(6, 3, a) == 0, "search (6,3)");
+        CHECK(memcmp(a, want63, sizeof(want63)) == 0,
+              "(6,3) bytes changed: parity-format change must be "
+              "deliberate and documented");
+    }
+    /* Moderate envelope sweep: the search succeeds on every sampled
+     * shape and never exceeds the historical default's weight (it
+     * starts from seed 0 and accepts only strict improvements). */
+    {
+        static const int nds[] = { 1, 2, 5, 13, 25, 37, 51 };
+        for (int np = 2; np <= 3; np++)
+            for (unsigned k = 0; k < sizeof(nds) / sizeof(nds[0]); k++) {
+                int nd = nds[k];
+                uint8_t o[3 * 256], s[3 * 256];
+                old_default_matrix(nd, np, o);
+                CHECK(matrix_search_default(nd, np, s) == 0,
+                      "search failed for (%d,%d)", nd, np);
+                if (failures)
+                    return;
+                uint64_t ow, nw;
+                CHECK(matrix_search_bitweight(o, nd, np, &ow) == 0,
+                      "old weight failed (%d,%d)", nd, np);
+                CHECK(matrix_search_bitweight(s, nd, np, &nw) == 0,
+                      "new weight failed (%d,%d)", nd, np);
+                CHECK(nw <= ow,
+                      "(%d,%d): searched weight %llu > old %llu", nd, np,
+                      (unsigned long long)nw, (unsigned long long)ow);
+                CHECK(matrix_is_mds(s, nd, np, 1, NULL) == 1,
+                      "(%d,%d): searched matrix not MDS", nd, np);
+            }
     }
     TEST_OK("search_deterministic");
 }
@@ -778,8 +717,8 @@ int main(void)
 {
     test_mds_proof();
     test_mds_rejects();
-    test_cost_le_old();
-    test_cost_model_crosscheck();
+    test_bitweight_table();
+    test_bitweight_beats_old();
     test_search_deterministic();
     test_end_to_end();
     test_envelope();

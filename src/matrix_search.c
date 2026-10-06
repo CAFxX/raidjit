@@ -1,4 +1,4 @@
-/* Plan-time search for low-cost MDS generator matrices over GF(2^8).
+/* Plan-time search for low-bitweight MDS generator matrices over GF(2^8).
  * See src/matrix_search.h and docs/matrix_search.md. */
 #include "matrix_search.h"
 #include "plan.h"
@@ -89,171 +89,187 @@ int matrix_is_mds(const uint8_t *P, int ndata, int npar, int early_exit,
     return ok;
 }
 
-/* ---------------- static encode cost (planner's own model) ---------------- */
-
-/* Reference shape for the transcribed static model: the x86-64
- * nibble-backend accounting (VEX/EVEX encoding) at U=8, vl=64, with the
- * first 5 input pointers hoisted (PTR_NHOIST in src/x86_64/jit.c;
- * nothing hoisted when n_in < 2, mirroring ptr_hoist_count exactly).
- * The comparison the search needs is between matrices of the same
- * (ndata, npar): the U/vl-dependent terms (pointer reloads for i>=5)
- * are identical for all MDS matrices of one shape (no zero columns),
- * so the ranking is U- and vl-independent. */
-#define REF_U 8
-#define REF_VL 64
-#define REF_NHOIST 5
-
-/* Per-u-lane (uops_u/mem_u) and per-group-iteration (uops_g/mem_g) vector
- * uops and mem-bytes for the encode body, transcribed 1:1 from the
- * x86-64 nibble codegen in src/x86_64/jit.c:
- *  - c_ld/c_st/c_ldpool: 1 uop + vl mem; raw_ldpool (prologue): uncounted
- *  - c_vpxor/c_vmov/c_shuf/c_and/c_srlw: 1 uop (VEX: no extra moves)
- *  - body_inptr: 0 when hoisted, else 1 uop + 8 mem (once per group iter)
- *  - first-touch accumulators emit vmov, never xor-with-zero
- * tests/test_matrix_search.c pins this against real jit_build_version
- * output with exact equality, so backend accounting drift breaks the
- * test instead of silently diverging. */
-static void body_cost(const plan_t *pl, double *uops_u, double *mem_u,
-                      double *uops_g, double *mem_g)
+/* Value (not just nonzero/zero) of the npar x npar minor on cols[].
+ * Closed forms for npar <= 3. */
+static uint8_t minor_det(const uint8_t *P, int ndata, int npar,
+                         const int *cols)
 {
-    int n_in = pl->n_in, n_out = pl->n_out;
-    double u = 0.0, m = 0.0, ug = 0.0, mg = 0.0;
-    if (pl->kind == P_HORNER) {
-        /* i == 0: acc = 0*c + t = t: load directly into acc[0] plus
-         * (n_out-1) moves (not load-to-temp + n_out moves). */
-        u += n_out;
-        m += REF_VL;
-        for (int i = 1; i < n_in; i++) {
-            u += 1; /* c_ld t (shared across rows) */
-            m += REF_VL;
-            for (int j = 0; j < n_out; j++) {
-                uint8_t c = pl->horner_c[j];
-                /* c in {0,1}: pure move/xor; else nibble multiply of
-                 * the accumulator: 3 (split) + 2 (shuf) + 2 (xor) */
-                u += (c == 0 || c == 1) ? 1 : 7;
-            }
-        }
-    } else if (pl->kind == P_MULACC) {
-        int first_col[RJ_MAX_DISKS];
-        for (int j = 0; j < n_out; j++) {
-            first_col[j] = -1;
-            for (int i = 0; i < n_in; i++)
-                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
-                    first_col[j] = i;
-                    break;
-                }
-        }
-        for (int i = 0; i < n_in; i++) {
-            int any = 0, neednib = 0;
-            for (int j = 0; j < n_out; j++) {
-                uint8_t c = pl->mat[(size_t)j * (size_t)n_in + (size_t)i];
-                if (c) {
-                    any = 1;
-                    if (c != 1)
-                        neednib = 1;
-                }
-            }
-            if (!any)
-                continue;
-            u += 1; /* c_ld t */
-            m += REF_VL;
-            if (neednib)
-                u += 3; /* nibble split of t (shared across rows) */
-            for (int j = 0; j < n_out; j++) {
-                uint8_t c = pl->mat[(size_t)j * (size_t)n_in + (size_t)i];
-                if (!c)
-                    continue;
-                if (c == 1) {
-                    u += 1; /* vmov (first) or vpxor */
-                    continue;
-                }
-                /* nibble multiply: 2 ldpool + 2 shuf, then 1 xor at
-                 * the first contributing column, 2 after */
-                u += 4;
-                m += 2 * REF_VL;
-                u += (i == first_col[j]) ? 1 : 2;
-            }
-        }
-    } else if (pl->kind == P_XOR) {
-        for (int i = 0; i < n_in; i++) {
-            int nu = 0;
-            for (int j = 0; j < n_out; j++)
-                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i])
-                    nu++;
-            if (!nu)
-                continue;
-            /* nu == 1: c_ld acc (first) or c_vpxor_mem: 1 uop + vl mem;
-             * nu > 1: c_ld t + one xor/move per user */
-            u += 1;
-            m += REF_VL;
-            if (nu > 1)
-                u += nu;
-        }
-    }
-    /* output stores */
-    u += n_out;
-    m += (double)n_out * REF_VL;
-    /* per-group-iteration pointer reloads for non-hoisted inputs.
-     * Mirrors ptr_hoist_count() in src/x86_64/jit.c exactly, including
-     * the n_in < 2 corner: with a single input nothing is hoisted, so
-     * in[0]'s pointer is reloaded every group iteration (1 uop + 8 mem
-     * bytes). Same-shape ranking is unaffected (a constant shift), but
-     * the transcription is exact, so pin it with the cross-check. */
-    int nhoist = (n_in < 2) ? 0 : (n_in < REF_NHOIST ? n_in : REF_NHOIST);
-    for (int i = nhoist; i < n_in; i++) {
-        ug += 1;
-        mg += 8;
-    }
-    *uops_u = u;
-    *mem_u = m;
-    *uops_g = ug;
-    *mem_g = mg;
+    uint8_t m[3][3];
+    for (int r = 0; r < npar; r++)
+        for (int s = 0; s < npar; s++)
+            m[r][s] = hcol(P, ndata, cols[s], r);
+    if (npar == 1)
+        return m[0][0];
+    if (npar == 2)
+        return gf_mul(m[0][0], m[1][1]) ^ gf_mul(m[0][1], m[1][0]);
+    return gf_mul(m[0][0], gf_mul(m[1][1], m[2][2]) ^ gf_mul(m[1][2], m[2][1])) ^
+           gf_mul(m[0][1], gf_mul(m[1][0], m[2][2]) ^ gf_mul(m[1][2], m[2][0])) ^
+           gf_mul(m[0][2], gf_mul(m[1][0], m[2][1]) ^ gf_mul(m[1][1], m[2][0]));
 }
 
-int matrix_search_cost_parts(const uint8_t *P, int ndata, int npar,
-                             double *uops_u, double *mem_u,
-                             double *uops_g, double *mem_g)
+/* Cofactor of minor entry (j0, t): determinant of the submatrix with row
+ * j0 and column t removed (signs are irrelevant in characteristic 2). */
+static uint8_t minor_cofactor(const uint8_t *P, int ndata, int npar,
+                              const int *cols, int j0, int t)
 {
-    if (!P || !uops_u || !mem_u || !uops_g || !mem_g || ndata < 1 ||
-        npar < 1 || ndata + npar > RJ_MAX_DISKS)
-        return -1;
-    /* The real planner builds the encode plan: strategy selection
-     * (P_XOR/P_HORNER/P_MULACC) is the planner's actual code. */
-    topo_int_t ti;
-    ti.ndata = ndata;
-    ti.npar = npar;
-    ti.mat = malloc((size_t)npar * (size_t)ndata);
-    if (!ti.mat)
-        return -1;
-    memcpy(ti.mat, P, (size_t)npar * (size_t)ndata);
-    rj_op op = rj_op_encode();
-    plan_t pl;
-    char err[256];
-    int rc = plan_build(&ti, &op, "msearch", &pl, err, sizeof(err));
-    free(ti.mat);
-    rj_op_free(&op);
-    if (rc != 0)
-        return -1;
-    if (pl.kind == P_DELTA || pl.noop) {
-        plan_free(&pl);
-        return -1; /* unreachable for an encode op; fail loudly */
+    uint8_t s[2][2] = { { 0, 0 }, { 0, 0 } };
+    int r2 = 0;
+    for (int r = 0; r < npar; r++) {
+        if (r == j0)
+            continue;
+        int s2 = 0;
+        for (int c = 0; c < npar; c++) {
+            if (c == t)
+                continue;
+            s[r2][s2++] = hcol(P, ndata, cols[c], r);
+        }
+        r2++;
     }
-    body_cost(&pl, uops_u, mem_u, uops_g, mem_g);
-    plan_free(&pl);
-    return 0;
+    if (npar == 1)
+        return 1;
+    if (npar == 2)
+        return s[0][0];
+    return gf_mul(s[0][0], s[1][1]) ^ gf_mul(s[0][1], s[1][0]);
 }
 
-int matrix_search_cost(const uint8_t *P, int ndata, int npar,
-                       double *uops_per_byte, double *mem_per_byte)
+/* Values v for P[j0][i0] that would make some npar x npar minor of H
+ * singular: forbidden[v] = 1. Precondition: P is MDS.
+ *
+ * Only minors containing data column i0 can change status when
+ * P[j0][i0] changes (every other minor is byte-identical, hence still
+ * nonsingular), so enumerating those -- C(ndata+npar-1, npar-1) instead
+ * of C(ndata+npar, npar) -- is exact. Each minor's determinant is
+ * affine in the changed entry: det(v) = A*v ^ B with A the cofactor of
+ * the entry's position, so a minor forbids at most one value
+ * (v = B/A when A != 0; when A == 0 the determinant is v-independent
+ * and -- P being MDS -- nonzero for all v). The complement of
+ * forbidden[] is exactly the set of MDS-preserving values; in
+ * particular the current value is never forbidden. */
+static void forbidden_values(const uint8_t *P, int ndata, int npar,
+                             int j0, int i0, uint8_t *forbidden)
 {
-    if (!uops_per_byte || !mem_per_byte)
+    memset(forbidden, 0, 256);
+    int ncols = ndata + npar;
+    /* pool: every column except i0; choose npar-1 of them */
+    int pool[256], np = 0;
+    for (int c = 0; c < ncols; c++)
+        if (c != i0)
+            pool[np++] = c;
+    int nm = npar - 1;
+    int sub[RS_MDS_MAX_NPAR];
+    for (int s = 0; s < nm; s++)
+        sub[s] = s;
+    int cols[RS_MDS_MAX_NPAR];
+    uint8_t v_cur = P[(size_t)j0 * (size_t)ndata + (size_t)i0];
+    for (;;) {
+        /* merge pool[sub[]] with i0, keeping sorted order */
+        int a = 0, o = 0, placed = 0;
+        while (a < nm || !placed) {
+            int pc = (a < nm) ? pool[sub[a]] : ncols; /* sentinel */
+            if (!placed && i0 < pc) {
+                cols[o++] = i0;
+                placed = 1;
+            } else {
+                cols[o++] = pc;
+                a++;
+            }
+        }
+        int t = 0;
+        while (cols[t] != i0)
+            t++;
+        uint8_t det = minor_det(P, ndata, npar, cols);
+        /* det != 0 by the MDS precondition */
+        uint8_t A = minor_cofactor(P, ndata, npar, cols, j0, t);
+        if (A != 0)
+            forbidden[gf_mul(det, gf_inv(A)) ^ v_cur] = 1;
+        /* lexicographic next (npar-1)-combination of pool */
+        int i = nm - 1;
+        while (i >= 0 && sub[i] == np - nm + i)
+            i--;
+        if (i < 0)
+            break;
+        sub[i]++;
+        for (int s = i + 1; s < nm; s++)
+            sub[s] = sub[s - 1] + 1;
+    }
+}
+
+/* ---------------- bitmatrix-weight objective ---------------- */
+
+/* The search objective (matrix_search 2.0). Each GF(2^8) entry c expands
+ * to the 8x8 binary matrix of the GF-linear map x -> c*x: column k holds
+ * the bits of gf_mul(c, 1<<k), i.e. bit r of column k is 1 iff input bit
+ * k feeds output bit r. The weight of c is the number of 1s in that
+ * matrix; the matrix objective is the sum over all entries.
+ *
+ * Rationale: in a bit-level (gate-level) XOR schedule each 1 is one
+ * input bit XORed into one parity bit, so the total weight is -- up to
+ * one constant per nonzero output bit -- the XOR-gate count of the
+ * straightforward schedule. Minimizing the weight minimizes the thing
+ * a bit-level scheduler (track A1) has to work with; cross-coefficient
+ * sharing can only do better from a lighter starting point. This is a
+ * static, deterministic ranking criterion, never presented as a
+ * measurement.
+ *
+ * Elementary facts used below (all pinned by tests/test_matrix_search.c):
+ *  - bitw[0] = 0, bitw[1] = 8 (the identity), and bitw[c] > 8 for every
+ *    other nonzero c: a nonzero GF-multiplication bitmatrix has at
+ *    least one 1 per row (nonsingular), hence >= 8 ones, with equality
+ *    only for a permutation matrix, i.e. c = 1 (any higher power of x
+ *    wraps through the reduction polynomial and gains ones; any other
+ *    c already has a multi-bit column 0).
+ *  - the objective is separable per entry: changing entry e from a to b
+ *    changes the total by exactly bitw[b] - bitw[a]. */
+
+/* bitw[c]: number of 1s in the 8x8 binary matrix of x -> c*x. */
+static uint8_t bitw[256];
+/* cand_order: the 255 nonzero values sorted by (bitw, value). */
+static uint8_t cand_order[255];
+static atomic_flag tables_lock = ATOMIC_FLAG_INIT;
+static int tables_done;
+
+static void search_tables_ensure(void)
+{
+    while (atomic_flag_test_and_set(&tables_lock))
+        ;
+    if (!tables_done) {
+        for (int c = 0; c < 256; c++) {
+            unsigned w = 0;
+            for (int k = 0; k < 8; k++)
+                w += (unsigned)__builtin_popcount(
+                    gf_mul((uint8_t)c, (uint8_t)(1u << k)));
+            bitw[c] = (uint8_t)w;
+        }
+        for (int i = 0; i < 255; i++)
+            cand_order[i] = (uint8_t)(i + 1);
+        /* insertion sort by (bitw, value); 255 elements, once */
+        for (int i = 1; i < 255; i++) {
+            uint8_t v = cand_order[i];
+            int j = i - 1;
+            while (j >= 0 && (bitw[cand_order[j]] > bitw[v] ||
+                              (bitw[cand_order[j]] == bitw[v] &&
+                               cand_order[j] > v))) {
+                cand_order[j + 1] = cand_order[j];
+                j--;
+            }
+            cand_order[j + 1] = v;
+        }
+        tables_done = 1;
+    }
+    atomic_flag_clear(&tables_lock);
+}
+
+int matrix_search_bitweight(const uint8_t *P, int ndata, int npar,
+                            uint64_t *w_out)
+{
+    if (!P || !w_out || ndata < 1 || npar < 1 || npar > RS_MDS_MAX_NPAR ||
+        ndata + npar > RJ_MAX_DISKS)
         return -1;
-    double uu, mu, ug, mg;
-    if (matrix_search_cost_parts(P, ndata, npar, &uu, &mu, &ug, &mg) != 0)
-        return -1;
-    double grp = (double)REF_U * REF_VL;
-    *uops_per_byte = (REF_U * uu + ug) / grp;
-    *mem_per_byte = (REF_U * mu + mg) / grp;
+    search_tables_ensure();
+    uint64_t w = 0;
+    for (int e = 0; e < npar * ndata; e++)
+        w += bitw[P[e]];
+    *w_out = w;
     return 0;
 }
 
@@ -270,7 +286,7 @@ static void seed_default(int ndata, int npar, uint8_t *m)
 
 /* Seed 1: Cauchy matrix P[j][i] = inv(x_i ^ y_j), x_i = i+1, y_j = 128+j.
  * MDS by proof for ndata+npar <= 255 (distinct nonzero x, distinct y,
- * x^y != 0). Not Vandermonde: exercises the P_MULACC basin. */
+ * x^y != 0). Not Vandermonde: exercises a different basin. */
 static void seed_cauchy(int ndata, int npar, uint8_t *m)
 {
     for (int j = 0; j < npar; j++)
@@ -320,45 +336,50 @@ static int seed_randvander(int ndata, int npar, uint8_t *m)
     return -1;
 }
 
-/* Greedy 1-ization: for each entry (fixed row-major order) try setting
- * it to 1; keep it iff MDS is preserved and the static cost strictly
- * drops. Repeats to a fixpoint (sweep cap for the budget).
+/* Greedy single-entry weight minimization to a fixpoint (sweep cap for
+ * the budget). For each entry in fixed row-major order, compute the set
+ * of MDS-forbidden values (forbidden_values) and jump straight to the
+ * lightest allowed one.
  *
- * The move set is complete for strict improvements *within one planner
- * strategy*: under the static model an entry's cost depends only on its
- * class ({0}, {1}, other) -- 0 is MDS-infeasible (for npar == 1 the 1x1
- * minors of H are the entries themselves; for npar >= 2 the 2x2 minors
- * pairing each data column with an identity column force every entry
- * nonzero), and all "other" values cost identically -- so a strict
- * improvement at fixed strategy must 1-ize at least one entry.
- * NOT in the neighborhood: single-entry other->other' moves that change
- * the planner's strategy choice (e.g. completing a Vandermonde
- * structure to flip P_MULACC to P_HORNER). Latent only: any P_HORNER-
- * coded matrix costs at least the default (Horner floor = default, see
- * docs/matrix_search.md), so the gap cannot hide a strict improvement
- * over the fixed point. (Multi-entry coordinated moves are likewise
- * outside the neighborhood; the fixed-point conclusion rests on the
- * analytical bound plus the empirical tripwire in the design note.) */
+ * This is complete for strict improvements *by single-entry moves*,
+ * not a heuristic: the objective is separable per entry, so a strict
+ * single-entry improvement at e must replace m[e] with a lighter
+ * allowed value, and the loop moves to the lightest allowed value.
+ * A fixpoint therefore has no single-entry strict improvement left.
+ * NOT in the neighborhood: multi-entry coordinated moves (changing two
+ * entries at once can preserve MDS where neither change alone does).
+ * `0` is always forbidden: for npar == 1 the 1x1 minors of H are the
+ * entries themselves; for npar >= 2 the 2x2 minors pairing each data
+ * column with an identity column force every entry nonzero. */
 #define GREEDY_MAX_SWEEPS 8
-static void greedy_ones(uint8_t *m, int ndata, int npar, double *cost)
+static void greedy_bitweight(uint8_t *m, int ndata, int npar,
+                             uint64_t *cost)
 {
+    uint8_t forbidden[256];
     for (int sweep = 0; sweep < GREEDY_MAX_SWEEPS; sweep++) {
         int improved = 0;
         for (int e = 0; e < npar * ndata; e++) {
-            if (m[e] == 1)
-                continue;
-            uint8_t old = m[e];
-            m[e] = 1;
-            if (matrix_is_mds(m, ndata, npar, 1, NULL) == 1) {
-                double u, mm;
-                if (matrix_search_cost(m, ndata, npar, &u, &mm) == 0 &&
-                    u < *cost - 1e-12) {
-                    *cost = u;
+            int j0 = e / ndata, i0 = e % ndata;
+            uint8_t cur = m[e];
+            if (cur == 1)
+                continue; /* bitw[1] = 8 is the global minimum over
+                           * nonzero values (pinned by the test), so no
+                           * strictly lighter value exists */
+            forbidden_values(m, ndata, npar, j0, i0, forbidden);
+            /* lightest allowed value strictly lighter than cur
+             * (cand_order is sorted by weight, so the scan stops at
+             * the first candidate of weight >= bitw[cur]) */
+            for (int k = 0; k < 255; k++) {
+                uint8_t v = cand_order[k];
+                if (bitw[v] >= bitw[cur])
+                    break;
+                if (!forbidden[v]) {
+                    m[e] = v;
+                    *cost -= (uint64_t)(bitw[cur] - bitw[v]);
                     improved = 1;
-                    continue;
+                    break;
                 }
             }
-            m[e] = old;
         }
         if (!improved)
             break;
@@ -409,7 +430,8 @@ int matrix_search_default(int ndata, int npar, uint8_t *out)
         return -1;
 
     /* npar == 1: all-ones is the unique optimum (MDS needs every entry
-     * nonzero; P_XOR needs every entry in {0,1}). */
+     * nonzero; 1 is the unique minimizer of the bitweight over nonzero
+     * values, so any deviation strictly increases the weight). */
     if (npar == 1) {
         memset(out, 1, (size_t)ndata);
         cache_insert(ndata, npar, out);
@@ -421,6 +443,7 @@ int matrix_search_default(int ndata, int npar, uint8_t *out)
 
     /* The search runs without holding the cache lock (it is
      * deterministic, so concurrent inserts compute identical bytes). */
+    search_tables_ensure();
     size_t msz = (size_t)npar * (size_t)ndata;
     uint8_t *best = malloc(msz);
     uint8_t *cand = malloc(msz);
@@ -429,24 +452,26 @@ int matrix_search_default(int ndata, int npar, uint8_t *out)
         free(cand);
         return -1;
     }
-    double best_u = 0.0, best_m = 0.0;
+    uint64_t best_w = 0;
 
     /* Seed 0: historical default. It is MDS inside the envelope (the
      * envelope proof); verify anyway -- a failure here is a bug. */
     seed_default(ndata, npar, best);
     if (matrix_is_mds(best, ndata, npar, 1, NULL) != 1 ||
-        matrix_search_cost(best, ndata, npar, &best_u, &best_m) != 0) {
+        matrix_search_bitweight(best, ndata, npar, &best_w) != 0) {
         free(best);
         free(cand);
         return -1;
     }
-    greedy_ones(best, ndata, npar, &best_u);
-    /* refresh the mem tiebreak after the greedy */
-    matrix_search_cost(best, ndata, npar, &best_u, &best_m);
+    greedy_bitweight(best, ndata, npar, &best_w);
+    /* refresh the weight after the greedy (it maintains the delta, but
+     * a full recompute is bulletproof and cheap) */
+    matrix_search_bitweight(best, ndata, npar, &best_w);
 
     /* Seeds 1..2: genuinely different MDS matrices, same treatment.
-     * Strict uops improvement, or uops-tie plus mem win; full ties keep
-     * seed 0 (no format churn). */
+     * Strict weight improvement wins; full ties keep seed 0 (no
+     * gratuitous parity-format churn beyond what the objective
+     * demands). */
     for (int seed = 1; seed <= 2; seed++) {
         int ok;
         if (seed == 1) {
@@ -459,17 +484,15 @@ int matrix_search_default(int ndata, int npar, uint8_t *out)
             continue;
         if (matrix_is_mds(cand, ndata, npar, 1, NULL) != 1)
             continue; /* checked seed failed: skip, never emit unproven */
-        double u, mm;
-        if (matrix_search_cost(cand, ndata, npar, &u, &mm) != 0)
+        uint64_t w = 0;
+        if (matrix_search_bitweight(cand, ndata, npar, &w) != 0)
             continue;
-        greedy_ones(cand, ndata, npar, &u);
-        if (matrix_search_cost(cand, ndata, npar, &u, &mm) != 0)
+        greedy_bitweight(cand, ndata, npar, &w);
+        if (matrix_search_bitweight(cand, ndata, npar, &w) != 0)
             continue;
-        if (u < best_u - 1e-12 ||
-            (u <= best_u + 1e-12 && mm < best_m - 1e-12)) {
+        if (w < best_w) {
             memcpy(best, cand, msz);
-            best_u = u;
-            best_m = mm;
+            best_w = w;
         }
     }
     free(cand);
