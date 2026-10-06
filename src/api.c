@@ -7,6 +7,7 @@
 #include "cpu.h"
 
 #include "dispatch.h"
+#include "prefetch_calib.h"
 #include "survivor.h"
 
 #include <stdlib.h>
@@ -37,6 +38,19 @@ void rj_options_default(rj_options *o)
     o->verbose = 0;
     o->nt_threshold = 0;
     o->prefetch_distance = 0;
+}
+
+/* ---------------- init ---------------- */
+
+/* First-touch process initialization (I4): runs the prefetch
+ * calibration probe (~10 ms, once per process; later calls are free).
+ * Optional: the probe also runs lazily at the first rj_compile that
+ * needs an analytical prefetch distance, so calling rj_init is never
+ * required for correctness -- it just moves the probe cost out of the
+ * first compile. */
+void rj_init(void)
+{
+    prefetch_calib_ensure();
 }
 
 /* ---------------- compile ---------------- */
@@ -189,10 +203,12 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
         cand_t cands[512];
         /* NT/prefetch twins only when benchmarking: on the static model they
          * tie with their temporal originals and lose the tie-break, so
-         * generating them would only multiply compile time. */
+         * generating them would only multiply compile time. The prefetch
+         * argument resolves the manual override vs the I4 analytical
+         * default (see prefetch_calib.h). */
         int ncand = plan_candidates(&pl, &cpu, cands, 512,
                                     o.nt_threshold > 0 && o.benchmark,
-                                    o.benchmark ? o.prefetch_distance : 0);
+                                    prefetch_calib_dist_arg(&o));
         if (ncand <= 0) {
             if (err && errlen)
                 snprintf(err, errlen, "no candidates for this CPU/plan");

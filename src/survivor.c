@@ -2,6 +2,7 @@
  * survivor.h and docs/survivor_sets.md. */
 #include "survivor.h"
 #include "bench.h"
+#include "prefetch_calib.h"
 #include "prune.h"
 #include "gf.h"
 
@@ -341,7 +342,7 @@ void survivor_l2_signal(survivor_subset_t *subs, int nsub,
      * build in survivor_select, so the canonical version is the same
      * candidate the full build would consider first. */
     int allow_nt = o->nt_threshold > 0 && o->benchmark;
-    size_t prefetch_dist = o->benchmark ? o->prefetch_distance : 0;
+    size_t prefetch_dist = prefetch_calib_dist_arg(o);
     for (int i = 0; i < nsub; i++) {
         subs[i].l2_valid = 0;
         subs[i].l2_uops = 0;
@@ -656,7 +657,7 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         cand_t cands[512];
         int ncand = plan_candidates(pl, cpu, cands, 512,
                                     o->nt_threshold > 0 && o->benchmark,
-                                    o->benchmark ? o->prefetch_distance : 0);
+                                    prefetch_calib_dist_arg(o));
         version_t *vs = NULL;
         int nv = 0;
         if (ncand > 0) {

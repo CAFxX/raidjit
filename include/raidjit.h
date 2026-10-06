@@ -181,11 +181,20 @@ typedef struct {
                             * LLC); for small or immediately-reused stripes
                             * they are slower. This is an enable, not a
                             * guarantee: the benchmark decides per CPU. */
-    size_t prefetch_distance; /* 0 (default) = no software prefetch.
-                            * >0 = emit a prefetch for each input stream
-                            * this many bytes ahead of the current vector
-                            * group, once per group iteration. x86:
-                            * PREFETCHT0; AArch64: PRFM PLDL1STRM (the
+    size_t prefetch_distance; /* 0 (default) = analytical default (I4):
+                            * each candidate gets a per-kernel prefetch
+                            * distance computed at plan time from the
+                            * once-per-machine calibration (see rj_init)
+                            * and the kernel's stride (U x vector bytes x
+                            * input streams) -- no runtime cost, no
+                            * per-kernel search. The distance is a
+                            * heuristic, NOT a measured optimum; the
+                            * compile-time benchmark remains the final
+                            * arbiter, and the distance-0 (no-prefetch)
+                            * twin is always enumerated alongside.
+                            * >0 = manual uniform override: every prefetch
+                            * twin uses this distance (pre-I4 behavior).
+                            * x86: PREFETCHT0; AArch64: PRFM PLDL1STRM (the
                             * encodable range is 0..32760, multiple of 8
                             * -- other distances fail the twin build
                             * cleanly); RISC-V:
@@ -198,8 +207,8 @@ typedef struct {
                             * large cold buffers); for in-cache or
                             * few-stream workloads it is pure overhead.
                             * Like NT, it participates in benchmarking only
-                            * as a separate candidate twin when nonzero --
-                            * measurement decides. */
+                            * as a separate candidate twin -- measurement
+                            * decides. */
 } rj_options;
 
 void rj_options_default(rj_options *o);
@@ -230,6 +239,14 @@ typedef struct rj_jit rj_jit;
  * vector loads/stores (MOVDQA / VMOVDQA / VMOVDQA32) throughout.
  */
 typedef void (*rj_fn)(const void *in[], void *out[], size_t len);
+
+/* First-touch process initialization (I4): runs the prefetch
+ * calibration probe (~10 ms, once per process; later calls are free).
+ * Optional: the probe also runs lazily at the first rj_compile that
+ * needs an analytical prefetch distance, so calling rj_init is never
+ * required for correctness -- it just moves the probe cost out of the
+ * first compile. */
+void rj_init(void);
 
 rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
                    const rj_options *opts, char *err, size_t errlen);

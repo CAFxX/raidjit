@@ -357,13 +357,31 @@ choice is to enable the twin and let measurement decide.
   register pressure against data traffic. Candidate-specific budgeting
   could improve specific cases.
 
-## 11. Software prefetch (evaluated, default off)
+## 11. Software prefetch (I4: calibrated analytical default)
 
-- `rj_options.prefetch_distance = 0` (default) disables software
-  prefetch. Setting it > 0 adds a prefetch twin of every candidate
-  (PREFETCHT0 for each input stream, this many bytes ahead of the
-  current group, once per group iteration); the benchmark picks
-  empirically whether the twin wins. The distance is a `size_t`.
+- I4 (2026-10-06) reframed rejected item 18: instead of per-kernel
+  benchmark auto-tuning, the machine is characterized once per process
+  by a ~10 ms probe at first `rj_init` (pointer-chase latency + memset
+  bandwidth sweep, cached in-process; see `src/prefetch_calib.c`), and
+  each candidate's prefetch distance is computed analytically at plan
+  time: `iters = clamp(ceil(latency * bandwidth / (U*VL*nstreams)),
+  1, 64)`, distance = `iters * U * VL` per input stream, ISA-range
+  adjusted. Zero runtime cost (a plan-time constant); the manual
+  `prefetch_distance > 0` override keeps working and wins over the
+  analytical value. The analytical distance is a heuristic, NOT a
+  measured optimum: the benchmark remains the final arbiter, and the
+  distance-0 (no-prefetch) twin is always enumerated first, so cores
+  that ignore/misbehave on software prefetch stay covered.
+  Heterogeneous-core migration is a documented limitation (stale
+  calibration; re-calibration trigger not implemented). Persistence of
+  the calibration is item #29's machine-profile DB, not implemented
+  here.
+- `rj_options.prefetch_distance = 0` (default) selects the analytical
+  default above. Setting it > 0 keeps the pre-I4 behavior: a prefetch
+  twin of every candidate with that uniform distance (PREFETCHT0 for
+  each input stream, this many bytes ahead of the current group, once
+  per group iteration); the benchmark picks empirically whether the
+  twin wins. The distance is a `size_t`.
   x86-64 consumes it as a 32-bit displacement (values ≥ 2³¹ are
   truncated — prefetch hints never fault, so the only effect of an
   absurd value is a useless prefetch). AArch64 validates it against
@@ -397,7 +415,10 @@ choice is to enable the twin and let measurement decide.
   advance in lockstep, so one shared distance is the right model;
   the experiment hook was removed. Re-test trigger: a CPU whose HW
   prefetcher does not track 7+ sequential streams, or a quiet-box
-  measurement showing a stable >2% win. Design note and logs:
+  measurement showing a stable >2% win. I4 (2026-10-06) reframed the
+  item as once-per-machine calibration + analytical per-kernel distance
+  (this section's head); the per-kernel benchmark ladder stays
+  rejected. Design note and logs:
   `~/workspace/raidjit-tracks/Bx86/B4_DESIGN.md`,
   `B4_EVIDENCE.md`, `B4_exp_bs_run1.log`.
 - **RISC-V:** the prefetch twin uses Zicbop `prefetch.r` (read
@@ -409,19 +430,21 @@ choice is to enable the twin and let measurement decide.
   32..2016 bytes in 32-byte steps (GAS-verified); other distances fail
   the twin build cleanly ("not encodable"), never silently rounded. A
   force-built candidate without Zicbop degrades to temporal (never
-  wrong code). Like x86/AArch64: opt-in, benchmark-gated, no distance
-  recommended — measurement decides. Full survey in
+  wrong code). Benchmark-gated like x86/AArch64: the twin wins only if
+  it measures faster on the target CPU; the distance is the I4
+  analytical default unless manually overridden, and no distance is
+  recommended as "optimal" — measurement decides. Full survey in
   `docs/rvv_nt_prefetch.md`.
 - **AArch64:** the prefetch twin uses `PRFM PLDL1STRM` (streaming
   prefetch, the ARM counterpart of x86's `PREFETCHT0` for
   write-once/read-once RAID streams). Encodable distances are
   0..32760 bytes in 8-byte steps (PRFM imm12 × 8, GAS-verified);
   anything else fails the twin build cleanly ("not encodable"),
-  never silently wrapped. Like x86, it is opt-in
-  (`prefetch_distance > 0`) and benchmark-gated: the twin wins only if
-  it measures faster on the target CPU. No AArch64-specific prefetch
-  distance is recommended; the hardware prefetcher handles sequential
-  RAID streams well, and measurement decides. The B4 past-end
+  never silently wrapped. Benchmark-gated like x86: the twin wins only
+  if it measures faster on the target CPU, with the I4 analytical
+  default distance unless manually overridden. No AArch64-specific
+  prefetch distance is recommended; the hardware prefetcher handles
+  sequential RAID streams well, and measurement decides. The B4 past-end
   self-attack (`tests/test_b4_prefetch.c`) uses the encodable maximum
   32760 there, and scans the emitted code to prove every PRFM word
   carries the full offset.

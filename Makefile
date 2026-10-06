@@ -16,7 +16,7 @@ BUILDDIR = build-$(ARCH)
 
 COMMON_SRCS = src/gf.c src/plan.c src/topo.c src/bench.c src/ref.c src/api.c \
         src/prune.c src/dispatch.c src/xorsched.c src/matrix_search.c \
-        src/xorcode.c src/survivor.c
+        src/xorcode.c src/survivor.c src/prefetch_calib.c
 ifeq ($(ARCH),x86_64)
 ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c
 else ifeq ($(ARCH),aarch64)
@@ -53,6 +53,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_matrix_search $(BUILDDIR)/test_xorcode \
         $(BUILDDIR)/test_notail_xorsched $(BUILDDIR)/test_survivor \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
+        $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
         $(BUILDDIR)/test_recover_closedform
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
@@ -317,6 +318,7 @@ endif
 	./$(BUILDDIR)/test_survivor
 	./$(BUILDDIR)/test_tailduel
 	./$(BUILDDIR)/test_b4_prefetch
+	./$(BUILDDIR)/test_prefetch_calib
 	./$(BUILDDIR)/test_traps
 	./$(BUILDDIR)/test_planner_fuzz
 	./$(BUILDDIR)/test_recover_closedform
@@ -421,6 +423,9 @@ $(BUILDDIR)/test_tailduel: tests/test_tailduel.c $(BUILDDIR)/libraidjit.a $(HDRS
 
 $(BUILDDIR)/test_b4_prefetch: tests/test_b4_prefetch.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_b4_prefetch.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_prefetch_calib: tests/test_prefetch_calib.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_prefetch_calib.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_traps: tests/test_traps.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_traps.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

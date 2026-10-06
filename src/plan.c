@@ -1,5 +1,6 @@
 #include "plan.h"
 #include "gf.h"
+#include "prefetch_calib.h"
 #include "xorsched.h"
 #include <assert.h>
 #include <limits.h>
@@ -995,13 +996,25 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
          * stream prefetch_dist bytes ahead. The benchmark decides
          * empirically whether the extra uops pay off. RVV needs Zicbop
          * for prefetch.r: without it the backend ignores prefetch_dist,
-         * so the twin would be a byte-identical duplicate: skip it. */
+         * so the twin would be a byte-identical duplicate: skip it.
+         * RJ_PREFETCH_AUTO (I4): resolve the distance per candidate
+         * from the once-per-machine calibration and the candidate's
+         * stride (pure plan-time arithmetic, zero runtime cost). A 0
+         * result means the heuristic declines the twin (calibration
+         * unavailable or below the ISA's minimum encodable distance);
+         * the distance-0 base twin above remains the candidate. */
         int ntemp = n;
         for (int i = 0; i < ntemp && n < maxout; i++) {
             if (out[i].isa == ISA_RVV && !cpu->rvv_zicbop)
                 continue;
+            size_t d = prefetch_dist;
+            if (d == RJ_PREFETCH_AUTO) {
+                d = prefetch_calib_distance_for(pl, &out[i], cpu);
+                if (d == 0)
+                    continue;
+            }
             out[n] = out[i];
-            out[n].prefetch_dist = prefetch_dist;
+            out[n].prefetch_dist = d;
             n++;
         }
     }

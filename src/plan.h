@@ -196,11 +196,15 @@ int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
  * jitted code emits no fence; on x86 the caller must SFENCE and on
  * AArch64 the caller must DMB ISHST after the call, while on RISC-V
  * the Zihintntl hint needs no caller fence -- see cand_t.nt).
- * prefetch_dist: if nonzero, also emit a prefetch
- * twin of every candidate with PREFETCHT0 this far ahead. Twins are
- * appended after their temporal originals, so static (non-benchmark)
- * selection, which prefers the first of equal-cost candidates, keeps
- * temporal behavior. */
+ * prefetch_dist: 0 = no prefetch twins; RJ_PREFETCH_AUTO = per-candidate
+ * analytical default from the once-per-machine calibration (I4, see
+ * src/prefetch_calib.h); any other nonzero value = manual uniform
+ * override applied to every prefetch twin. Twins are appended after
+ * their temporal originals, so static (non-benchmark) selection, which
+ * prefers the first of equal-cost candidates, keeps temporal behavior.
+ * The distance-0 (no-prefetch) base twin is always enumerated first, so
+ * it stays a candidate even when prefetch twins are added. */
+#define RJ_PREFETCH_AUTO ((size_t)-1)
 int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     cand_t *out, int maxout, int allow_nt,
                     size_t prefetch_dist);
