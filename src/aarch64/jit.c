@@ -626,13 +626,27 @@ static void gen_body(cg_t *cg)
         }
         for (int i = 0; i < n_in; i++) {
             int nu = 0;
+            int sole_j = -1;
             for (int j = 0; j < n_out; j++)
-                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i])
+                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
                     nu++;
+                    sole_j = j;
+                }
             if (!nu)
                 continue;
             c_inptr(cg, X10, i);   /* X10 = in[i] + x11 */
+            /* First-source direct load (item 8): when the input feeds a
+             * single row (nu==1) and is that row's first contributing
+             * column, load directly into the accumulator (1 uop) instead
+             * of load-to-t + copy (2 uops). Mirrors the PDELTA seeding
+             * pattern above (and x86-64's first-source load). The
+             * xorsched model (xs_body_naive) counts this case as 1 uop. */
+            int direct = (nu == 1 && i == first_i[sole_j]);
             for (int u = 0; u < ulanes; u++) {
+                if (direct) {
+                    c_ld_to(cg, sole_j * U + u, u, X10);
+                    continue;
+                }
                 /* Load once per (i,u) into t; each row then either
                  * initializes its accumulator from t (first contributing
                  * column) or XORs t in. t = n_out*U never aliases an acc

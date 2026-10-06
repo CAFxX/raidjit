@@ -456,8 +456,12 @@ static long xs_body_naive(const plan_t *pl, isa_t isa, int nu,
                         uj = j;
                         break;
                     }
-                /* AArch64 always fans out via t; RVV folds first->acc */
-                if (!is_x86 && isa == ISA_RVV && i == first_in[uj])
+                /* AArch64 (NEON/SVE) and RVV fold first->acc with a direct
+                 * load (1 uop); otherwise load t + one move/xor (2). */
+                if (!is_x86 &&
+                    (isa == ISA_RVV || isa == ISA_NEON ||
+                     isa == ISA_SVE) &&
+                    i == first_in[uj])
                     uops += 1;
                 else
                     uops += 2; /* load t + one move/xor */
