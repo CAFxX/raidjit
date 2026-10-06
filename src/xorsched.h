@@ -71,8 +71,9 @@ void xorsched_test_oom_at(int n);
 
 /* Predicted version-level core vector uops for the naive (sched=0) or
  * scheduled (sched=1) P_XOR body, under each backend's exact counting
- * convention (x86/AArch64: body + stores per group; RVV: the triple
- * gen_body emission + stores + 3 vsetvli, matching the emitter).
+ * convention (x86/AArch64: body + stores per group; RVV: the double
+ * gen_body emission (counted loop + remainder) + stores + 2 vsetvli,
+ * matching the emitter).
  * Prefetch/pointer/loop overhead excluded identically on both sides.
  * Model/emitter exactness holds at prefetch_distance=0 only: the model
  * excludes prefetch uops while the emitter counts them, so a version
@@ -87,7 +88,7 @@ void xorsched_test_oom_at(int n);
  * +nt combo versions against the model exactly.
  * The notail flag selects the length-dispatch no-tail twin's accounting:
  * on RVV the notail twin emits only the single nu=U body (plus the one
- * prologue vsetvli), not the triple emission; on x86/AArch64 the notail
+ * prologue vsetvli), not the double emission; on x86/AArch64 the notail
  * twin omits only the uncounted scalar tail, so the prediction is
  * unchanged. The plan_candidates gate always passes notail=0 (it
  * enumerates full versions); notail=1 exists so tests can check the

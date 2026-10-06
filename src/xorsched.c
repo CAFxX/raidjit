@@ -542,12 +542,16 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
                                        : (long)pl->n_out * U;
 
     if (isa == ISA_RVV) {
-        /* Full version: gen_body is emitted 3x (nu=U, U, 1); stores +
-         * 3 vsetvli. Notail twin: the counted loop is the whole version
-         * (dispatcher guarantees len % group == 0), so only the single
-         * nu=U body is emitted, plus the one prologue vsetvli
-         * (src/riscv/jit.c counts exactly one cg->uops += 1 outside
-         * gen_body on the notail path). */
+        /* Full version: gen_body is emitted 2x -- once with nu=U in the
+         * counted full-group loop (F6), once with nu=1 in the remainder
+         * loop. Stores are inside gen_body; 2 counted vsetvli (the F6
+         * prologue vsetvli and the remainder vsetvli -- prologue const
+         * setup is uncounted, and all other prologue instructions use
+         * raw em_* calls). Notail twin: the counted loop is the whole
+         * version (dispatcher guarantees len % group == 0), so only
+         * the single nu=U body is emitted, plus the one prologue
+         * vsetvli (src/riscv/jit.c counts exactly one cg->uops += 1
+         * outside gen_body on the notail path). */
         long bU = sched ? xs_body_sched(s, isa, U, nhoist)
                         : xs_body_naive(pl, isa, U, nhoist, first_in);
         if (notail)
@@ -555,7 +559,7 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
         long b1 = sched ? xs_body_sched(s, isa, 1, nhoist)
                         : xs_body_naive(pl, isa, 1, nhoist, first_in);
         long st1 = (long)pl->n_out;
-        return 2 * (bU + stU) + (b1 + st1) + 3;
+        return (bU + stU) + (b1 + st1) + 2;
     }
     /* x86/AArch64: the notail twin omits only the scalar tail, which
      * emits no counted uops, so the notail prediction is identical. */

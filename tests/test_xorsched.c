@@ -281,6 +281,53 @@ int main(void)
         return 0;
     }
 
+    /* X1 regression: RVV full-version model must count exactly 2 body
+     * emissions + 2 vsetvli, not the stale 3x + 3. Runs first so it
+     * fires even when the exact-equality checks below fail. T2 (3x6,
+     * rows 0/2 identical) at RVV U=1, hand-derived:
+     *   naive body: input users 3,3,2,2,1,1 (inputs 4,5 not first in
+     *     their row) => bU = (1+3)+(1+3)+(1+2)+(1+2)+2+2 = 18, stU = 3.
+     *     full = (18+3)+(18+3)+2 = 44, notail = (18+3)+1 = 22.
+     *   sched: 1 temp (0,1) with 2 users (3 + 2 = 5); surviving inputs
+     *     2,3,4,5 single-user non-first (2 each = 8); 1 live duplicate.
+     *     bS = 5+8+1 = 14, stU = 3.
+     *     full = (14+3)+(14+3)+2 = 36, notail = (14+3)+1 = 18.
+     * The stale model reported 66/54 (exactly the 1.5x over-count seen
+     * in the 312 pre-fix failures); the emitter emits 44/36. */
+    {
+        plan_t pl;
+        memset(&pl, 0, sizeof(pl));
+        pl.kind = P_XOR;
+        pl.n_in = 6;
+        pl.n_out = 3;
+        pl.mat = malloc(sizeof(t2_mat));
+        memcpy(pl.mat, t2_mat, sizeof(t2_mat));
+        pl.xor_sched = xorsched_build(&pl);
+        CHECK(pl.xor_sched != NULL, "X1: t2 schedule build failed");
+        CHECK(pl.xor_sched->ntemps == 1 && pl.xor_sched->ndup_live == 1,
+              "X1: t2 schedule shape changed (ntemps=%d ndup=%d)",
+              pl.xor_sched->ntemps, pl.xor_sched->ndup_live);
+        long nfull = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
+                                           1, 0, 0, 0);
+        long nnotail = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
+                                             1, 0, 0, 1);
+        long sfull = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
+                                           1, 1, 0, 0);
+        long snotail = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
+                                             1, 1, 0, 1);
+        CHECK(nfull == 44 && nnotail == 22,
+              "X1: naive RVV model %ld/%ld, want 44/22", nfull, nnotail);
+        CHECK(sfull == 36 && snotail == 18,
+              "X1: sched RVV model %ld/%ld, want 36/18", sfull, snotail);
+        /* structural pin: full = notail + (remainder nu=1 body) + 1
+         * extra vsetvli -- exactly 2 body emissions, 2 vsetvli. */
+        CHECK(nfull - nnotail == 22 && sfull - snotail == 18,
+              "X1: full/notail delta wrong (%ld/%ld)",
+              nfull - nnotail, sfull - snotail);
+        xorsched_free(pl.xor_sched);
+        free(pl.mat);
+    }
+
     struct {
         const char *name;
         int n_in, n_out;
@@ -509,7 +556,8 @@ int main(void)
             /* m1: model-exactness on the pf combo. The model excludes
              * prefetch uops (see xorsched.h); the emitter counts 1 per
              * input stream per group emission with exactly-once dedup
-             * (pf_done in all three backends; RVV emits the body 3x). */
+             * (pf_done in all three backends; RVV emits the body 2x --
+             * counted loop + remainder). */
             {
                 const xorsched_t *xs = pl.xor_sched;
                 int seen[256] = { 0 };
@@ -524,7 +572,7 @@ int main(void)
                 for (int i = 0; i < xs->n_in; i++)
                     pf_streams += seen[i];
                 long pf_uops =
-                    (isa == ISA_RVV) ? 3L * pf_streams : pf_streams;
+                    (isa == ISA_RVV) ? 2L * pf_streams : pf_streams;
                 long div = (isa == ISA_RVV) ? (long)U * 16
                                             : (long)v.group_bytes;
                 long eu = (long)(v.uops_per_byte * (double)div + 0.5);

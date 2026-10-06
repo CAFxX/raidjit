@@ -133,7 +133,7 @@ static long sve_true_vl_bytes(const rj_cpu_info *cpu)
     return cpu->sve_vl > 0 ? (long)cpu->sve_vl : 16;
 }
 
-static long uop_divisor(isa_t isa, int U, const rj_cpu_info *cpu)
+static long uop_divisor(isa_t isa, int U, int lmul, const rj_cpu_info *cpu)
 {
     switch (isa) {
     case ISA_SSE: return (long)U * 16;
@@ -141,7 +141,11 @@ static long uop_divisor(isa_t isa, int U, const rj_cpu_info *cpu)
     case ISA_AVX512: return (long)U * 64;
     case ISA_NEON: return (long)U * 16;
     case ISA_SVE: return (long)U * sve_true_vl_bytes(cpu);
-    case ISA_RVV: return (long)U * 16; /* NOMVL */
+    /* RVV: the backend normalizes uops_per_byte to U*NOMVL*lmul
+     * nominal bytes (src/riscv/jit.c), so the divisor must scale by
+     * the candidate's lmul (0 = 1); omitting it under-converts every
+     * lmul>1 twin (X1: model 33 vs emitter 8 at U=1 lmul=4). */
+    case ISA_RVV: return (long)U * 16 * (lmul ? lmul : 1); /* NOMVL */
     default: return (long)U * 16;
     }
 }
@@ -240,9 +244,9 @@ static int test_whitebox(const rj_cpu_info *cpu)
          * twin's uops_per_byte must equal the scheduled model's
          * notail-aware prediction exactly: on x86/AArch64 the notail
          * twin omits only the uncounted scalar tail, while on RVV it
-         * emits just the single nu=U body (not the triple emission),
+         * emits just the single nu=U body (not the double emission),
          * which the model's notail=1 accounts for. */
-        long div = uop_divisor(out[i].isa, out[i].U, cpu);
+        long div = uop_divisor(out[i].isa, out[i].U, out[i].lmul, cpu);
         long ps = xorsched_version_uops(pl.xor_sched, &pl, out[i].isa,
                                         out[i].U, 1, 0, 1);
         long es = (long)(v.uops_per_byte * div + 0.5);
