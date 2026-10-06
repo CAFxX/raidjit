@@ -7,10 +7,11 @@
  *      multi-group lengths, plus one aligned non-zero-start case. A wrong
  *      candidate fails compilation -- it must never win on speed.
  *   2. Timing: several working-set sizes (bench_bytes/4, bench_bytes,
- *      bench_bytes*4, clamped), warm-up calls, then interleaved rounds
- *      (round-robin over candidates) so thermal/frequency drift cannot
- *      favor early candidates. Median per (candidate, size); the score is
- *      total time across sizes.
+ *      bench_bytes*4, clamped), time-budgeted warm-up calls (20ms:
+ *      page faults, i-cache/uop-cache fill, DVFS ramp), then interleaved
+ *      rounds (round-robin over candidates) so thermal/frequency drift
+ *      cannot favor early candidates. Median per (candidate, size); the
+ *      score is total time across sizes.
  *   3. Selection: select_by_time on the scores -- only candidates within
  *      max(1.5%, measured noise) of the best score are eligible; the noise
  *      estimate is the pooled (median over candidates of median-over-sizes)
@@ -261,10 +262,19 @@ int validate_versions(version_t *vs, int nv, const plan_t *pl,
     return rc;
 }
 
-/* Warm-up calls: fault in pages, fill i-cache/uop-cache for this version. */
+/* Warm-up calls: fault in pages, fill i-cache/uop-cache for this version,
+ * and ramp DVFS before timing starts. Time-budgeted (20ms): a fixed 3
+ * calls are thin for DVFS ramp (frequency can still be climbing during
+ * the first timed rounds), and a fixed count can't adapt to per-call
+ * cost -- 3 calls at 16 MiB touch far more than 3 at 4 KiB. Always at
+ * least 3 calls (page faults, caches), then until 20ms elapse. */
+#define WARMUP_BUDGET_SEC 0.020
 static void warm_version(version_t *v, void **in, void **out, size_t bytes)
 {
+    double t0 = now_sec();
     for (int i = 0; i < 3; i++)
+        v->fn((const void **)in, out, bytes);
+    while (now_sec() - t0 < WARMUP_BUDGET_SEC)
         v->fn((const void **)in, out, bytes);
 }
 
