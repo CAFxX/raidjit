@@ -109,6 +109,10 @@ typedef struct {
     int vlmul; /* vtype LMUL enum (VLMUL_M1/M2/M4/M8) for vsetvli */
     int vd0; /* first per-lane data group head */
     int vd1; /* XOR-schedule 2nd temp (P_XOR xorsched twin only) */
+    /* Software-pipelined loop twin (track I8, cand->pipe): physical
+     * head of the Dn dataset (U*lmult regs). D is vd0 itself (reused);
+     * Dn holds column 0 of the next iteration. -1 when pipe is off. */
+    int pipe_dn;
     int tlo, thi, r1, r2, tbl_lo, tbl_hi, mask;
     int r3;    /* Zvbc path 3rd carryless temp (q needs lo/hi live) */
     int cvec;  /* Zvbc path: broadcast GF coefficient (per row for
@@ -461,6 +465,193 @@ static void c_ldtab1(cg_t *cg, int vd, int kind, uint8_t c, int win)
         em_vsetvli(e, X0, T5, VSEW8, cg->vlmul, 1, 1);
     cg->uops += win ? 5 : 2;
     cg->mem += NOMVL;
+}
+
+/* ---------------- software-pipelined loop (track I8) ---------------- */
+
+static void gen_body(cg_t *cg, int nu, int win);
+static void mulacc_rows_c(cg_t *cg, int col, int n_in, const int *first_col,
+                          uint8_t c, int nu);
+
+/* Columns whose input data the pipe body stages: P_MULACC stages only
+ * columns with a nonzero coefficient somewhere (dead columns are
+ * skipped, mirroring gen_body); P_HORNER stages every input column.
+ * Returns the count (0 for degenerate plans: no loads to pipeline). */
+static int pipe_used_columns(cg_t *cg, int *cols)
+{
+    const plan_t *pl = cg->pl;
+    int ncols = 0;
+    if (pl->kind == P_MULACC) {
+        for (int i = 0; i < pl->n_in; i++) {
+            int any = 0;
+            for (int j = 0; j < pl->n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)pl->n_in + (size_t)i]) {
+                    any = 1;
+                    break;
+                }
+            if (any)
+                cols[ncols++] = i;
+        }
+    } else { /* P_HORNER */
+        for (int i = 0; i < pl->n_in; i++)
+            cols[ncols++] = i;
+    }
+    return ncols;
+}
+
+/* Load U lanes of input column col at byte offset off_reg into the
+ * dataset at physical head dst_head. off_reg is T1 (current offset) or
+ * T5 (next offset = T1+A3). NOTE: c_ldptr uses T5 as scratch only on
+ * the idx*8 >= 2048 path; cols < RJ_MAX_DISKS <= 256 keeps idx*8 <
+ * 2048, so T5 survives as off_reg. */
+static void pipe_load_column(cg_t *cg, int col, int dst_head, int off_reg)
+{
+    em_t *e = &cg->em;
+    c_ldptr(cg, T2, A0, col);
+    em_add(e, T2, T2, off_reg);
+    c_prefetch_in(cg, T2);
+    for (int u = 0; u < cg->U; u++) {
+        c_vle(cg, dst_head + u * cg->lmul, T2);
+        if (u < cg->U - 1)
+            em_add(e, T2, T2, T0);
+    }
+}
+
+/* One HORNER column's compute from the staged dataset (pipe twin).
+ * The caller rebinds cg->vd0 to the dataset's physical head. Mirrors
+ * gen_body's P_HORNER nibble path (non-remat, non-zvbc; both are
+ * rejected for the pipe twin). Main loop only (nu == U, win == 0). */
+static void pipe_horner_compute(cg_t *cg, int col, int nu)
+{
+    const plan_t *pl = cg->pl;
+    int n_out = pl->n_out, U = cg->U;
+    assert(nu == U);
+    if (col == 0) {
+        /* acc = d0: plain moves from the staged dataset */
+        for (int j = 0; j < n_out; j++)
+            for (int u = 0; u < nu; u++)
+                c_vmv(cg, (j * U + u) * cg->lmul,
+                      cg->vd0 + u * cg->lmul);
+        return;
+    }
+    for (int j = 0; j < n_out; j++) {
+        uint8_t c = pl->horner_c[j];
+        for (int u = 0; u < nu; u++) {
+            int acc = (j * U + u) * cg->lmul, vd = cg->vd0 + u * cg->lmul;
+            if (c == 1) {
+                c_vxor(cg, acc, acc, vd);
+            } else if (c == 0) {
+                c_vmv(cg, acc, vd);
+            } else {
+                c_vand(cg, cg->tlo, acc, cg->mask);
+                c_vsrl4(cg, cg->thi, acc);
+                assert(cg->hreg[2 * j] >= 0 &&
+                       cg->hreg[2 * j + 1] >= 0);
+                c_vrg(cg, cg->r1, cg->hreg[2 * j], cg->tlo);
+                c_vrg(cg, cg->r2, cg->hreg[2 * j + 1], cg->thi);
+                c_vxor(cg, cg->r1, cg->r1, cg->r2);
+                c_vxor(cg, acc, cg->r1, vd);
+            }
+        }
+    }
+}
+
+/* Software-pipelined (double-buffered) loop body (track I8, pipe twin).
+ *
+ * Per-column double buffering: D is the vd0 dataset (U group heads,
+ * reused), Dn is the pipe_dn dataset (U group heads) holding column 0
+ * of the next iteration. Per (iter, cidx):
+ *   - compute(cols[cidx], iter) from (cidx == 0 ? Dn : D), via a
+ *     temporary cg->vd0 rebind (mulacc_rows_c / pipe_horner_compute
+ *     read the dataset through cg->vd0). Dn holds (cols[0], iter):
+ *     the prologue for iter == 0, the boundary load of the previous
+ *     iteration otherwise.
+ *   - then, if cidx+1 < ncols: load(cols[cidx+1], iter) -> D at T1;
+ *     else (last column): if A4 > 1 (a full next iteration exists):
+ *     load(cols[0], iter+1) -> Dn at T5 = T1+A3. The guard keeps the
+ *     load in-bounds; the last iteration would otherwise over-read up
+ *     to group bytes into/past the tail.
+ * Every issued load is consumed by the next column step's compute, so
+ * the pipeline drains naturally; the "epilogue" is the final
+ * iteration's stores. ncols == 0 falls back to gen_body. */
+static void gen_body_pipe(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_in = pl->n_in, n_out = pl->n_out, U = cg->U;
+    assert(cg->cand.pipe);
+    assert(pl->kind == P_MULACC || pl->kind == P_HORNER);
+    assert(!cg->cand.remat && !cg->zvbc);
+
+    int cols[RJ_MAX_DISKS];
+    int ncols = pipe_used_columns(cg, cols);
+    if (ncols == 0) {
+        gen_body(cg, U, 0); /* degenerate: no loads to pipeline */
+        return;
+    }
+
+    int first_col[RJ_MAX_DISKS];
+    if (pl->kind == P_MULACC) {
+        for (int j = 0; j < n_out; j++) {
+            first_col[j] = -1;
+            for (int i = 0; i < n_in; i++)
+                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
+                    first_col[j] = i;
+                    break;
+                }
+            if (first_col[j] < 0)
+                for (int u = 0; u < U; u++)
+                    c_vzero(cg, (j * U + u) * cg->lmul);
+        }
+    }
+
+    for (int cidx = 0; cidx < ncols; cidx++) {
+        int col = cols[cidx];
+        /* compute column col from the staged dataset */
+        int save_vd0 = cg->vd0;
+        cg->vd0 = (cidx == 0) ? cg->pipe_dn : save_vd0;
+        if (pl->kind == P_MULACC) {
+            mulacc_rows_c(cg, col, n_in, first_col, 1, U);
+            uint8_t seen[256] = { 0 };
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c =
+                    pl->mat[(size_t)j * (size_t)n_in + (size_t)col];
+                if (c < 2 || seen[c])
+                    continue;
+                seen[c] = 1;
+                if (!cg->hoist_tables)
+                    c_ldtab(cg, c, 0);
+                mulacc_rows_c(cg, col, n_in, first_col, c, U);
+            }
+        } else {
+            pipe_horner_compute(cg, col, U);
+        }
+        cg->vd0 = save_vd0;
+        /* issue the next loads into the other dataset */
+        if (cidx + 1 < ncols) {
+            pipe_load_column(cg, cols[cidx + 1], cg->vd0, T1);
+        } else {
+            /* boundary: (cols[0], iter+1) -> Dn at T1+A3, iff a full
+             * next iteration exists (A4 = N - iter > 1). */
+            int skip = em_label(e);
+            em_addi(e, T5, A4, -1);
+            em_beq(e, T5, X0, skip);
+            em_add(e, T5, T1, A3); /* T5 = next offset */
+            pipe_load_column(cg, cols[0], cg->pipe_dn, T5);
+            em_bind(e, skip);
+        }
+    }
+
+    /* stores (mirrors gen_body's store loop) */
+    for (int j = 0; j < n_out; j++) {
+        c_ldptr(cg, T2, A1, j);
+        em_add(e, T2, T2, T1);
+        for (int u = 0; u < U; u++) {
+            c_vse(cg, (j * U + u) * cg->lmul, T2);
+            if (u < U - 1)
+                em_add(e, T2, T2, T0);
+        }
+    }
 }
 
 /* ---------------- codegen ---------------- */
@@ -1058,9 +1249,25 @@ static void gen_function(cg_t *cg)
          * empty-loop branch at done since the remainder path (and its
          * loop_lab) is not emitted. */
         c_beq_long(cg, A4, X0, cg->notail ? done_lab : loop_lab);
+        /* Pipe prologue (track I8): issue the first iteration's
+         * first-column loads into Dn. After the empty-loop branch
+         * (N >= 1), before the loop label; T1 == 0 here. Uncounted:
+         * prologue setup is not per-iteration work. */
+        if (cg->cand.pipe) {
+            int cols[RJ_MAX_DISKS];
+            if (pipe_used_columns(cg, cols) > 0) {
+                double su = cg->uops, sm = cg->mem;
+                pipe_load_column(cg, cols[0], cg->pipe_dn, T1);
+                cg->uops = su;
+                cg->mem = sm;
+            }
+        }
         em_align(e, al);
         em_bind(e, cnt_lab);
-        gen_body(cg, U, 0);
+        if (cg->cand.pipe)
+            gen_body_pipe(cg);
+        else
+            gen_body(cg, U, 0);
         em_add(e, T1, T1, A3);            /* offset += group */
         em_addi(e, A4, A4, -1);           /* niter-- */
         c_bne_long(cg, A4, X0, cnt_lab);  /* spans the body */
@@ -1138,6 +1345,18 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     /* The planner never generates remat twins for other plan kinds, and
      * the backend only implements remat for P_HORNER. */
     assert(!(cand->remat && pl->kind != P_HORNER));
+    /* Software-pipelined loop twin (track I8): implemented for the
+     * P_MULACC/P_HORNER nibble bodies only (non-remat). Anything else
+     * fails the build cleanly -- never wrong code; the planner only
+     * enumerates the supported combinations. */
+    if (cand->pipe &&
+        ((pl->kind != P_MULACC && pl->kind != P_HORNER) ||
+         cand->mul != MUL_NIBBLE || cand->remat)) {
+        snprintf(err, errlen,
+                 "riscv backend: pipe twin needs P_MULACC/P_HORNER "
+                 "nibble, non-remat");
+        return -1;
+    }
 
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
@@ -1240,7 +1459,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         }
         int want_regs = cand->xorsched ? xorsched_need_regs(ISA_RVV, pl, U)
                                        : plan_need_regs(ISA_RVV, cand->mul,
-                                                       pl, U, cand->remat);
+                                                       pl, U, cand->remat, cand->pipe);
         assert(vneed == want_regs * L);
     } else if (pl->kind == P_HORNER) {
         cg.vd0 = n_out * U * L; /* U data group heads */
@@ -1279,7 +1498,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 cg.hreg[2 * j + 1] = -1;
             }
         } else {
-            cg.tlo = cg.vd0 + U * L;
+            /* Pipe twin (track I8): the Dn dataset (U group heads)
+             * sits between vd0/D and the temps. */
+            if (cand->pipe)
+                cg.pipe_dn = cg.vd0 + U * L;
+            else
+                cg.pipe_dn = -1;
+            cg.tlo = (cand->pipe ? cg.pipe_dn : cg.vd0) + U * L;
             cg.thi = cg.tlo + L;
             cg.r1 = cg.thi + L;
             cg.r2 = cg.r1 + L;
@@ -1327,7 +1552,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             free(cg.hreg);
             return -1;
         }
-        assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) * L);
+        assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) * L);
     } else { /* P_MULACC / P_DELTA */
         cg.vd0 = n_out * U * L; /* U data group heads */
         if (cg.zvbc && plan_any_nontrivial(pl)) {
@@ -1354,7 +1579,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(vneed ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
                        L);
         } else if (cg.zvbc) {
             /* All-trivial coefficients: no multiplies, no kvec/cvec.
@@ -1373,10 +1598,16 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(vneed ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
                        L);
         } else if (cg.need_mask) {
-            cg.tlo = cg.vd0 + U * L;
+            /* Pipe twin (track I8): the Dn dataset (U group heads)
+             * sits between vd0/D and the temps. */
+            if (cand->pipe)
+                cg.pipe_dn = cg.vd0 + U * L;
+            else
+                cg.pipe_dn = -1;
+            cg.tlo = (cand->pipe ? cg.pipe_dn : cg.vd0) + U * L;
             cg.thi = cg.tlo + L;
             cg.r1 = cg.thi + L;
             cg.r2 = cg.r1 + L;
@@ -1416,7 +1647,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(cg.mask + L ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
                        L);
         } else if (pl->kind == P_DELTA) {
             /* All-{0,1} delta matrix: the nibble tables, r1/r2 and the
@@ -1432,7 +1663,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(cg.thi + L ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
                        L);
         } else {
             /* P_MULACC with all-{0,1} coefficients is unreachable from
@@ -1445,7 +1676,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(cg.vd0 + U * L ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
                        L);
         }
     }
@@ -1532,11 +1763,12 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->nt ? "+nt" : "", cg.emit_pf ? "+pf" : "",
                  cand->notail ? " notail" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+%s U=%d%s%s%s%s%s",
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+%s U=%d%s%s%s%s%s%s",
                  pl->name, strat, isa_name(cand->isa),
                  cg.zvbc ? "zbc" : "nibble", cand->U, lmuls,
                  cand->remat ? "+remat" : "", cand->nt ? "+nt" : "",
                  cg.emit_pf ? "+pf" : "",
+                 cand->pipe ? "+pipe" : "",
                  cand->notail ? " notail" : "");
 
     free(buf);

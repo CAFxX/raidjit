@@ -55,7 +55,8 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
-        $(BUILDDIR)/test_recover_closedform
+        $(BUILDDIR)/test_recover_closedform \
+        $(BUILDDIR)/test_pipe
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -102,6 +103,7 @@ _test-qemu-aarch64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_correct
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_matrix
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_remat
+	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_pipe
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_shape
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_dispatch
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max,sve-default-vector-length=256 ./$(BUILDDIR)/test_dispatch
@@ -194,6 +196,9 @@ _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_riscv_remat
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_riscv_remat
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_riscv_remat
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pipe
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_pipe
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_pipe
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_riscv_prefetch
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_riscv_prefetch
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_riscv_prefetch
@@ -325,6 +330,7 @@ endif
 	./$(BUILDDIR)/test_traps
 	./$(BUILDDIR)/test_planner_fuzz
 	./$(BUILDDIR)/test_recover_closedform
+	./$(BUILDDIR)/test_pipe
 
 # Sanitizer build: all tests under ASan+UBSan (leaks, OOB, UB).
 test-asan: clean
@@ -518,3 +524,6 @@ $(BUILDDIR)/test_planner_fuzz: tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.
 
 $(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_pipe: tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

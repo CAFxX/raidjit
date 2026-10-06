@@ -28,14 +28,15 @@ Version B (plain, `ternlog=0`) is pruned iff there exists a version A
 1. **Twin pair**: `A.cand.ternlog == 1`, `B.cand.ternlog == 0`, and
    `A`/`B` agree on every other candidate axis: plan kind, `isa`,
    `mul`, `U`, `nt`, `prefetch_dist`, `remat`, `notail`, `predtail`,
-   `maskedtail`, `permi2b`, `xorsched`, `xorbit`, `lmul`. Compared
-   field-by-field (not `memcmp`: struct padding is not guaranteed
-   zeroed). Every new candidate axis must be pinned here -- an
-   unpinned axis lets a cross-axis pair (e.g. `(xorbit=1,ternlog=1)`
-   vs `(xorbit=0,ternlog=0)`, different codegen shapes) form a pruning
-   pair. The rule NEVER fires across plan kinds, across U, across NT,
-   across ISA/mul, across prefetch distance, across remat, or in the
-   reverse direction (plain pruning a twin).
+   `maskedtail`, `permi2b`, `xorsched`, `xorbit`, `mshift`, `pipe`,
+   `lmul`. Compared field-by-field (not `memcmp`: struct padding is
+   not guaranteed zeroed). Every new candidate axis must be pinned
+   here -- an unpinned axis lets a cross-axis pair (e.g.
+   `(xorbit=1,ternlog=1)` vs `(xorbit=0,ternlog=0)`, different codegen
+   shapes) form a pruning pair. The rule NEVER fires across plan kinds,
+   across U, across NT, across ISA/mul, across prefetch distance, across
+   remat, across mshift, across pipe, or in the reverse direction (plain
+   pruning a twin).
 2. **Plan-kind guard**: the pair's plan kind is P_MULACC or P_DELTA --
    the only kinds where the twin direction is validated. Enforced by
    code in `twin_dominates()`, not by the triple values: if the model

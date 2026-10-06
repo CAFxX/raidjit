@@ -205,7 +205,12 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * I2): an (mshift=1,ternlog=1)/(mshift=0,ternlog=0) pair must never
      * satisfy the twin relation on the checked axes -- the multishift
      * split is a different codegen shape (VPMULTISHIFTQB vs VPSRLW),
-     * not a multiply twin. Behavior-preserving for
+     * not a multiply twin. pipe is pinned (track I8): an (pipe=1,
+     * ternlog=1)/(pipe=0,ternlog=0) pair must never satisfy the twin
+     * relation on the checked axes -- the software-pipelined loop is a
+     * different codegen shape (double-buffered D/Dn datasets with
+     * prologue/steady-state load scheduling), not a multiply twin.
+     * Behavior-preserving for
      * the other axes today: all in-list candidates have
      * notail=0/predtail=0/maskedtail=0, and P_XOR pairs are refused by
      * the kind guard anyway. */
@@ -222,6 +227,7 @@ static int twin_dominates(const version_t *a, const version_t *b,
         a->cand.xorsched != b->cand.xorsched ||
         a->cand.xorbit != b->cand.xorbit ||
         a->cand.mshift != b->cand.mshift ||
+        a->cand.pipe != b->cand.pipe ||
         a->cand.lmul != b->cand.lmul)
         return 0;
 

@@ -80,7 +80,8 @@ int plan_any_nontrivial(const plan_t *pl)
     return 0; /* P_XOR: all-{0,1} by construction */
 }
 
-int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat)
+int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
+                   int pipe)
 {
     int n_out = pl->n_out;
     if (isa == ISA_PEXT) {
@@ -89,6 +90,51 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat)
          * silently falling through to the RVV formula below. */
         assert(!"plan_need_regs: no PEXT backend");
         return INT_MAX;
+    }
+    if (pipe) {
+        /* Software-pipelined loop shape (track I8, cand_t.pipe): the
+         * per-column double-buffered datasets D/Dn (2*U registers)
+         * replace the single input temp t, so the pipelined shape
+         * needs 2*U-1 more registers than the plain shape on
+         * AArch64/x86-64 (which reload the input per row) and U more
+         * on RVV (whose vd0 staging set is reused as D). Supported
+         * only for P_MULACC/P_HORNER x MUL_NIBBLE without remat: every
+         * other combination is rejected cleanly by the backends, and
+         * INT_MAX here keeps the planner's filter from admitting them.
+         * The formulas below are exact for the pipelined register
+         * assignment in each backend's compute_regs (asserted there),
+         * same proof standard as the plain shapes. */
+        if (pl->kind != P_MULACC && pl->kind != P_HORNER)
+            return INT_MAX;
+        if (mul != MUL_NIBBLE || remat)
+            return INT_MAX;
+        int x86 = (isa == ISA_SSE || isa == ISA_AVX2 || isa == ISA_AVX512);
+        int a64 = (isa == ISA_NEON || isa == ISA_SVE);
+        if (x86) {
+            /* accs (n_out*U) + D,Dn (2*U) + tlo,thi,r1,r2,mask (5);
+             * MULACC adds the tbl scratch (6); HORNER compacts 2 hreg
+             * per nontrivial row instead (tables from hreg). The
+             * single t temp is dead (replaced by D/Dn). */
+            if (pl->kind == P_HORNER)
+                return (n_out + 2) * U + 5 + 2 * horner_ntriv(pl);
+            return (n_out + 2) * U + 6;
+        }
+        if (a64) {
+            /* accs (n_out*U) + D,Dn (2*U) + tlo,thi,r1,r2 (4) +
+             * tbl_lo,tbl_hi,mask (3); HORNER uses tlo,thi,r2,mask (4,
+             * no r1: the staged dataset feeds the input directly) and
+             * compacts 2 hreg per nontrivial row. */
+            if (pl->kind == P_HORNER)
+                return (n_out + 2) * U + 4 + 2 * horner_ntriv(pl);
+            return (n_out + 2) * U + 7;
+        }
+        /* RVV: accs (n_out*U) + vd0/D (U) + Dn (U) + tlo,thi,r1,r2,
+         * tbl_lo,tbl_hi,mask (7); HORNER: tlo,thi,r1,r2,mask (5) +
+         * 2 hreg per nontrivial row. Logical registers; the caller
+         * scales by lmul. */
+        if (pl->kind == P_HORNER)
+            return (n_out + 2) * U + 5 + 2 * horner_ntriv(pl);
+        return (n_out + 2) * U + 7;
     }
     if (pl->kind == P_XOR)
         /* accumulators + one load temp (cg->t / vd0) */
@@ -707,7 +753,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int nU = 8;
             for (int ui = 0; ui < nU && n < maxout; ui++) {
                 int U = Us[ui];
-                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0);
+                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0);
                 if (need > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
@@ -721,9 +767,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int ui = 0; ui < nU && n < maxout; ui++) {
                     int U = Us[ui];
                     int need_normal =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0);
                     int need_remat =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0);
                     if (need_normal <= nregs)
                         continue;
                     if (need_remat > nregs)
@@ -774,7 +820,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int li = 0; li < 4 && n < maxout; li++) {
                     int U = Us[ui];
                     int lmul = lmuls[li];
-                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0) *
+                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0) *
                                lmul;
                     if (need > nregs)
                         continue;
@@ -797,10 +843,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                         int U = Us[ui];
                         int lmul = lmuls[li];
                         int need_normal =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0) *
                             lmul;
                         int need_remat =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0) *
                             lmul;
                         if (need_normal <= nregs)
                             continue;
@@ -839,7 +885,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         if (pl->kind == P_XOR) {
             for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                 int U = Us[ui];
-                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0) > nregs)
+                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0) > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
             }
@@ -863,7 +909,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     /* Exact backend register need (accumulators n_out*U
                      * plus the backend's temp/table registers); see
                      * plan_need_regs. */
-                    int need = plan_need_regs(isa, muls[mi], pl, U, 0);
+                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0);
                     if (need > nregs)
                         continue;
                     out[n++] = (cand_t){.isa = isa, .mul = muls[mi], .U = U};
@@ -885,9 +931,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                         int U = Us[ui];
                         int need_normal =
-                            plan_need_regs(isa, muls[mi], pl, U, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 0, 0);
                         int need_remat =
-                            plan_need_regs(isa, muls[mi], pl, U, 1);
+                            plan_need_regs(isa, muls[mi], pl, U, 1, 0);
                         if (need_normal <= nregs)
                             continue; /* normal already fits; remat pointless */
                         if (need_remat > nregs)
@@ -1054,7 +1100,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             /* Pressure filter: the twin needs one more live register
              * (the multishift control) than plan_need_regs models; keep
              * the +1 in lockstep with jit_build_version's want_regs. */
-            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0) + 1 >
+            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0) + 1 >
                 isa_nregs(ISA_AVX512))
                 continue;
             /* Static uop gate (per (i,u) split): the multishift split
@@ -1077,6 +1123,61 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
      * families. This is ISA-independent. */
     if (pl->noop)
         return n;
+    /* Software-pipelined (double-buffered) loop twin (track I8): the
+     * prologue issues the first iteration's first-column loads; the
+     * steady state overlaps the next iteration's loads with the current
+     * iteration's XOR/GF chain via the per-column double-buffered
+     * datasets D/Dn. Enumerated per fitting base candidate only where
+     * the conservative static model predicts a win AND the doubled live
+     * set fits the register file:
+     *  - ISA gate: NEON/SVE/RVV only. These have exposed load-use
+     *    latency (in-order or short OoO windows on the vector side);
+     *    x86-64's deep OoO hides it (brainstorm §8: "near-zero on
+     *    x86-64"). The x86-64 backend implements the pipelined shape
+     *    and it is differentially tested, but this gate stays closed
+     *    there pending quiet-box benchmarks -- the same closed-gate
+     *    pattern as the mshift twin above.
+     *  - kind/mul gate: P_MULACC/P_HORNER x MUL_NIBBLE (the GF kernels
+     *    where load-use latency matters; brainstorm §8 scopes the win
+     *    to HORNER/MULACC). Never combined with ternlog/permi2b/remat/
+     *    xorsched/xorbit/mshift (different bodies).
+     *  - register fit: plan_need_regs(..., pipe=1) -- exact for the
+     *    pipelined shape (the backends assert their assignment against
+     *    it) -- scaled by lmul on RVV, must fit isa_nregs(isa). On
+     *    16-reg NEON this admits only small (n_out, U); larger shapes
+     *    are gated off rather than spilling.
+     * Benchmarks are postponed: the twin is enumerated conservatively
+     * and the empirical selection happens on the quiet box. The
+     * NT/prefetch twin loops below see these and twin them
+     * automatically. Pinned in prune.c's twin_dominates like every
+     * other axis. */
+    if (pl->kind == P_MULACC || pl->kind == P_HORNER) {
+        int ntemp = n;
+        for (int i = 0; i < ntemp && n < maxout; i++) {
+            isa_t isa = out[i].isa;
+            if (isa != ISA_NEON && isa != ISA_SVE && isa != ISA_RVV)
+                continue;
+            if (out[i].mul != MUL_NIBBLE)
+                continue;
+            if (out[i].ternlog || out[i].permi2b || out[i].remat ||
+                out[i].xorsched || out[i].xorbit || out[i].mshift ||
+                out[i].pipe)
+                continue;
+            /* RVV: plan_need_regs counts logical registers; the twin
+             * inherits out[i].lmul, so scale to physical.
+             * lmul=0 (zero-initialized) means 1. */
+            int lmul = 1;
+            if (isa == ISA_RVV && out[i].lmul)
+                lmul = out[i].lmul;
+            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1) *
+                    lmul >
+                isa_nregs(isa))
+                continue;
+            out[n] = out[i];
+            out[n].pipe = 1;
+            n++;
+        }
+    }
     if (allow_nt) {
         /* NT twins after the temporal originals (see plan.h). NT stores
          * only make sense for streaming output; the benchmark decides

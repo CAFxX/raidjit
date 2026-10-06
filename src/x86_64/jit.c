@@ -53,6 +53,11 @@ typedef struct {
      * regs, and the 0x01 extract mask. Assigned as n_out*U + {0..3}
      * (see xorbit_need_regs); the nibble tables are dead on this path. */
     int xbt_in, xbt_r1, xbt_r2, xbt_mask;
+    /* Software-pipelined loop twin (track I8, cand->pipe): base vector
+     * regs of the per-column double-buffered datasets D (pipe_d, U
+     * regs) and Dn (pipe_dn, U regs). In pipe mode the single input
+     * temp t is dead (replaced by D/Dn). -1 when pipe is off. */
+    int pipe_d, pipe_dn;
     /* MULACC/DELTA GFNI table-load dedup (pure JIT-time state): the affine
      * table in tbl depends only on the coefficient c = mat[j][i], so it is
      * loop-invariant across the u-loop and across input columns i; nothing
@@ -1402,6 +1407,177 @@ static void gen_body(cg_t *cg)
     }
 }
 
+/* ---------------- software-pipelined loop (track I8) ---------------- */
+
+/* Columns whose input data the pipe body stages: P_MULACC stages only
+ * columns with a nonzero coefficient somewhere (dead columns are
+ * skipped, mirroring gen_body); P_HORNER stages every input column.
+ * Returns the count (0 for degenerate plans: no loads to pipeline). */
+static int pipe_used_columns(cg_t *cg, int *cols)
+{
+    const plan_t *pl = cg->pl;
+    int ncols = 0;
+    if (pl->kind == P_MULACC) {
+        for (int i = 0; i < pl->n_in; i++) {
+            int any, neednib;
+            mulacc_col_info(pl, i, pl->n_in, &any, &neednib);
+            if (any)
+                cols[ncols++] = i;
+        }
+    } else { /* P_HORNER */
+        for (int i = 0; i < pl->n_in; i++)
+            cols[ncols++] = i;
+    }
+    return ncols;
+}
+
+/* Pipe prologue: issue the first iteration's first-column loads into
+ * Dn. Runs after the len<group branch (a full group fits), before the
+ * loop label; R11 == 0 here. Uncounted: prologue setup is not
+ * per-iteration work. */
+static void gen_pipe_prologue(cg_t *cg, int col0)
+{
+    int vl = cg->vl;
+    double save_uops = cg->uops, save_mem = cg->mem;
+    int pr = body_inptr(cg, col0, R10);
+    for (int u = 0; u < cg->U; u++)
+        c_ld(cg, cg->pipe_dn + u, pr, R11, 0, u * vl);
+    cg->uops = save_uops;
+    cg->mem = save_mem;
+}
+
+/* One HORNER column's compute from the staged dataset (pipe twin).
+ * Mirrors gen_body's P_HORNER nibble path with the input lanes in
+ * [data, data+U) instead of freshly loaded t (non-remat, non-GFNI;
+ * both are rejected for the pipe twin). */
+static void pipe_horner_compute(cg_t *cg, int col, int data)
+{
+    const plan_t *pl = cg->pl;
+    int n_out = pl->n_out, U = cg->U;
+    assert(!cg->cand.remat);
+    for (int u = 0; u < U; u++) {
+        if (col == 0) {
+            /* acc = d0: plain moves from the staged dataset */
+            for (int j = 0; j < n_out; j++)
+                c_vmov(cg, j * U + u, data + u);
+            continue;
+        }
+        for (int j = 0; j < n_out; j++) {
+            uint8_t c = pl->horner_c[j];
+            int acc = j * U + u;
+            if (c == 1) {
+                c_vpxor(cg, acc, acc, data + u);
+            } else if (c == 0) {
+                c_vmov(cg, acc, data + u);
+            } else {
+                nibble_split(cg, cg->tlo, cg->thi, acc);
+                c_shuf(cg, cg->r1, cg->hreg[2 * j], cg->tlo);
+                c_shuf(cg, cg->r2, cg->hreg[2 * j + 1], cg->thi);
+                c_vpxor(cg, acc, cg->r1, cg->r2);
+                c_vpxor(cg, acc, acc, data + u);
+            }
+        }
+    }
+}
+
+/* Software-pipelined (double-buffered) loop body (track I8, pipe twin).
+ *
+ * Per-column double buffering over the D/Dn datasets (U regs each):
+ *   - compute(cols[cidx], iter) reads (cidx == 0 ? Dn : D). Dn holds
+ *     (cols[0], iter): the prologue for iter == 0, the boundary load
+ *     of the previous iteration otherwise. mulacc_column reads the
+ *     input through cg->t, so the per-u loop rebinds cg->t to the
+ *     dataset lane (restored after the column).
+ *   - then, if cidx+1 < ncols: load(cols[cidx+1], iter) -> D at R11;
+ *     else (last column): if R11+group <= rax (a full next iteration
+ *     exists): load(cols[0], iter+1) -> Dn at RDX = R11+group. The
+ *     guard is exact (compare-based loop has no trip counter) and
+ *     keeps the load in-bounds; the last iteration would otherwise
+ *     over-read up to group bytes into/past the tail. RDX doubles as
+ *     the next-offset index register (free in the pipe MULACC/HORNER
+ *     bodies; P_DELTA, its other user, is excluded from pipe).
+ *     The boundary load skips the software prefetch: the demand load
+ *     is already issued a full iteration early, so a prefetch would
+ *     only add uops.
+ * Every issued load is consumed by the next column step's compute, so
+ * the pipeline drains naturally; the "epilogue" is the final
+ * iteration's stores. ncols == 0 falls back to gen_body. */
+static void gen_body_pipe(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_in = pl->n_in, n_out = pl->n_out, U = cg->U, vl = cg->vl;
+    assert(cg->cand.pipe);
+    assert(pl->kind == P_MULACC || pl->kind == P_HORNER);
+    assert(!cg->cand.remat);
+
+    int cols[RJ_MAX_DISKS];
+    int ncols = pipe_used_columns(cg, cols);
+    if (ncols == 0) {
+        gen_body(cg); /* degenerate: no loads to pipeline */
+        return;
+    }
+
+    int first_col[RJ_MAX_DISKS];
+    if (pl->kind == P_MULACC) {
+        for (int j = 0; j < n_out; j++) {
+            first_col[j] = -1;
+            for (int i = 0; i < n_in; i++)
+                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
+                    first_col[j] = i;
+                    break;
+                }
+        }
+    }
+
+    int save_t = cg->t;
+    for (int cidx = 0; cidx < ncols; cidx++) {
+        int col = cols[cidx];
+        int data = (cidx == 0) ? cg->pipe_dn : cg->pipe_d;
+        /* compute column col from the staged dataset */
+        if (pl->kind == P_MULACC) {
+            int any, neednib;
+            mulacc_col_info(pl, col, n_in, &any, &neednib);
+            for (int u = 0; u < U; u++) {
+                cg->t = data + u;
+                if (neednib)
+                    nibble_split(cg, cg->tlo, cg->thi, cg->t);
+                mulacc_column(cg, col, n_in, u, first_col);
+            }
+        } else {
+            pipe_horner_compute(cg, col, data);
+        }
+        /* issue the next loads into the other dataset */
+        if (cidx + 1 < ncols) {
+            int pr = body_inptr(cg, cols[cidx + 1], R10);
+            c_prefetch_in(cg, pr);
+            for (int u = 0; u < U; u++)
+                c_ld(cg, cg->pipe_d + u, pr, R11, 0, u * vl);
+        } else {
+            /* boundary: (cols[0], iter+1) -> Dn at R11+group, iff a
+             * full next iteration exists. */
+            int skip = em_label(e);
+            em_mov_rr(e, RDX, R11);
+            em_add_ri(e, RDX, cg->group);
+            em_cmp_rr(e, RDX, RAX);
+            em_jcc(e, CC_A, skip);
+            {
+                int pr0 = body_inptr(cg, cols[0], R10);
+                for (int u = 0; u < U; u++)
+                    c_ld(cg, cg->pipe_dn + u, pr0, RDX, 0, u * vl);
+            }
+            em_bind(e, skip);
+        }
+    }
+    cg->t = save_t;
+
+    for (int j = 0; j < n_out; j++) {
+        em_mov_rm(e, R10, R9, -1, 0, j * 8);
+        for (int u = 0; u < U; u++)
+            c_st(cg, R10, R11, 0, u * vl, j * U + u);
+    }
+}
+
 /* Scalar-tail helper: RBX ^= RDX * c (GF(2^8)); RDI/RSI = log/exp tables.
  * RDX holds the multiplicand byte on entry; RAX is scratch. */
 static void tail_mul_byte(cg_t *cg, uint8_t c)
@@ -1905,11 +2081,22 @@ static void gen_function(cg_t *cg)
          * offset == len: route the exit straight to done_lab. The tail
          * path is not emitted. */
         em_jcc(e, CC_B, cg->notail ? done_lab : tail_lab);
+        /* Pipe prologue (track I8): issue the first iteration's
+         * first-column loads. After the len<group branch (a full group
+         * fits), before the loop label; R11 == 0 here. */
+        if (cg->cand.pipe) {
+            int cols[RJ_MAX_DISKS];
+            if (pipe_used_columns(cg, cols) > 0)
+                gen_pipe_prologue(cg, cols[0]);
+        }
         int al = o->loop_align ? o->loop_align
                                : (cg->vl == 64 ? 64 : cg->vl == 32 ? 32 : 16);
         em_align(e, (unsigned)al);
         em_bind(e, loop_lab);
-        gen_body(cg);
+        if (cg->cand.pipe)
+            gen_body_pipe(cg);
+        else
+            gen_body(cg);
         em_add_ri(e, R11, cg->group); /* offset += group */
         em_cmp_rr(e, R11, RAX);       /* vs len - group */
         em_jcc(e, CC_BE, loop_lab);   /* while offset <= len - group */
@@ -1963,6 +2150,22 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
      * never generates remat twins for other plan kinds, and the backend
      * would silently ignore the flag elsewhere. */
     assert(!(cand->remat && pl->kind != P_HORNER));
+    /* Software-pipelined loop twin (track I8): implemented for the
+     * P_MULACC/P_HORNER nibble bodies only (non-remat, no other twins).
+     * Anything else fails the build cleanly -- never wrong code. The
+     * planner's ISA gate keeps pipe off x86-64 (closed pending
+     * quiet-box benchmarks); force-built here for differential
+     * testing. */
+    if (cand->pipe &&
+        ((pl->kind != P_MULACC && pl->kind != P_HORNER) ||
+         cand->mul != MUL_NIBBLE || cand->remat || cand->xorbit ||
+         cand->xorsched || cand->permi2b || cand->mshift ||
+         cand->ternlog)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: pipe twin needs P_MULACC/P_HORNER "
+                 "nibble, non-remat, no other twins");
+        return -1;
+    }
     /* Length-dispatch tail twins are disjoint: a version is never both.
      * The masked tail needs AVX-512 (opmask registers); the vpermi2b
      * twin needs the AVX-512 MULACC/DELTA nibble path. */
@@ -2062,7 +2265,52 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     int n_out = pl->n_out, U = cand->U;
     cg.t = n_out * U;
     int vmax = cg.t; /* highest assigned vector register index */
-    if (cand->xorbit) {
+    if (cand->pipe) {
+        /* Software-pipelined shape (track I8): the D/Dn datasets (U
+         * regs each) replace the single input temp t (dead: -1).
+         * Validation below rejects unsupported combos, so only
+         * P_MULACC/P_HORNER x MUL_NIBBLE, non-remat, reach here. Must
+         * stay in lockstep with plan_need_regs' pipe formulas
+         * (asserted below). */
+        assert(pl->kind == P_MULACC || pl->kind == P_HORNER);
+        assert(cand->mul == MUL_NIBBLE && !cand->remat);
+        cg.t = -1;
+        cg.pipe_d = n_out * U;
+        cg.pipe_dn = n_out * U + U;
+        cg.tlo = n_out * U + 2 * U;
+        cg.thi = cg.tlo + 1;
+        cg.r1 = cg.tlo + 2;
+        cg.r2 = cg.tlo + 3;
+        if (pl->kind == P_MULACC) {
+            cg.tbl = cg.tlo + 4;
+            cg.mask = cg.tlo + 5;
+            vmax = cg.mask;
+        } else {
+            /* P_HORNER: tables come from hreg (hoisted); the tbl
+             * scratch is dead (remat, its only other user, is rejected
+             * for the pipe twin). Left -1 so any accidental use trips
+             * loudly. */
+            cg.tbl = -1;
+            cg.mask = cg.tlo + 4;
+            vmax = cg.mask;
+            cg.hreg = calloc((size_t)n_out * 2, sizeof(int));
+            if (!cg.hreg) {
+                snprintf(err, errlen, "out of memory");
+                return -1;
+            }
+            for (int j = 0; j < n_out * 2; j++)
+                cg.hreg[j] = -1;
+            int r = vmax + 1;
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->horner_c[j];
+                if (c == 0 || c == 1)
+                    continue;
+                cg.hreg[2 * j] = r++;
+                cg.hreg[2 * j + 1] = r++;
+            }
+            vmax = r - 1;
+        }
+    } else if (cand->xorbit) {
         /* Bit-program twin (track A1): n_out*U accumulators + input-byte
          * reg + two bit temps + 0x01 mask. The nibble tables are dead.
          * Must stay in lockstep with xorbit_need_regs. */
@@ -2083,7 +2331,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         cg.t2 = cg.t + 1;
         vmax = cg.t2;
     }
-    if (!cand->xorbit && (pl->kind == P_MULACC || pl->kind == P_DELTA)) {
+    if (!cand->pipe && !cand->xorbit &&
+        (pl->kind == P_MULACC || pl->kind == P_DELTA)) {
         if (cand->mul == MUL_NIBBLE) {
             if (cg.need_mask) {
                 cg.tlo = cg.t + 1; cg.thi = cg.t + 2; cg.r1 = cg.t + 3;
@@ -2128,7 +2377,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 vmax = cg.t;
             }
         }
-    } else if (pl->kind == P_HORNER && !cand->xorbit) {
+    } else if (!cand->pipe && pl->kind == P_HORNER && !cand->xorbit) {
         cg.hreg = calloc((size_t)n_out * 2, sizeof(int));
         if (!cg.hreg) {
             snprintf(err, errlen, "out of memory");
@@ -2193,10 +2442,20 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     int want_regs = cand->xorbit ? xorbit_need_regs(cand->isa, pl, U)
                     : cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
                                      : plan_need_regs(cand->isa, cand->mul, pl,
-                                                     U, cand->remat) +
+                                                     U, cand->remat, cand->pipe) +
                                        (cg.msh != 0 ? 1 : 0);
     assert(vmax + 1 == want_regs);
-    assert(vmax < isa_nregs(cand->isa));
+    /* Over-pressure must fail cleanly (return -1), not abort or emit
+     * code that overruns the regfile. The planner's filter normally
+     * prevents this, but force-built candidates (tests, future twins)
+     * must also be safe. */
+    if (vmax >= isa_nregs(cand->isa)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: register pressure (needs %d regs, "
+                 "isa has %d)", vmax + 1, isa_nregs(cand->isa));
+        free(cg.hreg);
+        return -1;
+    }
 
     uint8_t *buf = malloc(1 << 20);
     if (!buf) {
@@ -2256,12 +2515,12 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                                                : "mulacc";
     if (pl->kind == P_XOR)
     /* %.65s on the plan name: the provable -Wformat-truncation bound
-     * for the 192B desc (fixed suffix <= 85B: " mulacc avx512+nibble"
+     * for the 192B desc (fixed suffix <= 91B: " mulacc avx512+nibble"
      * + " U=8" + "+ternlog+nt+pf+remat" + " notail" + " maskedtail" +
-     * "+permi2b" + "+xorbit" + "+mshift"; plan names can reach 127B since
-     * the A5 "[rows ...]" suffix, capped at 65 by %.65s). 65 + 85 = 150
-     * < 192, so the bound holds with margin. */
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
+     * "+permi2b" + "+xorbit" + "+mshift" + "+pipe"; plan names can reach
+     * 127B since the A5 "[rows ...]" suffix, capped at 65 by %.65s).
+     * 65 + 91 = 156 < 192, so the bound holds with margin. */
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa), cand->U, cand->ternlog ? "+ternlog" : "",
                  cand->xorsched ? "+xsched" : "",
                  cand->xorbit ? "+xorbit" : "",
@@ -2271,9 +2530,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->notail ? " notail" : "",
                  cand->maskedtail ? " maskedtail" : "",
                  cand->permi2b ? "+permi2b" : "",
-                 cand->mshift ? "+mshift" : "");
+                 cand->mshift ? "+mshift" : "",
+                 cand->pipe ? "+pipe" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s%s", pl->name, strat,
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa),
                  cand->mul == MUL_GFNI ? "+gfni" : "+nibble", cand->U,
                  cand->ternlog ? "+ternlog" : "",
@@ -2284,7 +2544,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->notail ? " notail" : "",
                  cand->maskedtail ? " maskedtail" : "",
                  cand->permi2b ? "+permi2b" : "",
-                 cand->mshift ? "+mshift" : "");
+                 cand->mshift ? "+mshift" : "",
+                 cand->pipe ? "+pipe" : "");
 
     free(buf);
     free(cg.pool);

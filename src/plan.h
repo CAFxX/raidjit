@@ -139,6 +139,22 @@ typedef struct {
                   * instruction. Pinned in prune.c's twin_dominates like
                   * every other axis. x86/AArch64 backends reject
                   * lmul > 1. */
+    int pipe;    /* 1 = software-pipelined (double-buffered) loop twin
+                  * (track I8): the loop prologue issues the first
+                  * iteration's first-column loads; the steady state
+                  * overlaps the next iteration's loads with the current
+                  * iteration's XOR/GF chain (per-column double-buffered
+                  * datasets D/Dn); the epilogue is the final iteration's
+                  * stores (every issued load is consumed by the next
+                  * column step, so no drain is needed). Enumerated only
+                  * for P_MULACC/P_HORNER x MUL_NIBBLE on ISAs with
+                  * exposed load-use latency (NEON/SVE/RVV), only when
+                  * the static model predicts a win AND the doubled live
+                  * set fits the register file (plan_need_regs' pipe
+                  * formulas are exact for the pipelined shape). Never
+                  * combined with ternlog/permi2b/remat/xorsched/xorbit/
+                  * mshift (different bodies). Pinned in prune.c's
+                  * twin_dominates like every other axis. */
 } cand_t;
 
 typedef struct {
@@ -249,8 +265,15 @@ int isa_vl(isa_t isa); /* vector length in bytes */
  * ISAs with a single multiply method. For RVV the count is in LOGICAL
  * vector registers: the backend maps logical r to the lmul-aligned
  * physical group head r*lmul, so callers scale by cand->lmul before
- * comparing against isa_nregs(ISA_RVV). */
-int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat);
+ * comparing against isa_nregs(ISA_RVV). pipe selects the
+ * software-pipelined loop shape's formulas (track I8): the per-column
+ * double-buffered datasets D/Dn (2*U registers) replace the single
+ * input temp, so pipe shapes need more registers than their plain
+ * twins; pipe=1 with an unsupported (kind, mul, remat) combination
+ * returns INT_MAX (the backend rejects those builds cleanly, and the
+ * planner's filter drops them). */
+int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
+                   int pipe);
 
 /* Per-microarchitecture port-pressure weights for the static cost
  * model (I3). Each t_* is cycles per instruction -- the reciprocal
