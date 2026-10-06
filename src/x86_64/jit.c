@@ -23,7 +23,7 @@
 
 /* constant-pool entry kinds */
 enum { CK_NIBLO, CK_NIBHI, CK_AFF, CK_MASK, CK_LOG, CK_EXP,
-         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE };
+         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE, CK_MSHIFT };
 
 typedef struct {
     em_t em;
@@ -42,6 +42,12 @@ typedef struct {
     int ncent, ccent;
     /* register assignment */
     int t, tlo, thi, r1, r2, tbl, tbl2, t2, mask;
+    /* VPMULTISHIFTQB high-nibble control (track I2, mshift twin): the
+     * loop-invariant per-lane shift counts (byte j of each 64-bit lane
+     * holds 8*j+4). Register-resident: VPMULTISHIFTQB's control is
+     * EVEX.vvvv with no memory form. Allocated only when
+     * cand->mshift && need_mask (0 = unallocated). */
+    int msh;
     int *hreg; /* HORNER: 2 regs per row (nibble) or 1 (gfni), -1 if unused */
     /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
      * regs, and the 0x01 extract mask. Assigned as n_out*U + {0..3}
@@ -187,6 +193,17 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
          * (xorbit) emitter's ((in_i >> k) & 1) materialization. */
         memset(tmp, 0x01, (size_t)cg->vl);
         len = (size_t)cg->vl;
+    } else if (kind == CK_MSHIFT) {
+        /* VPMULTISHIFTQB high-nibble control (track I2): per 64-bit lane,
+         * byte j holds the shift count 8*j+4, so output byte k (lane
+         * q, lane-relative j = k-8q) is {(t[k+1] & 0x0F), (t[k] >> 4)}:
+         * bits [8j+11:8j+4] of the lane. The trailing 0x0F AND stays
+         * (bits [7:4] carry the neighbor nibble; VPSHUFB zeroes its lane
+         * when the index bit 7 is set). One entry serves every vl (the
+         * 8-byte lane pattern repeats). */
+        for (int r = 0; r < cg->vl / 8; r++)
+            for (int j = 0; j < 8; j++)
+                tmp[len++] = (uint8_t)(8 * j + 4);
     } else if (kind == CK_LOG) {
         memcpy(tmp, cg->logtab, 256);
         len = 256;
@@ -407,6 +424,34 @@ static void c_srlw(cg_t *cg, int vd, int s1, unsigned imm)
     cg->uops += 1;
 }
 
+/* High-nibble extract via VPMULTISHIFTQB (track I2, AVX-512 only):
+ * vd[k] = (s1's lane >> vctrl[k]) & 0xFF per 64-bit lane, with the
+ * loop-invariant vctrl holding 8*j+4 per lane-relative byte j. One uop
+ * like VPSRLW, but issued to the shuffle port; the caller still applies
+ * the trailing 0x0F AND (bits [7:4] of the output carry the neighbor
+ * nibble, and VPSHUFB zeroes its lane when the index bit 7 is set). */
+static void c_mshift(cg_t *cg, int vd, int s1, int vctrl)
+{
+    assert(is_avx512(cg));
+    em_vpmultishiftqb(&cg->em, vd, vctrl, s1, cg->vl);
+    cg->uops += 1;
+}
+
+/* Nibble split of vsrc into vd_lo/vd_hi: vd_lo = vsrc & 0x0F,
+ * vd_hi = (vsrc >> 4) & 0x0F. The I2 (mshift) twin extracts the high
+ * nibble with VPMULTISHIFTQB instead of VPSRLW (AVX-512 only); the two
+ * ANDs are unchanged, so the split stays 3 uops either way. Single
+ * home for the three body sites below (P_MULACC/P_DELTA/P_HORNER). */
+static void nibble_split(cg_t *cg, int vd_lo, int vd_hi, int vsrc)
+{
+    c_and(cg, vd_lo, vsrc, cg->mask);
+    if (cg->cand.mshift)
+        c_mshift(cg, vd_hi, vsrc, cg->msh);
+    else
+        c_srlw(cg, vd_hi, vsrc, 4);
+    c_and(cg, vd_hi, vd_hi, cg->mask);
+}
+
 /* Word shift left by immediate. Two-operand on SSE (mov when vd != s1),
  * three-operand on AVX. Used by the bit-program emitter to move a
  * bit-0-normalized bit value to its output bit position. */
@@ -503,6 +548,12 @@ static void gen_const_setup(cg_t *cg)
                 raw_ldpool(cg, cg->hreg[2 * j], pool_get(cg, CK_AFF, c));
             }
         }
+    }
+    if (cg->cand.mshift && cg->need_mask) {
+        /* VPMULTISHIFTQB high-nibble control (track I2): loop-invariant,
+         * loaded once into the msh register. Dead when the nibble split
+         * never executes (need_mask == 0), like the 0x0F mask. */
+        raw_ldpool(cg, cg->msh, pool_get(cg, CK_MSHIFT, 0));
     }
 }
 
@@ -1218,11 +1269,8 @@ static void gen_body(cg_t *cg)
             c_prefetch_in(cg, pr);
             for (int u = 0; u < U; u++) {
                 c_ld(cg, cg->t, pr, R11, 0, u * vl);
-                if (neednib && !gfni) {
-                    c_and(cg, cg->tlo, cg->t, cg->mask);
-                    c_srlw(cg, cg->thi, cg->t, 4);
-                    c_and(cg, cg->thi, cg->thi, cg->mask);
-                }
+                if (neednib && !gfni)
+                    nibble_split(cg, cg->tlo, cg->thi, cg->t);
                 mulacc_column(cg, i, n_in, u, first_col);
             }
         }
@@ -1260,11 +1308,8 @@ static void gen_body(cg_t *cg)
                     c_ld(cg, cg->t, R10, R11, 0, u * vl);
                     c_vpxor_mem(cg, cg->t, cg->t, RDX, R11, 0, u * vl);
                 }
-                if (neednib && !gfni) {
-                    c_and(cg, cg->tlo, cg->t, cg->mask);
-                    c_srlw(cg, cg->thi, cg->t, 4);
-                    c_and(cg, cg->thi, cg->thi, cg->mask);
-                }
+                if (neednib && !gfni)
+                    nibble_split(cg, cg->tlo, cg->thi, cg->t);
                 /* NULL: accumulators hold oldpar, not zero -- always xor */
                 mulacc_column(cg, i, nc, u, NULL);
             }
@@ -1319,9 +1364,7 @@ static void gen_body(cg_t *cg)
                         }
                         c_vpxor(cg, acc, cg->t2, cg->t);
                     } else {
-                        c_and(cg, cg->tlo, acc, cg->mask);
-                        c_srlw(cg, cg->thi, acc, 4);
-                        c_and(cg, cg->thi, cg->thi, cg->mask);
+                        nibble_split(cg, cg->tlo, cg->thi, acc);
                         if (cg->cand.remat) {
                             /* NIBLO/NIBHI ping-pong through the single tbl
                              * scratch: each u iteration needs both tables,
@@ -1937,6 +1980,19 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     assert(!(cand->xorbit &&
              (cand->ternlog || cand->permi2b || cand->remat ||
               cand->xorsched)));
+    /* VPMULTISHIFTQB nibble twin (track I2): AVX-512 MUL_NIBBLE
+     * GF-multiply rows only (P_MULACC/P_DELTA/P_HORNER), never combined
+     * with the other body twins (xorbit/permi2b/remat/xorsched are
+     * different bodies/splits). Independent of ternlog (split vs fold).
+     * The instruction is AVX512_VBMI; the api/planner gate additionally
+     * requires cpu->vbmi before the twin can be selected. */
+    assert(!(cand->mshift &&
+             (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE ||
+              (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+               pl->kind != P_HORNER))));
+    assert(!(cand->mshift &&
+             (cand->xorbit || cand->permi2b || cand->remat ||
+              cand->xorsched)));
     memset(v, 0, sizeof(*v));
     v->cand = *cand;
     v->kind = pl->kind;
@@ -2040,6 +2096,12 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                     cg.mask = cg.t + 6;
                 }
                 vmax = cg.mask;
+                if (cand->mshift) {
+                    /* VPMULTISHIFTQB control (track I2): one more live
+                     * register than the VPSRLW form. */
+                    cg.msh = vmax + 1;
+                    vmax = cg.msh;
+                }
             } else {
                 /* All coefficients in {0,1} (only P_DELTA reaches here:
                  * the planner guarantees a nontrivial coefficient for
@@ -2077,14 +2139,21 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         if (cand->mul == MUL_NIBBLE) {
             cg.tlo = cg.t + 1; cg.thi = cg.t + 2; cg.r1 = cg.t + 3;
             cg.r2 = cg.t + 4; cg.mask = cg.t + 5;
+            vmax = cg.mask;
+            if (cand->mshift) {
+                /* VPMULTISHIFTQB control (track I2): one more live
+                 * register; the hreg table regs start after it.
+                 * (remat is disjoint from mshift by assertion.) */
+                cg.msh = vmax + 1;
+                vmax = cg.msh;
+            }
             if (cand->remat) {
                 /* Rematerialize: tables reloaded from pool into tbl
                  * on each use; no hreg. */
                 cg.tbl = cg.t + 6;
                 vmax = cg.tbl;
             } else {
-                vmax = cg.mask;
-                int r = cg.t + 6;
+                int r = vmax + 1;
                 for (int j = 0; j < n_out; j++) {
                     uint8_t c = pl->horner_c[j];
                     if (c == 0 || c == 1)
@@ -2115,11 +2184,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     /* Single source of truth: the planner's filter must agree exactly
      * with this assignment. A drift here once admitted candidates past
      * the regfile, and the emitter wraps reg 32 to 0 silently. The
-     * xorsched twin has its own pressure formula (extra temp on SSE). */
+     * xorsched twin has its own pressure formula (extra temp on SSE).
+     * The mshift twin's control register (cg.msh, 0 when unallocated)
+     * adds one: plan_need_regs has no mshift dimension because the
+     * planner never enumerates the twin (I2 gate closed) -- if the gate
+     * ever opens, the enumeration's pressure filter must add the same
+     * +1 (see the plan_candidates I2 block). */
     int want_regs = cand->xorbit ? xorbit_need_regs(cand->isa, pl, U)
                     : cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
                                      : plan_need_regs(cand->isa, cand->mul, pl,
-                                                     U, cand->remat);
+                                                     U, cand->remat) +
+                                       (cg.msh != 0 ? 1 : 0);
     assert(vmax + 1 == want_regs);
     assert(vmax < isa_nregs(cand->isa));
 
@@ -2181,12 +2256,12 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                                                : "mulacc";
     if (pl->kind == P_XOR)
     /* %.65s on the plan name: the provable -Wformat-truncation bound
-     * for the 192B desc (fixed suffix <= 78B: " mulacc avx512+nibble"
+     * for the 192B desc (fixed suffix <= 85B: " mulacc avx512+nibble"
      * + " U=8" + "+ternlog+nt+pf+remat" + " notail" + " maskedtail" +
-     * "+permi2b" + "+xorbit"; plan names can reach 127B since the A5
-     * "[rows ...]" suffix, capped at 65 by %.65s). 65 + 78 = 143 < 192,
-     * so the bound holds with margin. */
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s%s", pl->name, strat,
+     * "+permi2b" + "+xorbit" + "+mshift"; plan names can reach 127B since
+     * the A5 "[rows ...]" suffix, capped at 65 by %.65s). 65 + 85 = 150
+     * < 192, so the bound holds with margin. */
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa), cand->U, cand->ternlog ? "+ternlog" : "",
                  cand->xorsched ? "+xsched" : "",
                  cand->xorbit ? "+xorbit" : "",
@@ -2195,9 +2270,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->remat ? "+remat" : "",
                  cand->notail ? " notail" : "",
                  cand->maskedtail ? " maskedtail" : "",
-                 cand->permi2b ? "+permi2b" : "");
+                 cand->permi2b ? "+permi2b" : "",
+                 cand->mshift ? "+mshift" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s", pl->name, strat,
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa),
                  cand->mul == MUL_GFNI ? "+gfni" : "+nibble", cand->U,
                  cand->ternlog ? "+ternlog" : "",
@@ -2207,7 +2283,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->remat ? "+remat" : "",
                  cand->notail ? " notail" : "",
                  cand->maskedtail ? " maskedtail" : "",
-                 cand->permi2b ? "+permi2b" : "");
+                 cand->permi2b ? "+permi2b" : "",
+                 cand->mshift ? "+mshift" : "");
 
     free(buf);
     free(cg.pool);

@@ -115,6 +115,21 @@ typedef struct {
                  * predicts a strict uop win; the benchmark picks the
                  * twin empirically, never forced. Never combined with
                  * ternlog/permi2b/remat/xorsched. */
+    int mshift;  /* 1 = P_MULACC/P_DELTA/P_HORNER nibble twin: extract the
+                  * high nibble with VPMULTISHIFTQB (AVX512_VBMI) instead
+                  * of VPSRLW (track I2, SOTA item 2). The low-nibble AND
+                  * and the post-shift 0x0F AND are unchanged (the
+                  * multishift output's bits [7:4] carry the neighbor
+                  * nibble and VPSHUFB zeroes its lane when the index bit
+                  * 7 is set, so the mask stays) -- the win, if any, is
+                  * port placement (shuffle port vs shift port), not uop
+                  * count. Enumerated only when the static model predicts
+                  * a strict uop win; both splits are 3 uops, so the gate
+                  * is closed today and the twin awaits quiet-box
+                  * benchmarks. Never combined with
+                  * xorbit/permi2b/remat/xorsched (different bodies);
+                  * independent of ternlog (split vs fold). Pinned in
+                  * prune.c's twin_dominates like every other axis. */
     int lmul;    /* RVV only: vector register group multiplier (LMUL).
                   * 1/2/4/8 (0 = 1, the default for zero-initialized
                   * candidates). Enumerated by plan_candidates for RVV;

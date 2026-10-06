@@ -27,11 +27,15 @@ Version B (plain, `ternlog=0`) is pruned iff there exists a version A
 
 1. **Twin pair**: `A.cand.ternlog == 1`, `B.cand.ternlog == 0`, and
    `A`/`B` agree on every other candidate axis: plan kind, `isa`,
-   `mul`, `U`, `nt`, `prefetch_dist`, `remat`. Compared field-by-field
-   (not `memcmp`: struct padding is not guaranteed zeroed). The rule
-   NEVER fires across plan kinds, across U, across NT, across ISA/mul,
-   across prefetch distance, across remat, or in the reverse direction
-   (plain pruning a twin).
+   `mul`, `U`, `nt`, `prefetch_dist`, `remat`, `notail`, `predtail`,
+   `maskedtail`, `permi2b`, `xorsched`, `xorbit`, `lmul`. Compared
+   field-by-field (not `memcmp`: struct padding is not guaranteed
+   zeroed). Every new candidate axis must be pinned here -- an
+   unpinned axis lets a cross-axis pair (e.g. `(xorbit=1,ternlog=1)`
+   vs `(xorbit=0,ternlog=0)`, different codegen shapes) form a pruning
+   pair. The rule NEVER fires across plan kinds, across U, across NT,
+   across ISA/mul, across prefetch distance, across remat, or in the
+   reverse direction (plain pruning a twin).
 2. **Plan-kind guard**: the pair's plan kind is P_MULACC or P_DELTA --
    the only kinds where the twin direction is validated. Enforced by
    code in `twin_dominates()`, not by the triple values: if the model
@@ -59,6 +63,18 @@ Version B (plain, `ternlog=0`) is pruned iff there exists a version A
    port-profitable on every modeled uarch, so the veto never fires
    there -- it guards future twin/codegen changes. A refusal is logged
    under `PRUNE_VERBOSE`.
+5. **Roofline-aware leg** (#31): the twin's roofline-aware cost
+   (`plan_uarch_cost`, below) must not exceed the plain's on this
+   uarch. In a bandwidth-bound regime a candidate that looks worse on
+   uops but moves fewer bytes can win the benchmark, so the prune gate
+   respects the roofline cost rather than uops alone. For the AVX-512
+   nibble twin the comparison is exact -- each saved uop is one
+   `(2 VPXOR -> 1 VPTERNLOGD)` fold against an identical bandwidth
+   leg, so the leg agrees with the triple+I3 verdict on every uarch;
+   other twin shapes fall back to the averaged `plan_uarch_cost`
+   comparison. Veto-only like the uarch leg: it keeps the plain,
+   never drops anything the triple gate kept. A refusal is logged
+   under `PRUNE_VERBOSE`.
 
 Survivors are compacted to `vs[0..ret-1]` preserving original relative
 order; the return value is the new count. Pruned versions are finalized
@@ -67,7 +83,7 @@ mappings); the caller owns only the survivors. A defensive fallback
 keeps `vs[0]` if the survivor set were ever empty (unreachable: the
 twin itself is never pruned by this rule).
 
-### Uarch-aware cost model (I3)
+### Uarch-aware cost model (I3, roofline #31)
 
 The planner's static uop model is x86-generic, but Intel vs AMD port
 pressures differ (VPTERNLOGD port count, GFNI throughput, 512-bit
@@ -85,28 +101,45 @@ exposed for heuristic candidate ordering:
   (reciprocal throughput) for the key AVX-512 op classes --
   VPTERNLOGD, VPSHUFB, VPXORD-class logic, GFNI
   (VGF2P8MULB/VGF2P8AFFINEQB), 64-byte loads -- plus a generic
-  dispatch width, a memory-bytes term, and a 512-bit
-  sustained-frequency derate for Intel server parts. Every value is a
-  static estimate from published port data (uops.info
-  per-microarchitecture instruction pages; Intel/AMD documentation),
-  with per-value sources in the table comment in `src/plan.c`. The
+  dispatch width, a memory-bytes term, a 512-bit
+  sustained-frequency derate for Intel server parts, and (since #31)
+  `bw_bpc`: the peak single-core sustainable DRAM streaming bandwidth
+  in bytes/cycle. Every value is a static estimate from published
+  port data (uops.info per-microarchitecture instruction pages;
+  Intel/AMD documentation) or, for `bw_bpc`, a conservative static
+  figure at the low end of published single-core streaming numbers
+  (DDR4-era classes: 8 B/cyc; DDR5-era classes: 12 B/cyc), with
+  per-value sources in the table comment in `src/plan.c`. All figures
+  are est., NOT measured -- no benchmark feeds them. The
   `RJ_UARCH_UNKNOWN` entry reproduces the old generic roofline
   (`uops/3.5 + mem/64`), so unmodeled machines behave as before.
-- **Cost function** (`plan_uarch_cost`, declared in `src/plan.h`):
-  re-weights the static `(uops, mem)` model by the candidate's
-  characteristic op mix (structural per `(kind, isa, mul, ternlog)`
-  class, read off the emitter sequences) at the uarch's published
-  throughputs. The cost reflects port pressure, not just uop counts.
-  Static ordering only -- it never replaces the benchmark, which
-  remains the final arbiter (no measured ranking; all figures est.).
+- **Cost function** (`plan_uarch_cost`, declared in `src/plan.h`): a
+  roofline blend (#31) of a compute leg and a bandwidth leg.
+  The compute leg re-weights the static `(uops, mem)` model by the
+  candidate's characteristic op mix (structural per
+  `(kind, isa, mul, ternlog)` class, read off the emitter sequences)
+  at the uarch's published throughputs, so the cost reflects port
+  pressure rather than raw uop counts; the bandwidth leg is
+  `mem_per_byte / bw_bpc`. With arithmetic intensity
+  `AI = uops_per_byte / mem_per_byte` and ridge point
+  `ridge = (1/w_uop) / bw_bpc`, the blend is the continuous p-norm
+  `(t_compute^4 + t_mem^4)^{1/4}`: below the ridge (bandwidth-bound)
+  the cost is ~bytes moved, above it (compute-bound) ~uop cost, with
+  no hard switch. Monotone in both legs (load-bearing for the prune
+  gate's roofline leg). Static ordering only -- it never replaces the
+  benchmark, which remains the final arbiter (no measured ranking;
+  all figures est.).
 
 The prune gate uses the weights through the exact marginal form
 (`prune_twin_uarch_ok`): because the twins differ only in the fold
 substitution, the uarch comparison needs no op-mix reconstruction --
-it is exact given the uop delta. The blended cost function is the
-heuristic intended for candidate ordering (wiring it into
-`heuristic_select` in `src/bench.c` is a follow-up; that file is
-outside the I3 scope).
+it is exact given the uop delta. The roofline leg
+(`prune_twin_roofline_ok`) reuses the same exact substitution
+economics for the AVX-512 nibble twin (identical bandwidth leg), and
+the averaged `plan_uarch_cost` comparison for other twin shapes. The
+blended cost function is the heuristic intended for candidate
+ordering (wiring it into `heuristic_select` in `src/bench.c` is a
+follow-up; that file is outside the #31 scope).
 
 ### Why this narrow (rejection of the broader rule)
 

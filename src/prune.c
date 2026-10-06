@@ -201,7 +201,11 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * A1): a (xorbit=1,ternlog=1)/(xorbit=0,ternlog=0) pair must never
      * satisfy the twin relation on the checked axes -- the bit-program
      * twin is a different codegen shape (bit-level CSE body vs naive
-     * nibble emitter), not a multiply twin. Behavior-preserving for
+     * nibble emitter), not a multiply twin. mshift is pinned (track
+     * I2): an (mshift=1,ternlog=1)/(mshift=0,ternlog=0) pair must never
+     * satisfy the twin relation on the checked axes -- the multishift
+     * split is a different codegen shape (VPMULTISHIFTQB vs VPSRLW),
+     * not a multiply twin. Behavior-preserving for
      * the other axes today: all in-list candidates have
      * notail=0/predtail=0/maskedtail=0, and P_XOR pairs are refused by
      * the kind guard anyway. */
@@ -217,6 +221,7 @@ static int twin_dominates(const version_t *a, const version_t *b,
         a->cand.permi2b != b->cand.permi2b ||
         a->cand.xorsched != b->cand.xorsched ||
         a->cand.xorbit != b->cand.xorbit ||
+        a->cand.mshift != b->cand.mshift ||
         a->cand.lmul != b->cand.lmul)
         return 0;
 

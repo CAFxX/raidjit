@@ -1021,6 +1021,55 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             n++;
         }
     }
+    /* VPMULTISHIFTQB high-nibble twin (track I2, SOTA item 2): the nibble
+     * split's VPSRLW becomes a VPMULTISHIFTQB (AVX512_VBMI), moving the
+     * shift uop from the shift port to the shuffle port. Enumerated per
+     * fitting AVX-512 MUL_NIBBLE base candidate only when the static
+     * model predicts a STRICT uop win -- the gate the dominance-pruning
+     * track relies on (a twin exists only if it strictly beats the base,
+     * so the base can never dominate it). The split is 3 uops either way
+     * (AND + shift + AND: the trailing 0x0F AND stays because the
+     * multishift output's bits [7:4] carry the neighbor nibble and
+     * VPSHUFB zeroes its lane when the index bit 7 is set), so the gate
+     * is CLOSED today: this block enumerates nothing, and the
+     * port-placement hypothesis waits for quiet-box benchmarks, which
+     * can re-open the gate without a code change. Gated on cpu->vbmi
+     * (VPMULTISHIFTQB is AVX512_VBMI). Never combined with
+     * xorbit/permi2b/remat/xorsched (different bodies); independent of
+     * ternlog (split vs fold), so ternlog bases twin too. Requires a
+     * nontrivial coefficient (else the split never executes and the twin
+     * is vacuous). The NT/prefetch twin loops below see these and twin
+     * them automatically. */
+    if ((pl->kind == P_MULACC || pl->kind == P_DELTA ||
+         pl->kind == P_HORNER) &&
+        cpu->vbmi && plan_any_nontrivial(pl)) {
+        int ntemp = n;
+        for (int i = 0; i < ntemp && n < maxout; i++) {
+            if (out[i].isa != ISA_AVX512 || out[i].mul != MUL_NIBBLE)
+                continue;
+            if (out[i].xorbit || out[i].permi2b || out[i].remat ||
+                out[i].xorsched || out[i].mshift)
+                continue;
+            int U = out[i].U;
+            /* Pressure filter: the twin needs one more live register
+             * (the multishift control) than plan_need_regs models; keep
+             * the +1 in lockstep with jit_build_version's want_regs. */
+            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0) + 1 >
+                isa_nregs(ISA_AVX512))
+                continue;
+            /* Static uop gate (per (i,u) split): the multishift split
+             * must STRICTLY beat the VPSRLW split. Both sequences are
+             * exactly 3 uops (AND + shift + AND), so this never fires
+             * today -- the port-placement question is for benchmarks. */
+            long u_plain = 3;  /* c_and + c_srlw + c_and */
+            long u_mshift = 3; /* c_and + c_mshift + c_and */
+            if (u_mshift >= u_plain)
+                continue;
+            out[n] = out[i];
+            out[n].mshift = 1;
+            n++;
+        }
+    }
     /* A noop plan (n_out == 0) emits a trivial function with no
      * stores and no loop, so NT/prefetch twins would be
      * byte-identical duplicates of the temporal original (and a "+nt"
