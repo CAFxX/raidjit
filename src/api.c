@@ -1123,17 +1123,9 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
     for (int t = 0; t < ntwins; t++)
         jit_free_version(&twins[t]);
     rj_dispatcher_destroy(disp);
-    /* Batched Tier-1 driver (item #9), like rj_compile. */
-    j->batch = rj_batch_create(rj_get_fn(j), (size_t)pl.n_in,
-                               (size_t)pl.n_out);
-    if (!j->batch) {
-        if (err && errlen)
-            snprintf(err, errlen, "out of memory");
-        rj_free(j);
-        plan_free(&pl);
-        topo_int_free(&ti);
-        return NULL;
-    }
+    /* Batched Tier-1 driver (item #9) not created here: rj_batch_create
+     * is #9's API, not yet landed. j->batch stays NULL (calloc); pinned
+     * compile serves single-stripe only until #9 lands. */
     /* The effective ID: round-trips the input ID when nothing degraded
      * (tail=scalar honestly when dispatcher creation failed). */
     {
