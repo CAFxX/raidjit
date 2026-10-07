@@ -53,6 +53,8 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 /* ---------------- utilities ---------------- */
@@ -744,6 +746,24 @@ int main(int argc, char **argv)
     int redgreen = argc == 4 && !strcmp(argv[3], "--redgreen");
     if (argc == 4 && !redgreen)
         die("unknown flag '%s'", argv[3]);
+
+    /* Exclusive staging lock: two gen_kernels invocations sharing an
+     * outdir silently corrupt each other's .code.bin files (writer A
+     * truncates/writes while writer B is between its own write and
+     * re-read, tripping the "short re-read" check or worse). Take an
+     * flock() on <outdir>/.lock and hold it for the whole run; fail
+     * fast if another gen_kernels already holds it. (Found 2026-10-07:
+     * a manual debug invocation raced the make-kernels pipeline into
+     * /tmp/kernels-stage.) */
+    char lock_path[1024];
+    snprintf(lock_path, sizeof(lock_path), "%s/.lock", outdir);
+    int lock_fd = open(lock_path, O_RDWR | O_CREAT, 0644);
+    if (lock_fd < 0)
+        die("cannot open lock file %s", lock_path);
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
+        die("%s is locked by another gen_kernels run; use a unique outdir",
+            outdir);
+    /* lock_fd stays open (and the lock held) until process exit */
 
     rj_cpu_info cpu;
     fill_cpu(target, &cpu);
