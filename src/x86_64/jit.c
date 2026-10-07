@@ -2160,7 +2160,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         ((pl->kind != P_MULACC && pl->kind != P_HORNER) ||
          cand->mul != MUL_NIBBLE || cand->remat || cand->xorbit ||
          cand->xorsched || cand->permi2b || cand->mshift ||
-         cand->ternlog)) {
+         cand->ternlog || cand->maskedtail)) {
         snprintf(err, errlen,
                  "x86_64 backend: pipe twin needs P_MULACC/P_HORNER "
                  "nibble, non-remat, no other twins");

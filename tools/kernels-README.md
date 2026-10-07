@@ -1,6 +1,6 @@
 # Kernel Dumps: RAID-5(4+1) and RAID-6(5+2)
 
-Regenerated 2026-10-01 with `make kernels` (see `tools/gen_kernels.c` in the
+Regenerated 2026-10-07 with `make kernels` (see `tools/gen_kernels.c` in the
 raidjit repo). Each kernel was JIT-compiled with `benchmark=0` (heuristic
 candidate selection) for a synthetic CPU matching the target ISA — never the
 host CPUID, since the cross targets differ from the build host.
@@ -105,7 +105,42 @@ under an `$x` mapping label, assembled with
 `vle8.v`, `vsetvli`, `vrgather.vv`, …). Raw `-b binary` cannot select the
 V extension, which is why older listings showed `.insn` raw words.
 
-## What changed vs the previous set
+## What changed vs the previous set (2026-10-05 → 2026-10-07)
+
+New representative specs (Lane-2 capabilities):
+- LRC family (A6): `lrc-azure` (12,2,2 Azure-style), `lrc-azure-rec0`
+  (full recovery `[rows 0+1+2+3]`), `lrc-azure-rec0-local` (the local-
+  repair kernel the A5 survivor machinery selects: `[rows 2]`, pure
+  P_XOR), `lrc-opt-20-2-4` (distance-optimal), `lrc-8-2-2` (general
+  mechanism). Each on all three targets with eligible twins.
+- I2 VPMULTISHIFTQB twin (`_mshift`): forced mshift=1 on the first
+  eligible AVX512 MUL_NIBBLE base; marker-verified in the disassembly.
+- I8 software-pipelined twin (`_pipe`): forced pipe=1 on the first
+  eligible NEON/SVE/RVV MUL_NIBBLE base.
+- A1 xorbit twin (`_xorbit`): implemented but the strict uop-win gate
+  did not fire for any spec in this set, so no `_xorbit` sections were
+  emitted (the twin is conditional by design, like `_xsched`).
+- X1: the `_xsched` twin is now ISA-open (was AVX512-only); the
+  planner's gates did not produce an eligible RVV xorsched candidate
+  for these specs, so no `_rvv_xsched` sections were emitted.
+
+Codegen changes (Lane 2) reflected in reselected winners:
+- #31 roofline cost model changed heuristic winners (e.g. `raid6-5`
+  sve2 now selects the I8 pipe twin `mulacc+nibble U=4+eor3+pipe`).
+- A1 bit-level XOR scheduling, A4 closed-form recovery, and the I8
+  pipe twin are visible in the disassemblies where selected.
+
+Bug fix (2026-10-07, found by this regen):
+- pipe+predtail crashed the AArch64 backend (the predicated tail
+  reuses the non-pipelined body whose register layout is dead in pipe
+  mode). The backend now rejects the combination cleanly, and api.c /
+  gen_kernels skip the predtail twin for pipe winners (the pipe twin
+  keeps its scalar tail). Hence `raid6-5_sve2` (pipe winner) has no
+  `_predtail` section; non-pipe SVE winners (e.g. `raid5-4_sve2`) do.
+- x86: `maskedtail` added to the pipe twin's exclusion list (same
+  class; was only reachable via direct candidate construction).
+
+## What changed vs the 2026-10-01 set (2026-10-05)
 
 - `raid6-5_sve2`: now contains 16 EOR3 (was: zero SVE2 instructions);
   U=2→4, code 960→1280 B (const pool unchanged at 640 B).

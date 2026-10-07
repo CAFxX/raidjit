@@ -444,7 +444,12 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
          * one duel_idx is ever set. */
         int duel_idx = -1; /* index into twins[] of the duel-installed tail
                             * twin, or -1 when no duel was won */
-        if (vs[winner].cand.isa == ISA_SVE) {
+        /* The predtail twin is not implemented for the pipe
+         * (software-pipelined) body (I8): the predicated tail reuses
+         * the non-pipelined gen_body whose register layout is dead in
+         * pipe mode. Skip the twin when the winner is pipe; the pipe
+         * twin keeps its scalar tail. */
+        if (vs[winner].cand.isa == ISA_SVE && !vs[winner].cand.pipe) {
             cand_t ptwinc = vs[winner].cand;
             ptwinc.predtail = 1; /* twin of the winner, predicated tail */
             version_t ptwin;

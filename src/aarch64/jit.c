@@ -1601,6 +1601,19 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cg.is_sve ? "sve" : "this ISA");
         return -1;
     }
+    /* pipe+predtail is not implemented: the predicated tail reuses the
+     * non-pipelined gen_body, whose register layout (cg->t live) is
+     * dead in pipe mode (cg->t = -1; the D/Dn datasets replace it).
+     * Reject cleanly instead of tripping the V() register assert.
+     * (Found 2026-10-07: I8's pipe twin can win heuristic_select, and
+     * api.c builds the predtail twin from the winner unconditionally.)
+     */
+    if (cg.predtail && cg.cand.pipe) {
+        snprintf(err, errlen,
+                 "predtail twin not implemented for the pipe "
+                 "(software-pipelined) body");
+        return -1;
+    }
     if (cg.is_sve && cg.vl <= 0) {
         snprintf(err, errlen, "SVE selected but no vector length");
         return -1;

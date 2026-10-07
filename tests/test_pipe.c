@@ -724,6 +724,76 @@ static void test_planner_pipe(void)
         printf("ok pipe planner gate\n");
 }
 
+/* Regression test (2026-10-07): pipe+predtail must fail gracefully,
+ * never crash. The predicated tail reuses the non-pipelined gen_body,
+ * whose register layout (cg->t live) is dead in pipe mode (cg->t = -1);
+ * before the fix, force-building pipe+predtail tripped the V()
+ * register assert (SIGABRT). I8's pipe twin can win heuristic_select,
+ * and api.c built the predtail twin from the winner unconditionally,
+ * so this was reachable via rj_compile, not just the doc tool.
+ * Non-tautological: without the backend's graceful rejection this test
+ * aborts the process instead of failing a CHECK. */
+static void test_pipe_predtail_reject(void)
+{
+#if defined(__aarch64__)
+    char err[256];
+    rj_topology *t = rj_topo_raid6(5);
+    topo_int_t ti;
+    if (topo_int_build(&ti, t, err, sizeof err) != 0) {
+        CHECK(0, "pipe+predtail topo: %s", err);
+        rj_topo_free(t);
+        return;
+    }
+    rj_op op = rj_op_encode();
+    plan_t pl;
+    if (plan_build(&ti, &op, "pipe-predtail-reject", &pl, err,
+                   sizeof err) != 0) {
+        CHECK(0, "pipe+predtail plan: %s", err);
+        rj_op_free(&op);
+        topo_int_free(&ti);
+        rj_topo_free(t);
+        return;
+    }
+    rj_cpu_info cpu;
+    rj_cpu_detect(&cpu);
+    if (!cpu.sve) {
+        printf("SKIP pipe+predtail: no SVE on this CPU\n");
+        plan_free(&pl);
+        rj_op_free(&op);
+        topo_int_free(&ti);
+        rj_topo_free(t);
+        return;
+    }
+    rj_options o;
+    rj_options_default(&o);
+    cand_t cand;
+    memset(&cand, 0, sizeof cand);
+    cand.isa = ISA_SVE;
+    cand.mul = MUL_NIBBLE;
+    cand.U = 4;
+    cand.pipe = 1;
+    cand.predtail = 1;
+    version_t v;
+    memset(&v, 0, sizeof v);
+    int rc = jit_build_version(&pl, &cand, &cpu, &o, &v, err, sizeof err);
+    /* Must fail gracefully (rc != 0 with an explanatory err), never
+     * abort. A successful build would also be acceptable if the
+     * combination is ever implemented, but today it must reject. */
+    CHECK(rc != 0, "pipe+predtail unexpectedly built (no rejection)");
+    if (rc != 0)
+        CHECK(strstr(err, "pipe") != NULL,
+              "pipe+predtail err should name pipe, got: %s", err);
+    else
+        jit_free_version(&v);
+    plan_free(&pl);
+    rj_op_free(&op);
+    topo_int_free(&ti);
+    rj_topo_free(t);
+#else
+    printf("SKIP pipe+predtail: aarch64-only\n");
+#endif
+}
+
 int main(void)
 {
 #if defined(__aarch64__)
@@ -848,6 +918,7 @@ int main(void)
     printf("SKIP: no pipe case for this ARCH\n");
 #endif
     test_planner_pipe();
+    test_pipe_predtail_reject();
 
     if (failures == 0)
         printf("test_pipe: all OK\n");
