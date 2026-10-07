@@ -238,7 +238,7 @@ rj_topology *rj_topo_rs(int ndata, int npar)
  * local parity per local group (g = ceil(k/r) groups, as equal as
  * possible, each of size <= r). Matrix row order: the h global rows
  * first, then the g local rows. A single failure inside a group is
- * recoverable from its r group-mates (pure XOR); up to h failures
+ * recoverable from its group-mates (pure XOR); up to h failures
  * anywhere are recoverable from the global parities.
  *
  * Global rows are Vandermonde with exponents 1..h (row j: coefficient
@@ -265,6 +265,14 @@ static rj_topology *lrc_new(int k, int h, int r, const char *name)
     if (k < 2 || h < 1 || r < 2)
         return NULL;
     if (k > LRC_VANDERMONDE_MAX_K)
+        return NULL;
+    /* The order-51 fact bounds the exponents too, not just the nodes:
+     * at h = 51 the global row with exponent 51 has entries
+     * 2^(i*51) = (2^51)^i = 1 for every column i -- the all-ones row
+     * the design deliberately skips as exponent 0 (it would collapse
+     * the "(h+1) unknowns in one group" solve from full rank), and at
+     * h >= 52 the global rows repeat with period 51. */
+    if (h > 50)
         return NULL;
     int g = (k + r - 1) / r; /* ceil(k/r) local groups */
     int npar = h + g;

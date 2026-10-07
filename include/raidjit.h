@@ -144,15 +144,18 @@ rj_topology *rj_topo_rs(int ndata, int npar);
  *   disks, h global parities, locality r. The data disks are
  *   partitioned into g = ceil(k/r) groups as equal as possible (each
  *   of size <= r), each group with its own XOR local parity; npar =
- *   h + g. Returns NULL unless k >= 2, h >= 1, r >= 2, k <= 51 (the
- *   Vandermonde node-distinctness envelope: 2 has order 51 in
- *   GF(2^8)/0x11B) and k + h + g <= RJ_MAX_DISKS, or on OOM.
+ *   h + g. Returns NULL unless k >= 2, h >= 1, h <= 50, r >= 2,
+ *   k <= 51 (the Vandermonde envelope: 2 has order 51 in GF(2^8)/0x11B,
+ *   so the nodes 2^0..2^50 are distinct, and exponents above 50 would
+ *   make global row 51 the all-ones row the design skips, then repeat
+ *   with period 51) and k + h + g <= RJ_MAX_DISKS, or on OOM.
  * rj_topo_lrc_azure(): the canonical Azure (12,2,2) instance -- 12
  *   data, 2 global parities, 2 local parities with locality 6.
  * rj_topo_lrc_optimal(k, h, r): the distance-optimal
  *   parameterization -- like rj_topo_lrc but requires r | k (NULL
  *   otherwise), under which the code attains the Singleton-type bound
- *   d = n-k-ceil(k/r)+2 = h+2. Optimality is verified exhaustively per
+ *   d = n-k-ceil(k/r)+2 = h+2. The k <= 51, h <= 50 Vandermonde
+ *   envelope applies as well. Optimality is verified exhaustively per
  *   instance in tests/test_lrc.c (every (h+1)-erasure pattern
  *   recoverable, an (h+2) non-recoverable witness exhibited); the
  *   verified instances are recorded in docs/lrc.md.

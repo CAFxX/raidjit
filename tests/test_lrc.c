@@ -2,14 +2,15 @@
  *
  * Coverage:
  *  1. constructor validation: bad parameters -> NULL (k<2, h<1, r<2,
- *     k>51, rj_topo_lrc_optimal with r not dividing k); good parameters
+ *     k>51, h>50, rj_topo_lrc_optimal with r not dividing k); good parameters
  *     -> the documented (ndata, npar, name); matrix structure (global
  *     rows = Vandermonde exponents 1..h recomputed independently;
  *     local rows = disjoint XOR supports partitioning the data disks,
  *     each of size <= r).
  *  2. encode bit-exact vs the independent scalar reference (azure,
  *     lrc(8,2,4), lrc(10,2,6) -- the last exercises the non-divisible
- *     general case), at boundary/tail lengths.
+ *     general case; lrc(7,2,3) -- the uneven-group partition case,
+ *     groups [3,2,2]), at boundary/tail lengths.
  *  3. local-recovery selection (the Step-1 verification): for a single
  *     failure inside a group, the survivor machinery's exact static
  *     signal strictly prefers the local-parity subset over every
@@ -130,6 +131,10 @@ static void ctor_validation(void)
     CHECK(rj_topo_lrc(12, 2, 0) == NULL, "lrc r=0 accepted");
     CHECK(rj_topo_lrc(52, 2, 6) == NULL, "lrc k=52 accepted (Vandermonde "
           "nodes 2^i repeat past order 51)");
+    CHECK(rj_topo_lrc(12, 51, 6) == NULL, "lrc h=51 accepted (global row "
+          "e=51 is the all-ones row the design deliberately skips)");
+    CHECK(rj_topo_lrc_optimal(12, 51, 6) == NULL, "lrc_optimal h=51 "
+          "accepted (order-51 envelope bounds the exponents too)");
     CHECK(rj_topo_lrc_optimal(10, 2, 6) == NULL, "lrc_optimal r∤k "
           "accepted");
     CHECK(rj_topo_lrc_optimal(12, 2, 0) == NULL, "lrc_optimal r=0 "
@@ -237,6 +242,9 @@ static void matrix_structure(int k, int h, int r, rj_topology *(*ctor)(void),
 
 static rj_topology *mk_azure(void) { return rj_topo_lrc_azure(); }
 static rj_topology *mk_842(void) { return rj_topo_lrc(8, 2, 4); }
+/* k=7, r=3 -> g = 3 groups with the uneven partition [3,2,2] (the
+ * `+1` branch of the group-size loop fires for group 0 only) */
+static rj_topology *mk_723(void) { return rj_topo_lrc(7, 2, 3); }
 
 /* ---------------- 2. encode bit-exact ---------------- */
 
@@ -301,7 +309,10 @@ static void test_encode(rj_topology *t, const char *name)
  * the unit's plan id in idbuf ("" when compile failed and !expect_ok).
  * When expect_ok, the recovered buffers must match the pre-wipe keep
  * copies, at several boundary/tail lengths (one compile per pattern;
- * len varies only at run time). */
+ * len varies only at run time). The local-pick assertions are red-green
+ * wired: under the RJ_SUBSET_PRUNE_INVERT test hook (set around the
+ * assertions, unset after) they must fail loudly (red), and hold
+ * without it (green). */
 static const size_t rlens[] = { 1, 17, 64, 1000 };
 static const int nrlens = sizeof(rlens) / sizeof(rlens[0]);
 
@@ -506,6 +517,74 @@ static void local_pick_static(rj_topology *t, const char *tag, int k, int h,
     topo_int_free(&ti);
 }
 
+/* Red-green wiring for the RJ_SUBSET_PRUNE_INVERT test-only hook:
+ * the hook inverts the pareto comparator inside survivor_shortlist, so
+ * the pinned local-pick assertions must fail loudly under it (red) and
+ * hold without it (green). Exercised at both the subset level (the
+ * shortlist directly) and the product level (survivor_select's static
+ * path, which shortlists internally). setenv/unsetenv around the red
+ * assertions only, so the green outcome is the default -- the same
+ * pattern test_survivor.c's mutation_invert uses. */
+static void prune_invert_redgreen(rj_topology *t, const char *tag, int h,
+                                  int fail_disk, int local_row)
+{
+    topo_int_t ti;
+    char err[512];
+    CHECK(mk_ti(t, &ti, err) == 0, "%s topo: %s", tag, err);
+    if (!ti.mat)
+        return;
+    rj_cpu_info cpu;
+    rj_cpu_detect(&cpu);
+    int F[1] = { fail_disk };
+    survivor_subset_t *subs = NULL;
+    int nsub = 0;
+    int rc = survivor_enumerate(&ti, F, 1, tag, &subs, &nsub, err,
+                                sizeof(err));
+    CHECK(rc == 0 && nsub == h + 1, "%s enumerate: rc=%d nsub=%d",
+          tag, rc, nsub);
+    if (rc == 0) {
+        survivor_l2_signal(subs, nsub, &cpu, &topts);
+        int ilocal = -1;
+        for (int i = 0; i < nsub; i++)
+            if (subs[i].nrows == 1 && subs[i].rows[0] == local_row)
+                ilocal = i;
+        CHECK(ilocal >= 0, "%s: local row %d not among subsets", tag,
+              local_row);
+        int *keep = calloc((size_t)nsub, sizeof(int));
+        CHECK(keep != NULL, "%s oom", tag);
+        if (keep && ilocal >= 0) {
+            /* green: the local subset strictly dominates the globals
+             * on both axes, so the shortlist keeps it */
+            survivor_shortlist(subs, nsub, keep);
+            CHECK(keep[ilocal] == 1,
+                  "%s green: shortlist dropped the local subset", tag);
+            /* red: the inversion hook keeps dominated subsets and
+             * drops non-dominated ones, so the local subset must be
+             * dropped */
+            memset(keep, 0, sizeof(int) * (size_t)nsub);
+            setenv("RJ_SUBSET_PRUNE_INVERT", "1", 1);
+            survivor_shortlist(subs, nsub, keep);
+            unsetenv("RJ_SUBSET_PRUNE_INVERT");
+            CHECK(keep[ilocal] == 0,
+                  "%s red: inverted shortlist kept the local subset",
+                  tag);
+            free(keep);
+        }
+        survivor_free_subsets(subs, nsub);
+    }
+    /* product level: the static survivor_select winner flips too */
+    {
+        int wr[RJ_MAX_DISKS];
+        setenv("RJ_SUBSET_PRUNE_INVERT", "1", 1);
+        static_win_rows(t, "red/inverted", (int[]){ fail_disk }, 1, wr);
+        unsetenv("RJ_SUBSET_PRUNE_INVERT");
+        CHECK(wr[0] != local_row,
+              "%s red: inverted static winner still rows={%d}", tag,
+              wr[0]);
+    }
+    topo_int_free(&ti);
+}
+
 /* ---------------- 6. static cost table ---------------- */
 
 static const char *kindname(plan_kind_t k)
@@ -636,6 +715,7 @@ int main(void)
     ctor_validation();
     matrix_structure(12, 2, 6, mk_azure, "azure");
     matrix_structure(8, 2, 4, mk_842, "lrc(8,2,4)");
+    matrix_structure(7, 2, 3, mk_723, "lrc(7,2,3)"); /* uneven [3,2,2] */
 
     /* 2. encode bit-exact */
     {
@@ -647,6 +727,9 @@ int main(void)
         rj_topo_free(t);
         t = rj_topo_lrc(10, 2, 6);
         test_encode(t, "lrc(10,2,6)");
+        rj_topo_free(t);
+        t = rj_topo_lrc(7, 2, 3);
+        test_encode(t, "lrc(7,2,3)");
         rj_topo_free(t);
     }
     /* corrupted-matrix red-green: the bit-exact check must catch it */
@@ -725,6 +808,9 @@ int main(void)
         local_pick_static(t, "azure/f0", 12, 2, 6, 0, 2);
         local_pick_static(t, "azure/f6", 12, 2, 6, 6, 3);
         local_pick_static(t, "azure/f11", 12, 2, 6, 11, 3);
+        /* red-green: the RJ_SUBSET_PRUNE_INVERT hook flips the pinned
+         * local pick (see docs/lrc.md) */
+        prune_invert_redgreen(t, "azure/f0/invert", 2, 0, 2);
         /* the static path's winner is the local row */
         int wr[RJ_MAX_DISKS];
         static_win_rows(t, "azure/f0", (int[]){ 0 }, 1, wr);

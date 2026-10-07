@@ -18,7 +18,7 @@ cost: local recovery reads **r** disks instead of **k**.
 
 Matrix row order: the h global rows first (rows 0..h−1), then the g
 local rows (rows h..h+g−1). All three return NULL on bad parameters
-(k<2, h<1, r<2, k>51, `r ∤ k` for the optimal form, k+h+g >
+(k<2, h<1, h>50, r<2, k>51, `r ∤ k` for the optimal form, k+h+g >
 `RJ_MAX_DISKS`) or OOM.
 
 ## Matrix design decisions
@@ -36,9 +36,15 @@ local rows (rows h..h+g−1). All three return NULL on bad parameters
   part does compose — verified exhaustively per instance (§4).
 - **Local rows are pure XOR** (0/1). This is the Azure choice and the
   whole point of LRC: local repair costs no multiplies at all.
-- **k ≤ 51 envelope.** 2 has order 51 in GF(2^8)/0x11B (verified
-  computationally), so the Vandermonde nodes 2^0..2^50 are distinct —
-  the same envelope the header documents for the default RS matrix.
+- **k ≤ 51, h ≤ 50 envelope.** 2 has order 51 in GF(2^8)/0x11B
+  (verified computationally), so the Vandermonde nodes 2^0..2^50 are
+  distinct — the same envelope the header documents for the default
+  RS matrix. The order-51 fact bounds the exponents too: at h = 51 the
+  global row with exponent 51 has entries 2^(i·51) = 1 for every
+  column — the all-ones row the design deliberately skips as exponent
+  0 (it would collapse the "(h+1) unknowns in one group" solve from
+  full rank), and at h ≥ 52 the global rows repeat with period 51.
+  `lrc_new` rejects h > 50 for exactly this reason.
 
 ## Local vs global recovery: the existing machinery already picks local
 
@@ -49,9 +55,11 @@ real `(uops_per_byte, mem_per_byte)` from `jit_build_version`, no
 duplicated model. A single failure in a group offers the h global-row
 subsets (GF-multiply plans over ~k streams) against the one local-row
 subset (pure-XOR plan over r streams). The local subset strictly
-dominates on both axes, so the pareto shortlist keeps it and both the
-static pick (`heuristic_select`, benchmarking off) and the measured
-pick prefer it. The `is_today` anchor (a global row) stays shortlisted
+dominates on both axes, so the pareto shortlist keeps it and the
+static pick (`heuristic_select`, benchmarking off) prefers it. The
+measured pick is expected to prefer it as well, but benchmarks are
+postponed per the A6 brief, so that preference is unverified. The
+`is_today` anchor (a global row) stays shortlisted
 as the no-regression anchor; it only loses genuinely.
 
 Static cost (canonical version, single failure of disk 0; from
