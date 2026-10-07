@@ -232,6 +232,106 @@ rj_topology *rj_topo_rs(int ndata, int npar)
     return t;
 }
 
+/* ---------------- LRC topologies (A6) ----------------
+ *
+ * Locally recoverable codes: k data disks, h global parities, and one
+ * local parity per local group (g = ceil(k/r) groups, as equal as
+ * possible, each of size <= r). Matrix row order: the h global rows
+ * first, then the g local rows. A single failure inside a group is
+ * recoverable from its r group-mates (pure XOR); up to h failures
+ * anywhere are recoverable from the global parities.
+ *
+ * Global rows are Vandermonde with exponents 1..h (row j: coefficient
+ * 2^((j+1)*i) on data disk i). Exponent 0 is deliberately skipped: the
+ * all-ones row would duplicate the local XOR row on any single-group
+ * column set, collapsing the (h+1)-unknowns-in-one-group solve from
+ * full rank. Nodes 2^i (i = 0..k-1) are distinct for k <= 51 (2 has
+ * order 51 in GF(2^8)/0x11B; verified computationally).
+ *
+ * Deliberately NOT routed through matrix_search_default (unlike
+ * rj_topo_rs): the bitmatrix-weight-minimal matrices it emits carry no
+ * guarantee that the global rows compose with the all-ones local rows
+ * into full-rank joint systems, which is what distance-optimality
+ * needs (every set of h+1 erasures recoverable). The Vandermonde
+ * global part does compose: see docs/lrc.md and the exhaustive
+ * per-instance verification in tests/test_lrc.c. */
+
+/* Max data disks for the Vandermonde global part (node-distinctness).
+ * Matches the header's RS envelope note (order-51 claim). */
+#define LRC_VANDERMONDE_MAX_K 51
+
+static rj_topology *lrc_new(int k, int h, int r, const char *name)
+{
+    if (k < 2 || h < 1 || r < 2)
+        return NULL;
+    if (k > LRC_VANDERMONDE_MAX_K)
+        return NULL;
+    int g = (k + r - 1) / r; /* ceil(k/r) local groups */
+    int npar = h + g;
+    if (k + npar > RJ_MAX_DISKS)
+        return NULL;
+    rj_topology *t = topo_new(k, npar, name);
+    if (!t)
+        return NULL;
+    /* topo_new mallocs the matrix (uninitialized): zero it before the
+     * piecewise fill below -- the local-row loop only writes the 1s,
+     * and garbage in the remaining bytes would silently corrupt the
+     * code (nondeterministic, malloc-dependent). */
+    memset(t->mat, 0, (size_t)npar * (size_t)k);
+    for (int j = 0; j < h; j++) {
+        uint8_t *row = t->mat + (size_t)j * (size_t)k;
+        uint8_t step = gf_pow(2, (unsigned)(j + 1));
+        uint8_t v = 1;
+        for (int i = 0; i < k; i++) {
+            row[i] = v;
+            v = gf_mul(v, step);
+        }
+    }
+    /* Local rows: one XOR per group. Group gi covers data disks
+     * [base, base+sz); sizes differ by at most 1. */
+    int base = 0;
+    for (int gi = 0; gi < g; gi++) {
+        int sz = k / g + (gi < k % g ? 1 : 0);
+        uint8_t *row = t->mat + (size_t)(h + gi) * (size_t)k;
+        for (int i = 0; i < sz; i++)
+            row[base + i] = 1;
+        base += sz;
+    }
+    return t;
+}
+
+/* General local-parity mechanism: k data disks, h global (Vandermonde)
+ * parities, locality r (groups of size <= r, one XOR local parity
+ * each). Returns NULL on bad parameters or OOM. */
+rj_topology *rj_topo_lrc(int k, int h, int r)
+{
+    char nm[32];
+    snprintf(nm, sizeof(nm), "lrc(%d,%d,%d)", k, h, r);
+    return lrc_new(k, h, r, nm);
+}
+
+/* The canonical Azure (12,2,2) LRC: 12 data, 2 global parities, 2 local
+ * parities with locality 6. */
+rj_topology *rj_topo_lrc_azure(void)
+{
+    return lrc_new(12, 2, 6, "lrc-azure(12,2,2)");
+}
+
+/* Distance-optimal LRC parameterization: requires r | k (otherwise the
+ * Singleton-type bound d <= n-k-ceil(k/r)+2 is not tight at h+2 and
+ * NULL is returned). The emitted code attains d = h+2; optimality is
+ * verified exhaustively per instance (every (h+1)-erasure pattern
+ * recoverable, an (h+2)-witness exhibited) in tests/test_lrc.c and
+ * recorded in docs/lrc.md. */
+rj_topology *rj_topo_lrc_optimal(int k, int h, int r)
+{
+    if (r < 2 || k % r != 0)
+        return NULL;
+    char nm[32];
+    snprintf(nm, sizeof(nm), "lrc-opt(%d,%d,%d)", k, h, r);
+    return lrc_new(k, h, r, nm);
+}
+
 rj_topology *rj_topo_custom(int ndata, int npar, const uint8_t *matrix)
 {
     if (!matrix)

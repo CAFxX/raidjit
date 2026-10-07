@@ -59,7 +59,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
         $(BUILDDIR)/test_recover_closedform \
         $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
-        $(BUILDDIR)/test_batched
+        $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -339,6 +339,7 @@ endif
 	./$(BUILDDIR)/test_striping
 	./$(BUILDDIR)/test_planid
 	./$(BUILDDIR)/test_batched
+	./$(BUILDDIR)/test_lrc
 
 # Sanitizer build: all tests under ASan+UBSan (leaks, OOB, UB).
 test-asan: clean
@@ -550,3 +551,6 @@ $(BUILDDIR)/test_planid: tests/test_planid.c $(BUILDDIR)/libraidjit.a $(HDRS) | 
 
 $(BUILDDIR)/test_batched: tests/test_batched.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_batched.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_lrc: tests/test_lrc.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_lrc.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
