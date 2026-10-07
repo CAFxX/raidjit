@@ -69,3 +69,36 @@ generation.
   over unchanged (documented in `raidjit_fused.h`).
 - Trampoline slots: 32 for the `rj_fn_crc` entry point, same lifetime
   rules as `rj_get_fn_batched` (documented in the header).
+
+
+## Generalized fusion planner (#8)
+
+The #38 driver fused one fixed pair (encode + CRC). The #8 planner
+generalizes this: `rj_fuse_compile` takes a short sequence (1..4 ops)
+over one topology and fuses the compatible ones into a single kernel
+invocation -- one entry point, one cache-blocked tile loop.
+
+Supported ops: `RJ_FOP_ENCODE`, `RJ_FOP_PARITY_UPDATE` (changed[]
+cleaned/sorted/deduped at compile time), `RJ_FOP_CRC` (targets one
+earlier data op; at most one CRC per sequence). Compatibility is
+checked up front; anything else (empty/oversize sequence, unknown
+kind, CRC with no/duplicate/bad target, empty-or-invalid changed[])
+fails loudly at compile time, never silently.
+
+Each data op is compiled through the public `rj_compile` planner
+(full enumeration / pruning / benchmarking), so every sub-kernel is
+planner-selected exactly as if compiled alone. The flat buffer layout
+is sequence order, with per-op counts from the `rj_fn` contract
+(encode: ndata/npar; parity-update: 2*nchanged+npar/npar); read-only
+input buffers may be shared across sub-ops (e.g. the update's new[]
+aliasing the encode's in[]), anything else is UB.
+
+`rj_compile_crc` is now the sequence `[ENCODE, CRC->0]` through this
+planner; the public `rj_fn_crc` contract (separate crc_in/crc_out, NULL
+sides) is preserved by an adapter trampoline that merges/splits the
+CRC arrays and delegates via `rj_fused_call` (no extra trampoline
+slot consumed).
+
+Tiling, trampoline pool, and lifetime/thread-safety rules are the
+same as #38 (32 static slots, mutex-guarded; slot reuse on free is a
+use-after-free; entry points must be discarded before free).
