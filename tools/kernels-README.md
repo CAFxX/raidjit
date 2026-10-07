@@ -140,6 +140,29 @@ Bug fix (2026-10-07, found by this regen):
 - x86: `maskedtail` added to the pipe twin's exclusion list (same
   class; was only reachable via direct candidate construction).
 
+## Deliberately not represented (driver-level compositions)
+
+This document showcases JIT-emitted machine code. Three Lane-2
+capabilities compose planner-selected kernels at the C driver level and
+emit no distinct kernel of their own, so they have no sections here;
+their sub-kernels' shapes are covered by the sections above:
+
+- #8 fused kernels (`rj_fuse_compile`, src/fused.c): each data op
+  (ENCODE / PARITY_UPDATE) is compiled through the public `rj_compile`
+  planner -- the emitted bytes are exactly the sub-op kernels' bytes.
+  The "fusion" (one entry point, one plan-time tile loop, CRC
+  accumulation over the hot tile) is C code in `fused_driver_call`;
+  no JIT codegen is involved. A fused section would duplicate the
+  sub-op sections byte-for-byte.
+- #10 cache-blocked striping (`rj_compile_tiled`, src/striping.c):
+  wraps the winning `rj_fn` in a C tile loop (`rj_tile_select` is
+  plan-time). The header contract is explicit: "Bit-exact vs the
+  untiled rj_fn (same kernel, disjoint tiles)."
+- #38 integrated CRC (`rj_compile_crc`, src/api_crc.c): the CRC-32 is
+  scalar table-driven C (src/crc.c, slice-by-8) accumulated in the
+  driver; the JIT kernel is the standard encode winner. (`rj_compile_crc`
+  is `rj_fuse_compile` with the sequence [ENCODE, CRC].)
+
 ## What changed vs the 2026-10-01 set (2026-10-05)
 
 - `raid6-5_sve2`: now contains 16 EOR3 (was: zero SVE2 instructions);
