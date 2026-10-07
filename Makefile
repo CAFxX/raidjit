@@ -17,7 +17,8 @@ BUILDDIR = build-$(ARCH)
 COMMON_SRCS = src/gf.c src/plan.c src/topo.c src/bench.c src/ref.c src/api.c \
         src/prune.c src/dispatch.c src/xorsched.c src/matrix_search.c \
         src/xorcode.c src/survivor.c src/prefetch_calib.c src/planid.c \
-        src/crc.c src/striping.c src/api_crc.c src/fused.c
+        src/crc.c src/striping.c src/api_crc.c src/fused.c \
+        src/api_batched.c
 ifeq ($(ARCH),x86_64)
 ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c
 else ifeq ($(ARCH),aarch64)
@@ -57,7 +58,8 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
         $(BUILDDIR)/test_recover_closedform \
-        $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid
+        $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
+        $(BUILDDIR)/test_batched
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -336,6 +338,7 @@ endif
 	./$(BUILDDIR)/test_fused
 	./$(BUILDDIR)/test_striping
 	./$(BUILDDIR)/test_planid
+	./$(BUILDDIR)/test_batched
 
 # Sanitizer build: all tests under ASan+UBSan (leaks, OOB, UB).
 test-asan: clean
@@ -544,3 +547,6 @@ $(BUILDDIR)/test_striping: tests/test_striping.c $(BUILDDIR)/libraidjit.a $(HDRS
 
 $(BUILDDIR)/test_planid: tests/test_planid.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_planid.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_batched: tests/test_batched.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_batched.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

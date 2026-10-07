@@ -265,6 +265,61 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
 rj_fn   rj_get_fn(const rj_jit *j);
 void    rj_free(rj_jit *j);
 
+/* Batched multi-stripe fast path (Tier-1 driver, queue item #9).
+ *
+ * One call processes S stripes that share j's topology and op (encode,
+ * recover with one fixed failed set, or parity update with one fixed
+ * changed set -- a dead disk is dead for all stripes, so one failed
+ * set per recover batch matches the physical reality). The driver is a
+ * C loop calling j's dispatched rj_fn once per stripe: the same jitted
+ * code (and the same length dispatch) rj_get_fn(j) returns. Zero new
+ * codegen. rj_jit stays specialized on (topology, op, CPU); S is per
+ * call, so one compiled unit serves every batch size.
+ *
+ * Pointer layout: flat, row-major over stripes. Stripe s owns
+ *   in[s*nbufs_in .. (s+1)*nbufs_in) and
+ *   out[s*nbufs_out .. (s+1)*nbufs_out),
+ * where nbufs_in/nbufs_out are exactly the per-stripe counts from the
+ * rj_fn contract for j's op (encode: ndata/npar; recover:
+ * nsurv/nfailed; parity update: 2*nchanged+npar/npar). Only the pointer
+ * arrays are flat; the data buffers keep whatever layout the caller
+ * already uses. len is one shared stripe length for the whole batch,
+ * same meaning as rj_fn's len (arbitrary, need not be a vector
+ * multiple); mixed lengths are handled by grouping equal-len stripes
+ * into separate calls.
+ *
+ * Unchecked contract, exactly like rj_fn: violations (S == 0, NULL in,
+ * NULL out when nbufs_out > 0, misaligned buffers, aliasing across
+ * stripes, overlapping buffers) are undefined behavior. Stripes
+ * complete in index order 0..S-1. void return: the driver loop cannot
+ * fail partway (no allocation, no syscalls inside).
+ *
+ * S sizing guidance (no hard cap in code): the driver chunks internally
+ * so its auxiliary footprint stays bounded for any S; batches up to
+ * ~2^20 stripes are comfortably handled. Keep each batch's working set
+ * LLC-resident when you care about throughput -- stripe-major data
+ * layouts stream better than batch-major-per-disk ones past the LLC.
+ *
+ * NT-store fence contract, inherited from rj_fn: the caller must fence
+ * once per batched call (not per stripe) before reading the outputs --
+ * SFENCE on x86, DMB ISHST on AArch64; no fence needed on RISC-V.
+ * There is no machine-readable NT signal and no batch-aware
+ * benchmarking in v1 (the driver inherits the single-stripe benchmark
+ * winner), so fence unconditionally whenever the winning kernel may
+ * use NT stores.
+ *
+ * Lifetime: the entry point shares j's lifetime. rj_free releases it; a
+ * call through the entry point after rj_free is dangling (the slot may
+ * be reused by a newer rj_jit, turning a loud fault into silent wrong
+ * output). Always re-fetch via rj_get_fn_batched after re-compiling. */
+typedef void (*rj_fn_batched)(const void *const *in, void *const *out,
+                              size_t S, size_t len);
+
+/* The batched entry point for j. NULL when j is NULL or on driver
+ * allocation/slot failure -- which degrades to single-stripe only:
+ * rj_get_fn(j) keeps working. */
+rj_fn_batched rj_get_fn_batched(const rj_jit *j);
+
 typedef struct {
     char   desc[192];      /* e.g. "raid6 enc horner avx512+gfni U=4" */
     char   isa_name[32];   /* "sse" / "avx2" / "avx512" */

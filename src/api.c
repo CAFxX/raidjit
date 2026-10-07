@@ -9,9 +9,14 @@
 #include "dispatch.h"
 #include "prefetch_calib.h"
 #include "survivor.h"
-/* Forward declaration for item #9's batched driver (not yet landed);
- * api_batched.h will provide the full declaration. */
+/* Item #9's batched driver (src/api_batched.c). Per the #29 fixup we do
+ * NOT include api_batched.h here: the incomplete struct type plus these
+ * prototypes are the whole coupling. */
 struct rj_batch;
+struct rj_batch *rj_batch_create(rj_fn fn, size_t nbufs_in,
+                                 size_t nbufs_out);
+rj_fn_batched rj_batch_fn(struct rj_batch *b);
+void rj_batch_destroy(struct rj_batch *b);
 #include "planid.h"
 
 #include <stdlib.h>
@@ -687,6 +692,28 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
     } else {
         plan_free(&pl);
     }
+    /* Batched Tier-1 driver (item #9): inherits the dispatched
+     * single-stripe winner (the same fn rj_get_fn returns), zero new
+     * codegen. nbufs counts follow the rj_fn caller contract for this
+     * op. ti is still alive here; it is freed below. OOM degrades to
+     * single-stripe only: rj_get_fn_batched returns NULL and rj_get_fn
+     * keeps working. */
+    {
+        size_t nbufs_in, nbufs_out;
+        if (op->is_parity_update) {
+            nbufs_in = (size_t)(2 * op->nchanged + ti.npar);
+            nbufs_out = (size_t)ti.npar;
+        } else if (op->is_recover) {
+            nbufs_in = (size_t)(ti.ndata + ti.npar - op->nfailed);
+            nbufs_out = (size_t)op->nfailed;
+        } else {
+            nbufs_in = (size_t)ti.ndata;
+            nbufs_out = (size_t)ti.npar;
+        }
+        j->batch = rj_batch_create(j->disp ? rj_dispatcher_fn(j->disp)
+                                           : j->v.fn,
+                                  nbufs_in, nbufs_out);
+    }
     topo_int_free(&ti);
     return j;
 
@@ -719,10 +746,21 @@ rj_fn rj_get_fn(const rj_jit *j)
     return j->v.fn;
 }
 
+rj_fn_batched rj_get_fn_batched(const rj_jit *j)
+{
+    if (!j)
+        return NULL;
+    /* NULL when the driver failed to allocate (rj_compile degrades to
+     * single-stripe only); rj_batch_fn(NULL) is NULL either way. */
+    return rj_batch_fn(j->batch);
+}
+
 void rj_free(rj_jit *j)
 {
     if (j) {
         rj_dispatcher_destroy(j->disp);
+        rj_batch_destroy(j->batch); /* NULL-safe: pinned compiles never
+                                    * created one */
         for (int t = 0; t < j->ntwins; t++)
             jit_free_version(&j->twins[t]);
         jit_free_version(&j->v);
@@ -1125,9 +1163,11 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
     for (int t = 0; t < ntwins; t++)
         jit_free_version(&twins[t]);
     rj_dispatcher_destroy(disp);
-    /* Batched Tier-1 driver (item #9) not created here: rj_batch_create
-     * is #9's API, not yet landed. j->batch stays NULL (calloc); pinned
-     * compile serves single-stripe only until #9 lands. */
+    /* Batched Tier-1 driver (item #9) is intentionally not created
+     * here: pinned compile serves single-stripe only (j->batch stays
+     * NULL via calloc, rj_get_fn_batched returns NULL). Batching is
+     * rj_compile's API; the pinned path pins one exact plan and does
+     * not take on the driver's trampoline slot. */
     /* The effective ID: round-trips the input ID when nothing degraded
      * (tail=scalar honestly when dispatcher creation failed). */
     {
