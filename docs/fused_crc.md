@@ -102,3 +102,25 @@ slot consumed).
 Tiling, trampoline pool, and lifetime/thread-safety rules are the
 same as #38 (32 static slots, mutex-guarded; slot reuse on free is a
 use-after-free; entry points must be discarded before free).
+
+
+## Cache-blocked striping (#10)
+
+`rj_compile_tiled` compiles one op (encode / recover / parity-update)
+through the public `rj_compile` planner, then wraps the winning
+`rj_fn` in a tile loop sized by `rj_tile_select` at compile time --
+zero runtime cost for the tiling decision. The kernel sees only
+disjoint tiles, so the result is bit-exact vs the untiled call; only
+the working set per call changes (one tile instead of the whole
+stripe), keeping multi-GB stripes in LLC.
+
+The entry point is the same 32-slot trampoline-pool pattern; the
+wrapped function keeps the plain `rj_fn` signature, so tiled handles
+compose anywhere an `rj_fn` is expected.
+
+Scope notes:
+
+- The tile size is a static heuristic (see `src/striping.h`); it is
+  NOT a measured quantity and is never presented as one.
+- Tile boundaries are required to be 64-byte aligned, so the
+  per-tile kernel calls inherit the `rj_fn` alignment contract.

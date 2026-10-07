@@ -107,6 +107,22 @@ int rj_fused_op_nout(const rj_fused *f, int idx);
 int rj_fused_nops(const rj_fused *f);
 size_t rj_fused_tile_bytes(const rj_fused *f);
 
+/* ---------------- cache-blocked striping (#10) ----------------
+ * The plain rj_fn entry point, but the stripe is processed in
+ * plan-time-sized tiles so multi-GB stripes stay in LLC. The tile size
+ * comes from the static cache heuristic (see src/striping.h), chosen
+ * once at compile time -- zero runtime cost for the decision.
+ * Bit-exact vs the untiled rj_fn (same kernel, disjoint tiles).
+ */
+typedef struct rj_tiled rj_tiled;
+
+rj_tiled *rj_compile_tiled(const rj_topology *topo, const rj_op *op,
+                           const rj_options *opts, char *err, size_t errlen);
+rj_fn rj_get_fn_tiled(const rj_tiled *t);
+void rj_free_tiled(rj_tiled *t);
+void rj_get_info_tiled(const rj_tiled *t, rj_info *info);
+size_t rj_tiled_tile_bytes(const rj_tiled *t); /* 0 for a NULL handle */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
