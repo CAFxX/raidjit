@@ -83,21 +83,21 @@ int main(void)
         pl.horner_c = malloc(3);
         pl.horner_c[0] = 2; pl.horner_c[1] = 3; pl.horner_c[2] = 4;
         /* x86 nibble: 3*8 acc + t,tlo,thi,r1,r2,mask (6) + 2*3 tables */
-        CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0) == 24 + 6 + 6,
+        CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0, 0) == 24 + 6 + 6,
               "x86 horner nibble: got %d want 36",
-              plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0));
+              plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0, 0));
         /* x86 GFNI: 24 + t,t2 (2) + 3 tables */
-        CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 8, 0) == 24 + 2 + 3,
+        CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 8, 0, 0) == 24 + 2 + 3,
               "x86 horner gfni: got %d want 29",
-              plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 8, 0));
+              plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 8, 0, 0));
         /* RVV: (3+1)*8 staging+acc + tlo,thi,r1,r2,mask (5) + 2*3 tables */
-        CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 0) == 32 + 5 + 6,
+        CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 0, 0) == 32 + 5 + 6,
               "rvv horner: got %d want 43",
-              plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 0));
+              plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 0, 0));
         /* RVV Zvbc: (3+1)*8 staging+acc + r1,r2,r3,kvec (4) + 3 cvec */
-        CHECK(plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 8, 0) == 32 + 4 + 3,
+        CHECK(plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 8, 0, 0) == 32 + 4 + 3,
               "rvv horner zvbc: got %d want 39",
-              plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 8, 0));
+              plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 8, 0, 0));
         free(pl.horner_c);
     }
     {
@@ -107,25 +107,25 @@ int main(void)
         pl.n_out = 5;
         pl.n_in = 4;
         /* x86 nibble MULACC: 5*U acc + t,tlo,thi,r1,r2,tbl,mask (7) */
-        CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 6, 0) == 30 + 7,
+        CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 6, 0, 0) == 30 + 7,
               "x86 mulacc nibble U=6: got %d want 37",
-              plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 6, 0));
+              plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 6, 0, 0));
         /* x86 GFNI MULACC: 30 + t,t2,tbl (3) = 33 > 32 */
-        CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 6, 0) == 33,
+        CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 6, 0, 0) == 33,
               "x86 mulacc gfni U=6: got %d want 33",
-              plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 6, 0));
-        CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 5, 0) == 28,
+              plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 6, 0, 0));
+        CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 5, 0, 0) == 28,
               "x86 mulacc gfni U=5: got %d want 28",
-              plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 5, 0));
+              plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 5, 0, 0));
         /* RVV Zvbc MULACC: 5*U acc + U data + r1,r2,r3,cvec,kvec (5) */
-        CHECK(plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 6, 0) == 36 + 5,
+        CHECK(plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 6, 0, 0) == 36 + 5,
               "rvv mulacc zvbc U=6: got %d want 41",
-              plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 6, 0));
+              plan_need_regs(ISA_RVV, MUL_ZVBC, &pl, 6, 0, 0));
         /* XOR: acc + 1 temp on every ISA */
         pl.kind = P_XOR;
-        CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 8, 0) == 41,
+        CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 8, 0, 0) == 41,
               "xor: got %d want 41",
-              plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 8, 0));
+              plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 8, 0, 0));
     }
 
     /* 2. Admission boundary: 5-output MULACC on AVX-512+GFNI. U=6 needs
@@ -151,7 +151,7 @@ int main(void)
         for (int i = 0; i < nc; i++) {
             /* every offered candidate must fit the regfile */
             int need = plan_need_regs(cands[i].isa, cands[i].mul, &pl,
-                                      cands[i].U, cands[i].remat);
+                                      cands[i].U, cands[i].remat, 0);
             CHECK(need <= isa_nregs(cands[i].isa),
                   "cand %s U=%d needs %d > %d regs",
                   isa_name(cands[i].isa), cands[i].U, need,
@@ -188,9 +188,9 @@ int main(void)
         pl.horner_c[1] = 2;
         pl.horner_c[2] = 4;
         /* x86 nibble: 3*8 + 6 + 2*2 = 34 (not 36) */
-        CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0) == 34,
+        CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0, 0) == 34,
               "horner trivial-row: got %d want 34",
-              plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0));
+              plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0, 0));
         free(pl.horner_c);
     }
 
@@ -219,12 +219,12 @@ int main(void)
             /* Pin the exact P_MULACC nibble accounting (non-remat): one
              * more unroll would exceed the 32-reg file (3*9+7=34), so
              * U=8 is the boundary admission. */
-            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0) == 31,
+            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0, 0) == 31,
                   "mulacc nibble U=8: got %d want 31",
-                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0));
-            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 7, 0) == 28,
+                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 8, 0, 0));
+            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 7, 0, 0) == 28,
                   "mulacc nibble U=7: got %d want 28",
-                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 7, 0));
+                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 7, 0, 0));
             cand_t cands[128];
             int nc = plan_candidates(&pl, &cpu, cands, 128, 0, 0);
             CHECK(nc > 0, "no candidates");
@@ -232,7 +232,7 @@ int main(void)
             for (int i = 0; i < nc; i++) {
                 /* every offered candidate must fit the regfile */
                 int need = plan_need_regs(cands[i].isa, cands[i].mul, &pl,
-                                          cands[i].U, cands[i].remat);
+                                          cands[i].U, cands[i].remat, 0);
                 CHECK(need <= isa_nregs(cands[i].isa),
                       "cand %s U=%d needs %d > %d regs",
                       isa_name(cands[i].isa), cands[i].U, need,
@@ -276,30 +276,30 @@ int main(void)
             /* n_out=1, U=4. x86 nibble: AVX2/AVX-512 drop
              * tlo/thi/r1/r2/tbl/mask (4+1=5); SSE keeps r1 as the delta
              * temp (4+2=6). GFNI drops t2/tbl (4+1=5). */
-            CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0) == 5,
+            CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0, 0) == 5,
                   "delta-trivial avx2 nibble: got %d want 5",
-                  plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 4, 0) == 6,
+                  plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 4, 0, 0) == 6,
                   "delta-trivial sse nibble: got %d want 6",
-                  plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 4, 0) == 5,
+                  plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 4, 0, 0) == 5,
                   "delta-trivial avx512 nibble: got %d want 5",
-                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0) == 5,
+                  plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0, 0) == 5,
                   "delta-trivial avx512 gfni: got %d want 5",
-                  plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0));
+                  plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0, 0));
             /* AArch64 (NEON/SVE): r1 stays live as the delta temp
              * (4+2=6). RVV: vd0[U] + tlo/thi delta temps
              * ((1+1)*4+2=10). */
-            CHECK(plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0) == 6,
+            CHECK(plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0, 0) == 6,
                   "delta-trivial neon: got %d want 6",
-                  plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0) == 6,
+                  plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0, 0) == 6,
                   "delta-trivial sve: got %d want 6",
-                  plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0) == 10,
+                  plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0, 0) == 10,
                   "delta-trivial rvv: got %d want 10",
-                  plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0));
+                  plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0, 0));
             rj_op_free(&op);
             plan_free(&pl);
             topo_int_free(&ti);
@@ -323,23 +323,23 @@ int main(void)
             CHECK(pl.kind == P_DELTA, "expected P_DELTA, got %d", pl.kind);
             CHECK(plan_any_nontrivial(&pl) == 1,
                   "raid6 delta matrix should be nontrivial");
-            CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0) == 15,
+            CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0, 0) == 15,
                   "delta-nontriv avx2 nibble: got %d want 15",
-                  plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0) == 11,
+                  plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0, 0) == 11,
                   "delta-nontriv avx512 gfni: got %d want 11",
-                  plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0) == 16,
+                  plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0, 0) == 16,
                   "delta-nontriv neon: got %d want 16",
-                  plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0));
+                  plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 4, 0, 0));
             /* SVE shares the a64 logical formula (n_out*U+8 with hoisted
              * tables); the 24-reg file is enforced via isa_nregs. */
-            CHECK(plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0) == 16,
+            CHECK(plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0, 0) == 16,
                   "delta-nontriv sve: got %d want 16",
-                  plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0));
-            CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0) == 19,
+                  plan_need_regs(ISA_SVE, MUL_NIBBLE, &pl, 4, 0, 0));
+            CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0, 0) == 19,
                   "delta-nontriv rvv: got %d want 19",
-                  plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0));
+                  plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 4, 0, 0));
             rj_op_free(&op);
             plan_free(&pl);
             topo_int_free(&ti);
@@ -361,9 +361,9 @@ int main(void)
         pl.mat = calloc(2, 1);
         pl.mat[0] = pl.mat[1] = 1;
         CHECK(plan_any_nontrivial(&pl) == 0, "hand-built delta trivial");
-        CHECK(plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 5, 0) == 12,
+        CHECK(plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 5, 0, 0) == 12,
               "hand-built delta sse U=5: got %d want 12",
-              plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 5, 0));
+              plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 5, 0, 0));
         rj_cpu_info cpusse;
         memset(&cpusse, 0, sizeof(cpusse));
         cpusse.sse2 = cpusse.ssse3 = 1;

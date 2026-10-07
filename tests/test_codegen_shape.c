@@ -908,9 +908,9 @@ static void test_delta_trivial(void)
         version_t v;
         if (build_cand(&pl, &cpu, ISA_AVX2, 1, MUL_NIBBLE, 0, &v, err,
                        sizeof err)) {
-            CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 1, 0) == 2,
+            CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 1, 0, 0) == 2,
                   "dta [%s]: need=%d, want 2",
-                  v.desc, plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 1, 0));
+                  v.desc, plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 1, 0, 0));
             CHECK(v.const_size == 0,
                   "dta [%s]: const_size=%zu, want 0 (mask/table setup dead)",
                   v.desc, v.const_size);
@@ -927,9 +927,9 @@ static void test_delta_trivial(void)
         version_t v;
         if (build_cand(&pl, &cpu, ISA_AVX512, 1, MUL_GFNI, 0, &v, err,
                        sizeof err)) {
-            CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 1, 0) == 2,
+            CHECK(plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 1, 0, 0) == 2,
                   "dta [%s]: need=%d, want 2",
-                  v.desc, plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 1, 0));
+                  v.desc, plan_need_regs(ISA_AVX512, MUL_GFNI, &pl, 1, 0, 0));
             CHECK(v.const_size == 0,
                   "dta [%s]: const_size=%zu, want 0", v.desc, v.const_size);
             printf("dta [%s]: need=2 const_size=0 OK\n", v.desc);
@@ -945,9 +945,9 @@ static void test_delta_trivial(void)
         version_t v;
         if (build_cand(&pl, &cpu, ISA_SSE, 1, MUL_NIBBLE, 0, &v, err,
                        sizeof err)) {
-            CHECK(plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 1, 0) == 3,
+            CHECK(plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 1, 0, 0) == 3,
                   "dta [%s]: need=%d, want 3",
-                  v.desc, plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 1, 0));
+                  v.desc, plan_need_regs(ISA_SSE, MUL_NIBBLE, &pl, 1, 0, 0));
             CHECK(v.const_size == 0,
                   "dta [%s]: const_size=%zu, want 0", v.desc, v.const_size);
             /* functional check of the kept delta temp */
@@ -1012,9 +1012,9 @@ static void test_delta_trivial(void)
             version_t v;
             if (build_cand(&pl6, &cpu, ISA_AVX2, 1, MUL_NIBBLE, 0, &v, err,
                            sizeof err)) {
-                CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl6, 1, 0) == 9,
+                CHECK(plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl6, 1, 0, 0) == 9,
                       "dta-ctrl [%s]: need=%d, want 9", v.desc,
-                      plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl6, 1, 0));
+                      plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl6, 1, 0, 0));
                 CHECK(v.const_size > 0,
                       "dta-ctrl [%s]: const_size=%zu, want >0",
                       v.desc, v.const_size);
@@ -1054,7 +1054,7 @@ static void test_mulacc_trivial_rvv(void)
 
     /* (n_out+1)*U + 0 = 2: only the U data regs survive. The RVV backend
      * stages inputs into vd0..vd0+U-1, already counted in (n_out+1)*U. */
-    int need = plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 1, 0);
+    int need = plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 1, 0, 0);
     CHECK(need == 2, "mtr: need=%d, want 2", need);
     if (need == 2)
         printf("mtr [rvv trivial mulacc]: need=2 OK\n");
