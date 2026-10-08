@@ -58,9 +58,15 @@ be a drop-in replacement: for all inputs,
      structure (synthesis table optimum for Intel SKL→CLX: 24.05 GB/s
      reported; AMD Zen: 12.9 GB/s). (Finding 13: the table — not fusion —
      is the arbiter here.)
-  4. `sse42` → hw `crc32q` N-way interleave (22.5–27.3 GB/s reported).
-  5. else → existing slice-by-8 (`rj_crc32_update` body, reused not
+  4. else → existing slice-by-8 (`rj_crc32_update` body, reused not
      duplicated).
+  NOTE (W1 verified, W4 independently confirmed): there is NO `crc32`
+  rung on x86 — the `CRC32` instruction computes CRC-32C (Castagnoli;
+  hw check on "123456789" yields 0xE3069283, not IEEE 0xCBF43926), so it
+  cannot accelerate IEEE CRC-32. The synthesis's "SSE4.2 / hw crc32q"
+  row (22.5–27.3 GB/s) is CRC-32C-only and does not apply. The pinned
+  `rj_crc32_fast_x86_crc32hw` entry point is retained for interface
+  stability but delegates to slice-by-8; class 1 is never returned.
 - AArch64 chain:
   1. `pmull && sha3` → Cawley fusion (`crc32_armv8_pmull_eor3.c` structure).
      Lane structure follows the synthesis PER-CORE variants (M1 v9s3x2e_s3
