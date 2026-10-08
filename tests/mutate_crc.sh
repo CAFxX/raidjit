@@ -32,7 +32,10 @@ done
 [ -n "$FILE" ] && [ -n "$SED" ] || { echo "need --file and --sed" >&2; exit 2; }
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-WT="$(mktemp -d /tmp/crc-mut.XXXXXX)"
+# Worktree parent: ~/workspace/tmp (persistent) -- /tmp is pruned on this VM.
+WT_PARENT="${TMPDIR:-$HOME/workspace/tmp}"
+mkdir -p "$WT_PARENT"
+WT="$(mktemp -d "$WT_PARENT/crc-mut.XXXXXX")"
 cleanup() {
     cd "$REPO" 2>/dev/null || true
     git worktree remove --force "$WT" >/dev/null 2>&1 || true
