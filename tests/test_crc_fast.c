@@ -202,13 +202,15 @@ static void test_kat(void)
 {
     static const uint8_t msg[] = "123456789";
     for (size_t v = 0; v < NVAR; v++) {
-        uint32_t c = variants[v].fn(0xFFFFFFFFu, msg, 9);
+        /* The entry points return the RUNNING crc (pre-xorout); the
+         * catalog check value is post-xorout, hence rj_crc32_final. */
+        uint32_t c = rj_crc32_final(variants[v].fn(0xFFFFFFFFu, msg, 9));
         CHECK(c == 0xCBF43926u, "KAT variant %s: got 0x%08X, want 0xCBF43926",
               variants[v].name, c);
     }
     /* The bitwise oracle agrees with the catalog value (anchors the
      * oracle chain; a broken oracle cannot hide behind the KAT). */
-    CHECK(crc32_bitwise(0xFFFFFFFFu, msg, 9) == 0xCBF43926u,
+    CHECK((crc32_bitwise(0xFFFFFFFFu, msg, 9) ^ 0xFFFFFFFFu) == 0xCBF43926u,
           "bitwise oracle disagrees with catalog KAT");
 }
 
@@ -233,8 +235,11 @@ static void test_bitexact(void)
                           "scalar vs bitwise disagree len=%zu m=%d",
                           len, m);
 #ifdef RJ_CRC_HAVE_ZLIB
+                /* zlib's crc32() consumes the POST-xorout CRC:
+                 * crc32(0,buf,len) is the one-shot FINAL value, so it
+                 * equals our running value XORed with 0xFFFFFFFF. */
                 if (((len + (size_t)m) % 11) == 0)
-                    CHECK(crc32(crc0, p, (uInt)len) == exp,
+                    CHECK(crc32(0L, p, (uInt)len) == (exp ^ 0xFFFFFFFFu),
                           "zlib vs bitwise disagree len=%zu m=%d",
                           len, m);
 #endif
@@ -272,7 +277,8 @@ static void test_large(void)
                 const uint8_t *p = tbuf + mis[mi];
                 uint32_t exp = crc32_bitwise(0xFFFFFFFFu, p, len);
 #ifdef RJ_CRC_HAVE_ZLIB
-                CHECK(crc32(0xFFFFFFFFu, p, (uInt)len) == exp,
+                /* See test_bitexact: zlib takes the post-xorout CRC. */
+                CHECK(crc32(0L, p, (uInt)len) == (exp ^ 0xFFFFFFFFu),
                       "zlib vs bitwise disagree len=%zu", len);
 #endif
                 for (size_t v = 0; v < NVAR; v++)
