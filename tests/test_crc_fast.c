@@ -464,20 +464,17 @@ static void test_dispatch(void)
     x86_cpuid(1, 0, &a, &b, &c, &d);
     int hw_pclmul = (c >> 1) & 1;
     int hw_sse42 = (c >> 20) & 1;
-    int hw_vpclmul = 0, hw_avx512f_os = 0;
+    int hw_vpclmul = 0;
     x86_cpuid(0, 0, &a, &b, &c, &d);
     if (a >= 7) {
         x86_cpuid(7, 0, &a, &b, &c, &d);
         hw_vpclmul = (c >> 10) & 1;
-        int avx512f_hw = (b >> 16) & 1;
-        unsigned lo, hi;
-        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-        unsigned long long xcr0 = ((unsigned long long)hi << 32) | lo;
-        hw_avx512f_os = avx512f_hw && ((xcr0 & 0xE0) == 0xE0);
     }
-    /* Spec R2 chain, best first. */
-    int expected =
-        (hw_vpclmul && hw_avx512f_os) ? 3 : hw_pclmul ? 2 : hw_sse42 ? 1 : 0;
+    /* Spec R2 chain, best first (Finding 13: class 3 covers BOTH vpclmul
+     * fusion rungs -- vpclmulqdq&&avx512f and vpclmulqdq&&!avx512f --
+     * the rj_crc32_fast_x86_vpclmul entry point selects the rung
+     * internally, so the class test does not distinguish them). */
+    int expected = hw_vpclmul ? 3 : hw_pclmul ? 2 : hw_sse42 ? 1 : 0;
     int present = rj_crc32_fast_test_backend_present();
     int strict = getenv("RJ_CRC_STRICT") != NULL;
     if (!present) {
@@ -495,8 +492,8 @@ static void test_dispatch(void)
     int cls = rj_crc32_fast_x86_class();
     CHECK(cls == expected,
           "x86 class %d != expected %d "
-          "(hw: vpclmul=%d avx512f_os=%d pclmul=%d sse42=%d)",
-          cls, expected, hw_vpclmul, hw_avx512f_os, hw_pclmul, hw_sse42);
+          "(hw: vpclmul=%d pclmul=%d sse42=%d)",
+          cls, expected, hw_vpclmul, hw_pclmul, hw_sse42);
     /* Informational only: the library's own rj_cpu_detect() may not
      * report the new flags yet (their wiring is backend-worker scope);
      * selection is verified against hardware CPUID directly above, so

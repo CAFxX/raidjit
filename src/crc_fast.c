@@ -52,6 +52,8 @@ static rj_crc_fast_fn g_crc_fast_fn = rj_crc32_fast_arm;
 #elif defined(__riscv)
 static rj_crc_fast_fn g_crc_fast_fn = rj_crc32_fast_riscv;
 #else
+/* WASM (__EMSCRIPTEN__) and unknown ISAs (spec Finding 17c): portable
+ * slice-by-8, no backend entry. */
 static rj_crc_fast_fn g_crc_fast_fn = rj_crc32_update;
 #endif
 

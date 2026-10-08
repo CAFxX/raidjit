@@ -504,6 +504,14 @@ int rj_list_variants(const rj_topology *topo, rj_op op,
  * len == 0 is legal (data may then be NULL); the call is a no-op
  * returning crc unchanged. Thread-safe: dispatch has no mutable state.
  *
+ * Edge-case contract (spec Finding 17b): data must point to len
+ * readable bytes (len > 0). Chunk arithmetic inside the implementation
+ * is wraparound-free by construction (size_t block counts, no 32-bit
+ * truncation; tests/test_crc_fast.c checks 2^32-16/2^32/2^32+16).
+ * Absurd lengths are a caller bug: the call performs no UB (no
+ * over-read, no wraparound), but the result for such inputs is not a
+ * meaningful CRC.
+ *
  * Dispatch: the call goes to the best backend compiled for the host
  * ISA -- x86-64: VPCLMULQDQ/AVX-512 fusion, else PCLMULQDQ fusion, else
  * hw crc32, else slice-by-8; AArch64: PMULL+SHA3 fusion, else hw

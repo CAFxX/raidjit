@@ -1,0 +1,173 @@
+# Fast CRC-32: standalone API (Option C, Phase 1)
+
+`uint32_t rj_crc32_fast(uint32_t crc, const void *data, size_t len);`
+(declared + documented in `include/raidjit.h`).
+
+Drop-in faster replacement for `rj_crc32_update` with an **identical
+chaining contract**: takes the running CRC, returns the updated running
+CRC. Bit-exact — `rj_crc32_fast(c,d,n) == rj_crc32_update(c,d,n)` for
+every input (proven by `tests/test_crc_fast.c`, not by assertion).
+Initialize with `rj_crc32_init`, finalize with `rj_crc32_final`:
+
+```c
+uint32_t c; rj_crc32_init(&c);
+c = rj_crc32_fast(c, chunk1, n1);
+c = rj_crc32_fast(c, chunk2, n2);   /* chaining across calls */
+uint32_t out = rj_crc32_final(c);
+```
+
+`len == 0` is legal (`data` may then be `NULL`). Thread-safe: dispatch
+holds no mutable state. See `raidjit.h` for the edge-case contract
+(Finding 17b).
+
+## Dispatch
+
+Top level (`src/crc_fast.c`): compile-time ISA selects the backend's
+*best-variant* entry; the backend does its own runtime feature
+selection internally. WASM (`__EMSCRIPTEN__`) and unknown ISAs go
+straight to slice-by-8 (spec Finding 17c). Unknown/absent features
+degrade to a slower CORRECT variant — never wrong, never SIGILL.
+
+### x86-64 (best first)
+
+| Class | Condition | Variant |
+|---|---|---|
+| 3 | `vpclmulqdq` (+ `avx512f`: rung 1; without: rung 2) | Cawley-style fusion: scalar `crc32q` lanes + VPCLMULQDQ vector lanes (rung 1); 256-bit VPCLMULQDQ fusion lanes (rung 2, Zen3). The `rj_crc32_fast_x86_vpclmul` entry selects the rung internally (spec Finding 13) |
+| 2 | `pclmulqdq` (no vpclmulqdq) | 128-bit fold, zlib-ng/Chromium structure (the synthesis table — not fusion — is the arbiter here) |
+| 1 | `sse42` | hw `crc32q` N-way interleave |
+| 0 | else | slice-by-8 |
+
+### AArch64 (best first)
+
+| Class | Condition | Variant |
+|---|---|---|
+| 3 | `pmull && sha3` | Cawley fusion (`crc32_armv8_pmull_eor3.c` structure) |
+| 1 | `crc32` | scalar `crc32x` N-way interleave — **before** the pure PMULL fold because of the documented N1 inversion (pure PMULL fold 7.3 B/c < scalar crc32x 7.9 B/c on N1); Apple cores always take class 3, so no Apple regression |
+| 2 | `pmull` (no CRC32 hw) | pure PMULL fold (dougallj structure) |
+| 0 | else | slice-by-8 |
+
+### RISC-V (best first)
+
+| Class | Condition | Variant |
+|---|---|---|
+| 2 | `rvv_zvbc` | Zvbc vector fold (SEW=64, streams packed as elements) |
+| 1 | `zbc` | scalar clmul fold (zlib-ng `crc32_zbc.c` structure) |
+| 0 | else | slice-by-8 |
+
+Fallback chain on every ISA ends at slice-by-8. Class numbers are part
+of the pinned cross-worker contract (spec R2.5).
+
+## Where it is NOT the fastest (honest)
+
+- **Slice-by-8 baseline**: the class-0 fallback everywhere. Synthesis
+  figure: 1–3 GB/s class (spec Finding 17a: cite this, not "<10").
+- **x86 SSE4.1 without CLMUL**: Chorba (Russell 2024, reported "on par
+  with hw") is a better scalar-class option than slice-by-8 and is **not
+  implemented** — recorded as a future lead, not a silent gap.
+- **AArch64 N1 without SHA3/PMULL**: scalar `crc32x` (class 1) is picked
+  over the pure PMULL fold (class 2) deliberately — the inversion is
+  load-bearing, see the table above.
+- **RISC-V**: no shipping core publishes clmul/vclmul throughput, so the
+  Zvbc/Zbc bounds are in instructions/byte only, honestly not convertible
+  to GB/s.
+- **WASM**: always slice-by-8 by construction (Finding 17c).
+
+## Performance numbers: analytic only
+
+Every throughput figure in this document and in
+`hidden_files/crc_optimum_research/FINAL_SYNTHESIS.md` is **analytic**
+(derived from instruction-throughput tables, e.g. Agner Fog) or
+**reported** from the literature (Cawley et al.). **None was measured in
+this repo** — timing benchmarks are out of scope by standing constraint.
+No number in code comments, docs, or commit messages may present an
+analytic/reported figure as measured (spec assumption 5).
+
+## Backend contract (for W1/W2/W3)
+
+Pinned entry points, exact names (spec R2.5):
+
+- x86-64 (`src/x86_64/crc_fast.h`): `rj_crc32_fast_x86`,
+  `rj_crc32_fast_x86_vpclmul`, `rj_crc32_fast_x86_pclmul`,
+  `rj_crc32_fast_x86_crc32hw`, `rj_crc32_fast_x86_class`
+- AArch64 (`src/aarch64/crc_fast.h`): `rj_crc32_fast_arm`,
+  `rj_crc32_fast_arm_fusion`, `rj_crc32_fast_arm_crc32hw`,
+  `rj_crc32_fast_arm_pmull`, `rj_crc32_fast_arm_class`
+- RISC-V (`src/riscv/crc_fast.h`): `rj_crc32_fast_riscv`,
+  `rj_crc32_fast_riscv_zvbc`, `rj_crc32_fast_riscv_zbc`,
+  `rj_crc32_fast_riscv_class`
+
+Transitional scaffolding (W4): until the three backend TUs land,
+`src/crc_fast_fallback.c` provides **weak** definitions of all twelve
+entry points (slice-by-8; bit-exact, unaccelerated), and
+`src/crc_fast.c`'s dispatcher references the best-variant entries with
+strong-undefined references so the linker prefers a real backend TU for
+*every* consumer. The fallback TU sorts **after** `ARCH_SRCS` in
+`libraidjit.a` (GNU ld extracts the first archive member satisfying a
+symbol — order verified empirically). `rj_crc32_fast_test_backend_present()`
+(test-only) reports which state is linked, so `tests/test_crc_fast.c`'s
+dispatch assertions go strict automatically once a backend lands.
+**Delete `src/crc_fast_fallback.c` and its Makefile stanza once all three
+backend TUs are in.**
+
+## Testing
+
+`tests/test_crc_fast.c` implements the spec R4/R5 matrix; see its header
+comment for the section map. Highlights:
+
+- KAT `CRC32("123456789") == 0xCBF43926` through every entry point.
+- Bit-exactness vs three independent oracles: an in-test bitwise
+  implementation (shares no code with `src/crc.c`), zlib `crc32()` when
+  linked (`-DRJ_CRC_HAVE_ZLIB=1`, probed by the Makefile), and
+  `rj_crc32_update_scalar`.
+- Split-point chaining at every split offset mod 64 (spec R1-3).
+- Guard pages + ASan for over-reads; 8-thread concurrency; 2^32±16
+  truncation differentials via zero-page `mmap` (no 4GB RAM).
+- Dispatch assertions compare `*_class()` against independent hardware
+  detection (test-side CPUID / `getauxval` / `/proc/cpuinfo` isa parsing),
+  never against the library's own `rj_cpu_detect`.
+
+Controls:
+
+- `RJ_CRC_SKIP_HUGE=1` skips the 2^32 test (used by the QEMU Makefile
+  targets — minutes under TCG — and anywhere memory is tight).
+- `RJ_CRC_STRICT=1` turns deferred backend-absent dispatch checks into
+  failures (proves the deferral path is not a silent pass).
+
+Red-green: `tests/mutate_crc.sh` applies a single-constant mutation in a
+scratch git worktree, rebuilds `test_crc_fast` there, and expects it to
+FAIL. A surviving mutant means the matrix is insufficient. Run per
+backend once W1/W2/W3 land (e.g. flip K1/K2 low bit, drop an interleave
+lane — spec Finding 16).
+
+## Code-review assertions (no wraparound)
+
+Spec R5 requires the truncation test **plus** a code-review assertion.
+For W4-owned code:
+
+- `src/crc_fast.c`: no arithmetic on `len` at all — pure forwarding.
+- `src/crc_fast_fallback.c`: forwards to `rj_crc32_update`.
+- `src/crc.c` (`rj_crc32_update`, `rj_crc32_update_scalar`): all
+  block/byte counts are `size_t`; loops decrement toward zero; no
+  32-bit intermediates, no pointer wraparound (buffers are caller-valid
+  by contract).
+- `src/fused.c` accumulation: forwards per-tile lengths (`tl <= tile`);
+  no new arithmetic.
+- Backend block-count arithmetic is W1/W2/W3's assertion to record.
+
+## WASM coordination
+
+`tools/wasm/Makefile.wasm` lists its sources explicitly and does not
+include `src/crc_fast.c`, so the WASM modules currently fail to link
+(`fused.c` now calls `rj_crc32_fast`). The `rj_cpu_info` field additions
+are additive and do not break the `cpu_wasm_*.c` stubs. Per the spec,
+`tools/wasm/*` is coordinator-owned: the fix (add
+`$(REPO)/src/crc_fast.c` to `COMMON_SRCS` there) is flagged, not applied
+here.
+
+## Consistency
+
+This document agrees with
+`hidden_files/crc_optimum_research/FINAL_SYNTHESIS.md` (Phase 1 table)
+and the remediated `hidden_files/crc_impl_SPEC.md` (R1–R8, Findings
+13/16/17a–17c). The per-ISA optimum rows, the N1 inversion note, the
+Zen3 256-bit-lane row, and the class enum follow the spec verbatim.
