@@ -142,15 +142,20 @@ static void fold16_step(uint64_t *s_lo, uint64_t *s_hi, uint64_t c_lo,
     *s_hi = p0.hi ^ p1.hi;
 }
 
-/* Tail step for 1 <= r <= 15 bytes: D occupies the low 8r bits. */
+/* Tail step for 1 <= r <= 15 bytes: D occupies the low 8r bits of the
+ * 128-bit (d_hi:d_lo). All shifts are < 64 (no UB). */
 static void fold_tail_step(uint64_t *s_lo, uint64_t *s_hi, const uint8_t *p,
                            size_t r)
 {
-    uint64_t d = 0;
-    for (size_t i = 0; i < r; i++)
-        d |= (uint64_t)p[i] << (8u * (unsigned)i);
-    uint64_t w_lo = *s_lo ^ d;
-    uint64_t w_hi = *s_hi;
+    uint64_t d_lo = 0, d_hi = 0;
+    for (size_t i = 0; i < r; i++) {
+        if (i < 8)
+            d_lo |= (uint64_t)p[i] << (8u * (unsigned)i);
+        else
+            d_hi |= (uint64_t)p[i] << (8u * (unsigned)(i - 8));
+    }
+    uint64_t w_lo = *s_lo ^ d_lo;
+    uint64_t w_hi = *s_hi ^ d_hi;
     rj_clmul128_t p0 = rj_clmul128(w_lo, tail_k_lo[r]);
     rj_clmul128_t p1 = rj_clmul128(w_hi, tail_k_hi[r]);
     *s_lo = p0.lo ^ p1.lo;
