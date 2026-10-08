@@ -41,12 +41,20 @@ typedef struct {
                       * stays as the correct gate for any future BITAlg
                       * use. */
     int gfni;        /* Galois-field affine instructions (needs AVX512) */
+    int pclmulqdq;   /* CLMUL carryless multiply (CRC-32 folding);
+                      * CPUID.1:ECX[1]. No XCR0 state needed. */
+    int vpclmulqdq;  /* AVX-512 vector carryless multiply (4x64-bit);
+                      * CPUID.7:ECX[10]. No XCR0 state needed. */
+    int sse42;       /* SSE4.2 (crc32 instruction); CPUID.1:ECX[20] */
     int cet_ss;      /* CPU supports CET shadow stack */
     /* AArch64 */
     int neon;        /* Advanced SIMD, baseline for AArch64 */
     int sve;         /* Scalable Vector Extension */
     int sve2;        /* SVE2 */
     int sve_vl;      /* SVE vector length in bytes (0 if no SVE) */
+    int crc32;       /* ARMv8 CRC32 instructions; HWCAP_CRC32 (AT_HWCAP bit 7) */
+    int pmull;       /* NEON PMULL (carryless multiply); HWCAP_PMULL (bit 4) */
+    int sha3;        /* SHA3 incl. EOR3; HWCAP_SHA3 (AT_HWCAP bit 17) */
     /* RISC-V */
     int rvv;         /* Vector extension */
     int rvv_vlen;    /* VLEN in bytes (0 if no RVV) */
@@ -70,6 +78,7 @@ typedef struct {
                       * one per nibble -- and neither vandn nor vbrev8
                       * can fuse them, so no profitable twin exists). */
     int rvv_zicond;  /* Zicond integer conditional (czero.eqz/nez) */
+    int zbc;         /* Zbc scalar carryless multiply (clmul/clmulh) */
     int p_ext;       /* Packed SIMD P-extension */
     int p_version;   /* P-extension draft version: 5=0.5, 9=0.9.x, 20=0.20 */
     char brand[64];
