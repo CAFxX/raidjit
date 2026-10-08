@@ -1,0 +1,1 @@
+{"v": 1, "target": "avx512-gfni", "topology": {"ctor": "rdp", "p1": 5}, "op": {"kind": "encode"}, "cand": {"mul": "nibble", "U": 0, "xorsched": true}, "options": {}}

@@ -1,0 +1,1 @@
+{"v": 1, "target": "avx512-gfni", "topology": {"ctor": "evenodd", "p1": 5}, "op": {"kind": "encode"}, "cand": "auto", "options": {}}

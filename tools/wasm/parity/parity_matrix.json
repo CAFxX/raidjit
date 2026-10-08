@@ -1,0 +1,1142 @@
+[
+ {
+  "name": "x86/avx512-gfni/raid5-4/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/raid6-5/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx2/raid5-4/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx2",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx2/raid6-5/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx2",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/sse/raid5-4/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sse",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/sse/raid6-5/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sse",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/raid6_rs/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid6_rs",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/rdp/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rdp",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/evenodd/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "evenodd",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/liberation/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "liberation",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/lrc/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "lrc",
+    "p1": 8,
+    "p2": 2,
+    "p3": 2
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/lrc_azure/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "lrc_azure"
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/rs63/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/custom-mulacc/enc/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "custom",
+    "p1": 6,
+    "p2": 2,
+    "matrix_hex": "010000000000010204081020"
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/raid6-5/rec0/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "recover",
+    "failed": [
+     0
+    ]
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/avx512-gfni/raid6-5/pupd0/auto",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "parity_update",
+    "changed": [
+     0
+    ]
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/xorsched",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rdp",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "xorsched": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/nt",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "nt": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/notail",
+  "module": "x86",
+  "expect": "fail",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "notail": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/maskedtail",
+  "module": "x86",
+  "expect": "fail",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "maskedtail": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/prefetch",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "prefetch_dist": 512
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/ternlog",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "ternlog": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/permi2b",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "permi2b": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/mshift",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "mshift": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/xorbit",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid6_rs",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "xorbit": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/remat",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "custom",
+    "p1": 6,
+    "p2": 4,
+    "matrix_hex": "0101010101012010080402016c1b401004012fab36400801"
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "remat": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/U2",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 2
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/mul-gfni",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "gfni",
+    "U": 0
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/twin/endbr",
+  "module": "x86",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0
+   },
+   "options": {
+    "emit_endbr": true
+   }
+  }
+ },
+ {
+  "name": "x86/err/unknown-target",
+  "module": "x86",
+  "expect": "fail",
+  "options": {
+   "v": 1,
+   "target": "nope",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/err/U9",
+  "module": "x86",
+  "expect": "fail",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 9
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/err/ternlog-on-sse",
+  "module": "x86",
+  "expect": "fail",
+  "options": {
+   "v": 1,
+   "target": "sse",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "ternlog": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "x86/err/maskedtail-xor-only",
+  "module": "x86",
+  "expect": "fail",
+  "options": {
+   "v": 1,
+   "target": "avx512-gfni",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "maskedtail": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "a64/sve2/raid5/enc/auto",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/sve2/raid6/enc/auto",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/sve2/rs/enc/auto",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/neon/raid5-4/enc/auto",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "neon",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "a64/sve2/raid6-5/rec0/auto",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "recover",
+    "failed": [
+     0
+    ]
+   },
+   "cand": "auto",
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/twin/pipe",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid6_rs",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "pipe": true
+   },
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/twin/predtail",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "predtail": true
+   },
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/twin/remat",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "custom",
+    "p1": 6,
+    "p2": 4,
+    "matrix_hex": "0101010101012010080402016c1b401004012fab36400801"
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "remat": true
+   },
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/twin/nt",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "nt": true
+   },
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "a64/twin/prefetch",
+  "module": "aarch64",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "sve2",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "prefetch_dist": 128
+   },
+   "options": {},
+   "cpu": {
+    "sve_vl": 64
+   }
+  }
+ },
+ {
+  "name": "rv/rvv/raid5/enc/auto",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/rvv/raid6/enc/auto",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/rvv/raid6-5/rec0/auto",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid6",
+    "p1": 5
+   },
+   "op": {
+    "kind": "recover",
+    "failed": [
+     0
+    ]
+   },
+   "cand": "auto",
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/lmul1",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "lmul": 1
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/lmul2",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "lmul": 2
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/lmul4",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "lmul": 4
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/lmul8",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "lmul": 8
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/pipe",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid6_rs",
+    "p1": 5
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "pipe": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/nt",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "nt": true
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/prefetch",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv-zicbop",
+   "topology": {
+    "ctor": "raid5",
+    "p1": 4
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "nibble",
+    "U": 0,
+    "prefetch_dist": 64
+   },
+   "options": {}
+  }
+ },
+ {
+  "name": "rv/twin/zvbc",
+  "module": "riscv",
+  "expect": "ok",
+  "options": {
+   "v": 1,
+   "target": "rvv-zvbc32e",
+   "topology": {
+    "ctor": "rs",
+    "p1": 6,
+    "p2": 3
+   },
+   "op": {
+    "kind": "encode"
+   },
+   "cand": {
+    "mul": "zvbc",
+    "U": 0
+   },
+   "options": {}
+  }
+ }
+]

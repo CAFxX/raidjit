@@ -1,0 +1,1 @@
+{"v": 1, "target": "sve2", "topology": {"ctor": "raid5", "p1": 4}, "op": {"kind": "encode"}, "cand": "auto", "options": {}, "cpu": {"sve_vl": 64}}

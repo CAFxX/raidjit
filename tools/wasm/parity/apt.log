@@ -1,0 +1,8 @@
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2100 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt rc=100
+MISSING qemu-aarch64
+MISSING qemu-riscv64
+MISSING aarch64-linux-gnu-gcc
+MISSING riscv64-linux-gnu-gcc

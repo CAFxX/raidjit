@@ -1,0 +1,1 @@
+{"v": 1, "target": "sse", "topology": {"ctor": "raid6", "p1": 5}, "op": {"kind": "encode"}, "cand": "auto", "options": {}}

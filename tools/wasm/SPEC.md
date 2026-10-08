@@ -212,6 +212,13 @@ Per recon (exact lines in the report):
    `#ifdef RJ_WASM` that sources the value from the preset bundle instead
    (`cpu->sve_vl` / `cpu->rvv_vlen`, §S5.1). (Found by peer review
    2026-10-08.)
+2c. **Const-pool alignment padding**: the three backends 64/16-byte align
+   pool entries, leaving the `[pool_len, off)` gap uninitialized
+   (`malloc`'d). Native glibc returns zeroed fresh pages in practice, but
+   wasm's dlmalloc does not — the const blob would differ. Each backend
+   gets an `#ifdef RJ_WASM`-gated `memset` zeroing the gap. Native output
+   is byte-identical (gated out); the gap is never read by generated code.
+   (Found by parity testing 2026-10-08: x86 raid6 const blob differed.)
 3. **pthread**: emscripten's musl libc already provides working
    `pthread_mutex_*` in single-threaded builds without `-pthread` — define
    NO stubs (duplicates would risk link errors). pthread users in the

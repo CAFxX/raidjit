@@ -1,0 +1,1 @@
+{"v": 1, "target": "avx512-gfni", "topology": {"ctor": "custom", "p1": 6, "p2": 2, "matrix_hex": "010000000000010204081020"}, "op": {"kind": "encode"}, "cand": "auto", "options": {}}
