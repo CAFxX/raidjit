@@ -26,7 +26,8 @@ else ifeq ($(ARCH),aarch64)
 ARCH_SRCS = src/aarch64/cpu.c src/aarch64/emit.c src/aarch64/jit.c \
         src/aarch64/crc_fast.c
 else ifeq ($(ARCH),riscv64)
-ARCH_SRCS = src/riscv/cpu.c src/riscv/emit.c src/riscv/jit.c
+ARCH_SRCS = src/riscv/cpu.c src/riscv/emit.c src/riscv/jit.c \
+        src/riscv/crc_fast.c
 else
 $(error Unsupported ARCH=$(ARCH); want x86_64, aarch64, or riscv64)
 endif

@@ -8,7 +8,7 @@
  *      sub-extension (the JIT only needs the integer vector subset
  *      present in Zve32x and up).
  *
- * Multi-letter extensions (Zicbop, Zvbc, Zvbc32e, Zvkg, Zicond) have
+ * Multi-letter extensions (Zicbop, Zvbc, Zvbc32e, Zvkg, Zicond, Zbc) have
  * no riscv_hwprobe key, so they are detected by parsing the "isa" line
  * of /proc/cpuinfo for their tokens (has_ext_cpuinfo). QEMU user-mode
  * synthesizes the guest's /proc/cpuinfo "isa" line from its -cpu
@@ -222,6 +222,10 @@ void rj_cpu_detect(rj_cpu_info *out)
      * backend path consumes it yet (I5: no profitable twin found). */
     out->rvv_zvbb = has_ext_cpuinfo("zvbb") ? 1 : 0;
     out->rvv_zicond = has_ext_cpuinfo("zicond") ? 1 : 0;
+    /* Zbc (scalar carryless multiply: clmul/clmulh; the scalar-crypto
+     * bitmanip subset, ratified 1.0). Token-exact probe like Zvbc32e.
+     * THE gate for the rj_crc32_fast_riscv_zbc fold variant. */
+    out->zbc = has_ext_cpuinfo("zbc") ? 1 : 0;
 
     cpuinfo_brand(out->brand, sizeof(out->brand));
     if (!out->brand[0])
