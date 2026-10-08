@@ -152,6 +152,15 @@ static uint64_t xrng(void)
     x ^= x << 17;
     return rng_state = x;
 }
+/* Thread-local variant: the worker threads must not share rng_state. */
+static uint64_t xrng_step(uint64_t *s)
+{
+    uint64_t x = *s;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    return *s = x;
+}
 
 static uint8_t *tbuf;
 static size_t tbuf_n;
@@ -400,11 +409,10 @@ static pthread_mutex_t t_mu = PTHREAD_MUTEX_INITIALIZER;
 static void *t_worker(void *arg)
 {
     long id = (long)arg;
-    rng_seed(0x1000 + (uint64_t)id);
-    /* Burn the same RNG stream the main thread used for precompute. */
+    uint64_t st = 0x1000 + (uint64_t)id; /* per-thread stream */
     for (int i = 0; i < T_ITERS; i++) {
-        size_t off = (size_t)(xrng() % (sizeof(t_data) - 8192));
-        size_t len = 1 + (size_t)(xrng() % 8192);
+        size_t off = (size_t)(xrng_step(&st) % (sizeof(t_data) - 8192));
+        size_t len = 1 + (size_t)(xrng_step(&st) % 8192);
         uint32_t crc = rj_crc32_fast(0x9E3779B9u, t_data + off, len);
         if (crc != t_expected[id * T_ITERS + i]) {
             pthread_mutex_lock(&t_mu);
@@ -426,10 +434,10 @@ static void test_threads(void)
         t_data[i] = (uint8_t)xrng();
     /* Precompute single-threaded with the same per-thread streams. */
     for (long id = 0; id < T_NTHREAD; id++) {
-        rng_seed(0x1000 + (uint64_t)id);
+        uint64_t st = 0x1000 + (uint64_t)id;
         for (int i = 0; i < T_ITERS; i++) {
-            size_t off = (size_t)(xrng() % (sizeof(t_data) - 8192));
-            size_t len = 1 + (size_t)(xrng() % 8192);
+            size_t off = (size_t)(xrng_step(&st) % (sizeof(t_data) - 8192));
+            size_t len = 1 + (size_t)(xrng_step(&st) % 8192);
             t_expected[id * T_ITERS + i] =
                 crc32_bitwise(0x9E3779B9u, t_data + off, len);
         }
