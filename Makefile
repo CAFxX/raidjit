@@ -17,19 +17,30 @@ BUILDDIR = build-$(ARCH)
 COMMON_SRCS = src/gf.c src/plan.c src/topo.c src/bench.c src/ref.c src/api.c \
         src/prune.c src/dispatch.c src/xorsched.c src/matrix_search.c \
         src/xorcode.c src/survivor.c src/prefetch_calib.c src/planid.c \
-        src/crc.c src/striping.c src/api_crc.c src/fused.c \
+        src/crc.c src/crc_fast.c src/striping.c src/api_crc.c src/fused.c \
         src/api_batched.c
 ifeq ($(ARCH),x86_64)
-ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c
+ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c \
+        src/x86_64/crc_fast.c
 else ifeq ($(ARCH),aarch64)
-ARCH_SRCS = src/aarch64/cpu.c src/aarch64/emit.c src/aarch64/jit.c
+ARCH_SRCS = src/aarch64/cpu.c src/aarch64/emit.c src/aarch64/jit.c \
+        src/aarch64/crc_fast.c
 else ifeq ($(ARCH),riscv64)
 ARCH_SRCS = src/riscv/cpu.c src/riscv/emit.c src/riscv/jit.c
 else
 $(error Unsupported ARCH=$(ARCH); want x86_64, aarch64, or riscv64)
 endif
 
-SRCS = $(COMMON_SRCS) $(ARCH_SRCS)
+# Weak-fallback definitions for the fast-CRC backend entry points (spec
+# R2.5; W1/W2/W3 land the real per-ISA TUs in ARCH_SRCS). MUST sort after
+# ARCH_SRCS in the archive: GNU ld extracts the first member satisfying a
+# strong-undefined symbol, weak or strong, so the fallback has to lose the
+# race to a real backend TU. Delete this file (and this stanza) once
+# src/x86_64/crc_fast.c, src/aarch64/crc_fast.c and src/riscv/crc_fast.c
+# have all landed.
+CRC_FALLBACK_SRCS = src/crc_fast_fallback.c
+
+SRCS = $(COMMON_SRCS) $(ARCH_SRCS) $(CRC_FALLBACK_SRCS)
 # Objects live in the arch-specific build dir, mirroring source paths.
 OBJS = $(addprefix $(BUILDDIR)/,$(SRCS:.c=.o))
 HDRS = $(wildcard include/*.h src/*.h src/aarch64/*.h src/riscv/*.h src/x86_64/*.h)
@@ -58,7 +69,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
         $(BUILDDIR)/test_recover_closedform \
-        $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
+        $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_crc_fast $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
         $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc \
         $(BUILDDIR)/test_twin_audit
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
@@ -108,6 +119,10 @@ _test-qemu-aarch64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_matrix
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_remat
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_pipe
+	# RJ_CRC_SKIP_HUGE=1: the 2^32 truncation test is a native-only check
+	# (minutes under TCG); the dispatch-fallback correctness below is the
+	# QEMU coverage that matters pre-backend.
+	RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_crc_fast
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_shape
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_dispatch
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max,sve-default-vector-length=256 ./$(BUILDDIR)/test_dispatch
@@ -201,6 +216,7 @@ _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_riscv_remat
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_riscv_remat
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pipe
+	RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_crc_fast
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_pipe
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_pipe
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_riscv_prefetch
@@ -336,6 +352,7 @@ endif
 	./$(BUILDDIR)/test_recover_closedform
 	./$(BUILDDIR)/test_pipe
 	./$(BUILDDIR)/test_crc
+	./$(BUILDDIR)/test_crc_fast
 	./$(BUILDDIR)/test_fused
 	./$(BUILDDIR)/test_striping
 	./$(BUILDDIR)/test_planid
@@ -541,6 +558,18 @@ $(BUILDDIR)/test_pipe: tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BU
 
 $(BUILDDIR)/test_crc: tests/test_crc.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_crc.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+# test_crc_fast uses zlib's crc32 as one independent oracle, but only when
+# the toolchain can actually link it (native builds; the cross toolchains
+# have no target libz). The test compiles and runs without it otherwise.
+HAVE_ZLIB := $(shell printf 'int main(void){return 0;}\n' | $(CC) -x c -o /dev/null - -lz >/dev/null 2>&1 && echo 1)
+ifeq ($(HAVE_ZLIB),1)
+CRC_FAST_DEFS = -DRJ_CRC_HAVE_ZLIB=1
+CRC_FAST_LIBS = -lz
+endif
+
+$(BUILDDIR)/test_crc_fast: tests/test_crc_fast.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CRC_FAST_DEFS) -o $@ tests/test_crc_fast.c $(BUILDDIR)/libraidjit.a $(LDFLAGS) $(CRC_FAST_LIBS)
 
 $(BUILDDIR)/test_fused: tests/test_fused.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_fused.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

@@ -93,6 +93,6 @@ uint32_t rj_crc32(const void *data, size_t len)
 {
     uint32_t c;
     rj_crc32_init(&c);
-    c = rj_crc32_update(c, data, len);
+    c = rj_crc32_fast(c, data, len);
     return rj_crc32_final(c);
 }

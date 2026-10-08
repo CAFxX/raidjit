@@ -302,11 +302,11 @@ static void fused_driver_call(const struct rj_fused *f,
             /* The target's tile buffers are hot in cache here. */
             size_t bii = f->base_in[t], boo = f->base_out[t];
             for (int i = 0; i < tn; i++)
-                acc[i] = rj_crc32_update(acc[i], ftin[bii + (size_t)i],
-                                         tl);
+                acc[i] = rj_crc32_fast(acc[i], ftin[bii + (size_t)i],
+                                       tl);
             for (int j = 0; j < tno; j++)
-                acc[tn + j] = rj_crc32_update(acc[tn + j],
-                                             ftout[boo + (size_t)j], tl);
+                acc[tn + j] = rj_crc32_fast(acc[tn + j],
+                                           ftout[boo + (size_t)j], tl);
         }
     }
 
