@@ -14,6 +14,18 @@
 #ifndef HWCAP_SVE
 #define HWCAP_SVE (1UL << 22)
 #endif
+#ifndef HWCAP_PMULL
+#define HWCAP_PMULL (1UL << 4)
+#endif
+#ifndef HWCAP_CRC32
+#define HWCAP_CRC32 (1UL << 7)
+#endif
+#ifndef HWCAP_SHA3
+#define HWCAP_SHA3 (1UL << 17)
+#endif
+/* HWCAP2_SHA3 is deliberately NOT defined here: it exists only on some
+ * non-Linux targets (see zlib-ng arch/arm/arm_features.c); probing it
+ * is guarded by #ifdef below so we never invent a bit number. */
 #ifndef HWCAP2_SVE2
 #define HWCAP2_SVE2 (1UL << 1)
 #endif
@@ -92,5 +104,19 @@ void rj_cpu_detect(rj_cpu_info *out)
             }
         }
     }
+    /* CRC-32 fast-path features (Option C, Phase 1). */
+    if (hwcap & HWCAP_PMULL)
+        out->pmull = 1;
+    if (hwcap & HWCAP_CRC32)
+        out->crc32 = 1;
+    /* SHA3 (EOR3): AT_HWCAP on Linux; some BSDs report it in AT_HWCAP2
+     * as HWCAP2_SHA3 -- mirror zlib-ng arch/arm/arm_features.c and
+     * probe the HWCAP2 form only when the platform header defines it. */
+    if (hwcap & HWCAP_SHA3)
+        out->sha3 = 1;
+#ifdef HWCAP2_SHA3
+    if (hwcap2 & HWCAP2_SHA3)
+        out->sha3 = 1;
+#endif
     read_brand(out->brand, sizeof(out->brand));
 }
