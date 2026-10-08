@@ -183,13 +183,15 @@ static void test_class(void)
     int cls = rj_crc32_fast_x86_class();
     int expect = 0;
     if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw)
-        expect = 3;
+        expect = 3;  /* rung 1 */
+    else if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2)
+        expect = 3;  /* rung 2 */
     else if (ci.pclmulqdq)
-        expect = 2;
-    CHECK(cls == expect, "class: got %d want %d (vpclmulqdq=%d pclmulqdq=%d avx512f=%d avx512bw=%d)",
-          cls, expect, ci.vpclmulqdq, ci.pclmulqdq, ci.avx512f, ci.avx512bw);
-    printf("cpu: pclmulqdq=%d vpclmulqdq=%d sse42=%d avx512f=%d avx512bw=%d -> class %d\n",
-           ci.pclmulqdq, ci.vpclmulqdq, ci.sse42, ci.avx512f, ci.avx512bw, cls);
+        expect = 2;  /* rung 3: pclmul128 fold */
+    CHECK(cls == expect, "class: got %d want %d (vpclmulqdq=%d pclmulqdq=%d avx512f=%d avx512bw=%d avx2=%d)",
+          cls, expect, ci.vpclmulqdq, ci.pclmulqdq, ci.avx512f, ci.avx512bw, ci.avx2);
+    printf("cpu: pclmulqdq=%d vpclmulqdq=%d sse42=%d avx512f=%d avx512bw=%d avx2=%d -> class %d\n",
+           ci.pclmulqdq, ci.vpclmulqdq, ci.sse42, ci.avx512f, ci.avx512bw, ci.avx2, cls);
     printf("ok class\n");
 }
 

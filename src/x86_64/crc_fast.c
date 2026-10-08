@@ -37,9 +37,10 @@
  * `crc32cb/ch/cw/cx` instructions, so the ARM backend can use hw crc32.)
  *
  * ---------------------------------------------------------------------------
- * Dispatch gates
+ * Dispatch gates (spec R2 as amended by Finding 13)
  * ---------------------------------------------------------------------------
- *  tier 3 vpclmul: vpclmulqdq && pclmulqdq && avx512f && avx512bw.
+ *  rung 1 (vpclmul, 512-bit fusion): vpclmulqdq && pclmulqdq && avx512f
+ *      && avx512bw.
  *      avx512bw joins per spec review R1-6: the reference 512-bit fusion
  *      uses _mm512_broadcast_i32x4 (VPBROADCASTI32X4) for the fold constants
  *      and _mm512_extracti32x4_epi32 (VEXTRACTI32X4) in the 512->128 lane
@@ -49,13 +50,18 @@
  *      pclmulqdq joins because the scalar lane and crc_shift use
  *      _mm_clmulepi64_si128. AVX512VL is NOT needed: the single 128-bit
  *      ternarylogic in the reference is replaced by two _mm_xor_si128.
- *  tier 2 pclmul: pclmulqdq. Lane width is 256-bit VPCLMULQDQ when
- *      vpclmulqdq is set even without avx512f (Zen3 -- spec review R1-2;
- *      the synthesis's optimal formulation for that row), else 128-bit
- *      PCLMULQDQ. Rationale: on Zen3, VPCLMULQDQ processes 2x the bytes of
- *      PCLMULQDQ per instruction (both 4 uops/2 cyc), so the 256-bit form
- *      halves clmul instruction count for the vector lanes.
- *  tier 1/0: see crc_fast.h.
+ *  rung 2 (vpclmul, 256-bit fusion): vpclmulqdq && pclmulqdq && avx2, without
+ *      avx512f (Zen3 -- the synthesis's optimal formulation for that row:
+ *      2.3x over the 128-bit fold). avx2 joins because GCC categorizes the
+ *      256-bit integer XOR intrinsics as AVX2.
+ *  rung 3 (pclmul, 128-bit fold): pclmulqdq without vpclmulqdq. Pure vector
+ *      fold (v4 lanes, zlib-ng/Chromium structure) -- NOT fusion, per the
+ *      Finding-13 amendment (the "34% over vector-only" fusion citation
+ *      belonged to rung 1 and was miscited).
+ *  rungs 4/5: see crc_fast.h (crc32hw delegates to scalar; no IEEE hw tier).
+ *
+ * rj_crc32_fast_x86_vpclmul covers rungs 1+2 (selects internally);
+ * rj_crc32_fast_x86_pclmul is the rung-3 128-bit fold.
  *
  * Every public entry point re-checks its gate and degrades to a slower
  * CORRECT variant when the CPU lacks the feature (never wrong, never
@@ -64,7 +70,7 @@
  * guarantees a variant never executes where unsupported.
  *
  * No over-reads: all vector loads are within [buf, buf+len); the head
- * aligns the body and the tail is handled skalar-first. Guard-page tests
+ * aligns the body and the tail is handled scalar-first. Guard-page tests
  * (tests/test_crc_fast_x86.c) prove no byte past the end is touched.
  */
 
@@ -256,23 +262,23 @@ static uint32_t vpclmul_512_body(uint32_t crc0, const uint8_t *buf, size_t len)
 #undef CRC512_clmul_lo
 #undef CRC512_clmul_hi
 }
-
 /* ---------------------------------------------------------------------------
- * Tier 2b: 128-bit PCLMULQDQ fusion (v3s1).
+ * Rung 3: 128-bit PCLMULQDQ fold (v4, pure vector -- NOT fusion).
  *
- * Three 16-byte vector lanes + one PCLMUL scalar lane; 56 bytes per
- * iteration (48 vector + 8 scalar). Cawley's `-i sse -p crc32 -a v3s1_s3`
- * output, adapted as above (byte head/tail via shared table, no 3-way
- * interleave, chaining contract without ~).
+ * Four 16-byte vector lanes, 64 bytes per iteration; no scalar lane. This is
+ * Cawley's `-i sse -p crc32 -a v4` output (the zlib-ng/Chromium 128-bit fold
+ * structure), adapted as above (byte head/tail via shared table, chaining
+ * contract without ~). Per the spec amendment (Finding 13), rung 3 is the
+ * pure fold; the "34% over vector-only" fusion citation belonged to rung 1.
  * Constants (IEEE):
- *  main-loop fold (shift 48B): k1=0x3db1ecdc k2=0xaf449247
- *  lane reduction (shift 16B): k1=0xae689191 k2=0xccaa009e
+ *  main-loop fold (shift 64B): k1=0x8f352d95 k2=0x1d9513d7
+ *  lane reduction: 16B (0xae689191,0xccaa009e), then 32B (0xf1da05aa,0x81256527)
  * ------------------------------------------------------------------------- */
 __attribute__((target("pclmul,sse4.1")))
-static uint32_t pclmul_128_body(uint32_t crc0, const uint8_t *buf, size_t len)
+static uint32_t pclmul_128_fold_body(uint32_t crc0, const uint8_t *buf, size_t len)
 {
-#define CRC128_clmul_lo(a, b) (_mm_clmulepi64_si128((a), (b), 0x00))
-#define CRC128_clmul_hi(a, b) (_mm_clmulepi64_si128((a), (b), 0x11))
+#define CRC128F_clmul_lo(a, b) (_mm_clmulepi64_si128((a), (b), 0x00))
+#define CRC128F_clmul_hi(a, b) (_mm_clmulepi64_si128((a), (b), 0x11))
 
     for (; len && ((uintptr_t)buf & 7); --len)
         crc0 = crc_u8_step(crc0, buf++);
@@ -282,56 +288,45 @@ static uint32_t pclmul_128_body(uint32_t crc0, const uint8_t *buf, size_t len)
         len -= 8;
     }
     if (len >= 64) {
-        size_t blk = (len - 8) / 56;
-        size_t klen = blk * 8;
-        const uint8_t *buf2 = buf;
-        uint64_t vc;
-        /* First vector chunk. */
-        __m128i x0 = _mm_loadu_si128((const __m128i *)buf2), y0;
-        __m128i x1 = _mm_loadu_si128((const __m128i *)(buf2 + 16)), y1;
-        __m128i x2 = _mm_loadu_si128((const __m128i *)(buf2 + 32)), y2;
-        __m128i k;
-        k = _mm_setr_epi32(0x3db1ecdc, 0, 0xaf449247, 0);
+        /* First vector chunk: 4x128-bit lanes. */
+        __m128i x0 = _mm_loadu_si128((const __m128i *)buf), y0;
+        __m128i x1 = _mm_loadu_si128((const __m128i *)(buf + 16)), y1;
+        __m128i x2 = _mm_loadu_si128((const __m128i *)(buf + 32)), y2;
+        __m128i x3 = _mm_loadu_si128((const __m128i *)(buf + 48)), y3;
+        __m128i k = _mm_setr_epi32(0x8f352d95, 0, 0x1d9513d7, 0);
         x0 = _mm_xor_si128(_mm_cvtsi32_si128((int)crc0), x0);
         crc0 = 0;
-        buf2 += 48;
-        len -= 56;
-        buf += blk * 48;
-        /* Main loop. */
+        buf += 64;
+        len -= 64;
+        /* Main loop: fold each lane by 64B, XOR 64B new data. */
         while (len >= 64) {
-            y0 = CRC128_clmul_lo(x0, k); x0 = CRC128_clmul_hi(x0, k);
-            y1 = CRC128_clmul_lo(x1, k); x1 = CRC128_clmul_hi(x1, k);
-            y2 = CRC128_clmul_lo(x2, k); x2 = CRC128_clmul_hi(x2, k);
-            y0 = _mm_xor_si128(y0, _mm_loadu_si128((const __m128i *)buf2));
+            y0 = CRC128F_clmul_lo(x0, k); x0 = CRC128F_clmul_hi(x0, k);
+            y1 = CRC128F_clmul_lo(x1, k); x1 = CRC128F_clmul_hi(x1, k);
+            y2 = CRC128F_clmul_lo(x2, k); x2 = CRC128F_clmul_hi(x2, k);
+            y3 = CRC128F_clmul_lo(x3, k); x3 = CRC128F_clmul_hi(x3, k);
+            y0 = _mm_xor_si128(y0, _mm_loadu_si128((const __m128i *)buf));
             x0 = _mm_xor_si128(x0, y0);
-            y1 = _mm_xor_si128(y1, _mm_loadu_si128((const __m128i *)(buf2 + 16)));
+            y1 = _mm_xor_si128(y1, _mm_loadu_si128((const __m128i *)(buf + 16)));
             x1 = _mm_xor_si128(x1, y1);
-            y2 = _mm_xor_si128(y2, _mm_loadu_si128((const __m128i *)(buf2 + 32)));
+            y2 = _mm_xor_si128(y2, _mm_loadu_si128((const __m128i *)(buf + 32)));
             x2 = _mm_xor_si128(x2, y2);
-            crc0 = crc_u64_step(crc0, *(const uint64_t *)buf);
-            buf += 8;
-            buf2 += 48;
-            len -= 56;
+            y3 = _mm_xor_si128(y3, _mm_loadu_si128((const __m128i *)(buf + 48)));
+            x3 = _mm_xor_si128(x3, y3);
+            buf += 64;
+            len -= 64;
         }
-        /* Reduce x0 ... x2 to just x0. */
+        /* Reduce x0..x3 to just x0: pairwise 16B shifts, then a 32B shift. */
         k = _mm_setr_epi32(0xae689191, 0, 0xccaa009e, 0);
-        y0 = CRC128_clmul_lo(x0, k); x0 = CRC128_clmul_hi(x0, k);
+        y0 = CRC128F_clmul_lo(x0, k); x0 = CRC128F_clmul_hi(x0, k);
+        y2 = CRC128F_clmul_lo(x2, k); x2 = CRC128F_clmul_hi(x2, k);
         y0 = _mm_xor_si128(y0, x1); x0 = _mm_xor_si128(x0, y0);
-        x1 = x2;
-        y0 = CRC128_clmul_lo(x0, k); x0 = CRC128_clmul_hi(x0, k);
-        y0 = _mm_xor_si128(y0, x1); x0 = _mm_xor_si128(x0, y0);
-        /* Final scalar chunk. */
-        crc0 = crc_u64_step(crc0, *(const uint64_t *)buf);
-        buf += 8;
-        vc = 0;
-        /* Reduce 128 bits to 32 bits, and multiply by x^32. */
-        vc ^= crc_shift_state(crc_u64_step(crc_u64_step(0, (uint64_t)_mm_extract_epi64(x0, 0)),
-                                                         (uint64_t)_mm_extract_epi64(x0, 1)),
-                                         klen + 8);
-        /* Final 8 bytes. */
-        crc0 = crc_u64_step(crc0, *(const uint64_t *)buf ^ vc);
-        buf += 8;
-        len -= 8;
+        y2 = _mm_xor_si128(y2, x3); x2 = _mm_xor_si128(x2, y2);
+        k = _mm_setr_epi32(0xf1da05aa, 0, 0x81256527, 0);
+        y0 = CRC128F_clmul_lo(x0, k); x0 = CRC128F_clmul_hi(x0, k);
+        y0 = _mm_xor_si128(y0, x2); x0 = _mm_xor_si128(x0, y0);
+        /* Reduce 128 bits to 32 bits. */
+        crc0 = crc_u64_step(0, (uint64_t)_mm_extract_epi64(x0, 0));
+        crc0 = crc_u64_step(crc0, (uint64_t)_mm_extract_epi64(x0, 1));
     }
     for (; len >= 8; buf += 8, len -= 8)
         crc0 = crc_u64_step(crc0, *(const uint64_t *)buf);
@@ -339,9 +334,10 @@ static uint32_t pclmul_128_body(uint32_t crc0, const uint8_t *buf, size_t len)
         crc0 = crc_u8_step(crc0, buf++);
     return crc0;
 
-#undef CRC128_clmul_lo
-#undef CRC128_clmul_hi
+#undef CRC128F_clmul_lo
+#undef CRC128F_clmul_hi
 }
+
 
 /* ---------------------------------------------------------------------------
  * Tier 2a: 256-bit VPCLMULQDQ fusion (v6s1) -- vpclmulqdq without avx512f.
@@ -496,39 +492,41 @@ static int x86_has_pclmul(void)
 
 static int x86_has_vpclmulqw_nof(void)
 {
-    /* 256-bit VPCLMULQDQ without AVX-512 (Zen3): usable when the vpclmul
-     * tier-3 gate did not fire but the CPU has VPCLMULQDQ at all. avx2 joins
+    /* Rung 2: 256-bit VPCLMULQDQ fusion without AVX-512 (Zen3). avx2 joins
      * because GCC categorizes the 256-bit integer XOR intrinsics as AVX2
      * (all VPCLMULQDQ CPUs have AVX2).
-     * Test-only override: RJ_CRC_X86_FORCE128=1 forces the 128-bit lane
-     * path so tests can exercise it on VPCLMULQDQ-capable CPUs. */
-    if (getenv("RJ_CRC_X86_FORCE128"))
-        return 0;
+     * Test-only override: RJ_CRC_X86_FORCE256=1 forces the rung-2 256-bit
+     * path inside rj_crc32_fast_x86_vpclmul so tests can exercise it on
+     * AVX-512-capable CPUs. The hardware requirement is never bypassed. */
     rj_cpu_info ci;
     rj_cpu_detect(&ci);
-    return ci.vpclmulqdq && ci.pclmulqdq && ci.avx2;
+    if (!ci.vpclmulqdq || !ci.pclmulqdq || !ci.avx2)
+        return 0;
+    if (getenv("RJ_CRC_X86_FORCE256"))
+        return 1;
+    return !ci.avx512f;
 }
 
 uint32_t rj_crc32_fast_x86_vpclmul(uint32_t crc, const void *d, size_t n)
 {
-    if (!x86_has_vpclmul_tier())
-        return rj_crc32_fast_x86_pclmul(crc, d, n);
+    /* Rungs 1+2 (spec R2.5): select internally. */
     if (n == 0)
         return crc;
-    return vpclmul_512_body(crc, (const uint8_t *)d, n);
+    if (x86_has_vpclmul_tier())
+        return vpclmul_512_body(crc, (const uint8_t *)d, n);
+    if (x86_has_vpclmulqw_nof())
+        return pclmul_256_body(crc, (const uint8_t *)d, n);
+    return rj_crc32_fast_x86_pclmul(crc, d, n);
 }
 
 uint32_t rj_crc32_fast_x86_pclmul(uint32_t crc, const void *d, size_t n)
 {
+    /* Rung 3: 128-bit PCLMULQDQ fold (pure vector, not fusion). */
     if (n == 0)
         return crc;
     if (!x86_has_pclmul())
         return rj_crc32_update(crc, d, n);
-    /* 256-bit VPCLMULQDQ lanes whenever vpclmulqdq is usable (in particular
-     * without avx512f, e.g. Zen3); else 128-bit PCLMULQDQ lanes. */
-    if (x86_has_vpclmulqw_nof())
-        return pclmul_256_body(crc, (const uint8_t *)d, n);
-    return pclmul_128_body(crc, (const uint8_t *)d, n);
+    return pclmul_128_fold_body(crc, (const uint8_t *)d, n);
 }
 
 uint32_t rj_crc32_fast_x86_crc32hw(uint32_t crc, const void *d, size_t n)
@@ -547,12 +545,17 @@ static pthread_once_t x86_select_once = PTHREAD_ONCE_INIT;
 
 static void x86_select_init(void)
 {
-    if (x86_has_vpclmul_tier())
-        x86_selected_fn = rj_crc32_fast_x86_vpclmul;
-    else if (x86_has_pclmul())
-        x86_selected_fn = rj_crc32_fast_x86_pclmul;
+    /* Spec R2 chain as amended by Finding 13. */
+    rj_cpu_info ci;
+    rj_cpu_detect(&ci);
+    if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw)
+        x86_selected_fn = rj_crc32_fast_x86_vpclmul;  /* rung 1: 512-bit fusion */
+    else if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2)
+        x86_selected_fn = rj_crc32_fast_x86_vpclmul;  /* rung 2: 256-bit fusion */
+    else if (ci.pclmulqdq)
+        x86_selected_fn = rj_crc32_fast_x86_pclmul;   /* rung 3: 128-bit fold */
     else
-        x86_selected_fn = rj_crc32_update;
+        x86_selected_fn = rj_crc32_update;            /* rungs 4+5: scalar */
 }
 
 uint32_t rj_crc32_fast_x86(uint32_t crc, const void *d, size_t n)
@@ -563,11 +566,17 @@ uint32_t rj_crc32_fast_x86(uint32_t crc, const void *d, size_t n)
 
 int rj_crc32_fast_x86_class(void)
 {
-    /* Matches the selection in x86_select_init exactly. Note class 1 is
-     * never returned: see the IEEE-vs-Castagnoli note above. */
-    if (x86_has_vpclmul_tier())
+    /* Matches the selection in x86_select_init exactly.
+     * Class codes (spec R2.5 as amended): 0=scalar, 1=crc32hw, 2=pclmul128,
+     * 3=vpclmul (rungs 1+2). Note class 1 is never returned: see the
+     * IEEE-vs-Castagnoli note above. */
+    rj_cpu_info ci;
+    rj_cpu_detect(&ci);
+    if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw)
         return 3;
-    if (x86_has_pclmul())
+    if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2)
+        return 3;
+    if (ci.pclmulqdq)
         return 2;
     return 0;
 }

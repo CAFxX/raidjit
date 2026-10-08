@@ -6,14 +6,17 @@
  * via rj_crc32_init/rj_crc32_final. Bit-exact vs zlib crc32 (IEEE
  * 0x04C11DB7) on all inputs; see tests/test_crc_fast_x86.c.
  *
- * Dispatch order (best first), selected internally by rj_crc32_fast_x86:
- *   3. vpclmul  -- Cawley-style fusion: 512-bit VPCLMULQDQ vector lanes +
- *                   PCLMUL-based scalar lane. Gated on
- *                   vpclmulqdq && pclmulqdq && avx512f && avx512bw.
- *   2. pclmul   -- Cawley-style fusion: 256-bit VPCLMULQDQ vector lanes when
- *                   vpclmulqdq is set (even without avx512f; Zen3), else
- *                   128-bit PCLMULQDQ vector lanes. PCLMUL-based scalar lane.
- *                   Gated on pclmulqdq.
+ * Dispatch order (best first), selected internally by rj_crc32_fast_x86
+ * (spec R2 as amended by Finding 13):
+ *   3. vpclmul  -- rungs 1+2, selected internally by
+ *                   rj_crc32_fast_x86_vpclmul. Rung 1: Cawley-style fusion,
+ *                   512-bit VPCLMULQDQ vector lanes + PCLMUL-based scalar
+ *                   lane (vpclmulqdq && pclmulqdq && avx512f && avx512bw).
+ *                   Rung 2: scalar+vector fusion with 256-bit VPCLMULQDQ
+ *                   lanes (vpclmulqdq && !avx512f, e.g. Zen3).
+ *   2. pclmul   -- rung 3: 128-bit PCLMULQDQ FOLD (pure vector, v4 lanes;
+ *                   zlib-ng/Chromium structure), NOT fusion. Gated on
+ *                   pclmulqdq without vpclmulqdq.
  *   1. crc32hw  -- No distinct hardware path exists for IEEE CRC-32 on
  *                   x86-64 (the crc32 instruction is CRC-32C/Castagnoli-only);
  *                   this entry point delegates to the slice-by-8 fallback.
@@ -47,6 +50,6 @@ uint32_t rj_crc32_fast_x86_crc32hw(uint32_t crc, const void *d, size_t n);
 
 int rj_crc32_fast_x86_class(void);
 /* Which variant the internal selection picks on this machine:
- *   3 = vpclmul, 2 = pclmul, 0 = scalar.
+ *   3 = vpclmul (rungs 1+2), 2 = pclmul128 (rung 3), 0 = scalar.
  * (1 = crc32hw is never returned: no distinct IEEE hw tier exists on x86-64;
  * an sse42-only CPU reports 0.) */
