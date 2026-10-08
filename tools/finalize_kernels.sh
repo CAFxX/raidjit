@@ -40,7 +40,9 @@ disasm() { # $1 = kernel name, $2 = objdump, rest = objdump args
         echo "# generated $DATE_UTC by tools/gen_kernels.c (make kernels)"
         echo "# bytes verified by execution before disassembly; see manifest.json"
         echo ""
-        "$@" -D "$STAGE/$name.code.bin"
+        # tidy_disasm.py folds objdump's lone disp8 continuation lines
+        # (EVEX scaled-displacement quirk) back into their instruction.
+        "$@" -D "$STAGE/$name.code.bin" | python3 "$REPO/tools/tidy_disasm.py"
     } >"$STAGE/$name.asm"
 }
 
