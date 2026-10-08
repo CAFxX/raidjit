@@ -150,9 +150,17 @@ typedef struct {
  * full-group size (U * VLMAX). */
 static size_t read_vlenb(void)
 {
+#ifdef RJ_WASM
+    /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2b): no CSR
+     * access on wasm32. The single caller is guarded to use the
+     * synthetic CPU bundle instead; this definition only keeps the TU
+     * compiling. Native builds never define RJ_WASM. */
+    return 16;
+#else
     size_t v;
     __asm__ volatile("csrr %0, vlenb" : "=r"(v));
     return v;
+#endif
 }
 
 /* ---------------- constant pool ---------------- */
@@ -1399,7 +1407,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
      * sound (also under QEMU: the C code sees the same VLEN as the
      * JITed code's vsetvli). It also sizes the replicated constant-pool
      * table entries (see pool_get). */
+#ifdef RJ_WASM
+    /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2b): the VLEN
+     * comes from the synthetic CPU bundle (cpu->rvv_vlen). */
+    cg.vlenb = (size_t)cpu->rvv_vlen;
+#else
     cg.vlenb = read_vlenb();
+#endif
     v->group_bytes = (size_t)cg.U * cg.vlenb * (size_t)cg.lmul;
 
     /* cand->ternlog: not implemented for RVV; ignored.
@@ -1712,6 +1726,21 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 
     long ps = sysconf(_SC_PAGESIZE);
     size_t memsz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
+#ifdef RJ_WASM
+    /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2): no
+     * mmap/mprotect in the browser and no I-cache maintenance to
+     * perform. The emitters are position-independent, so the bytes are
+     * the contract; keep them in a plain malloc'd block. Native builds
+     * never define RJ_WASM. */
+    (void)ps;
+    void *mem = malloc(total ? total : 1);
+    if (!mem) {
+        snprintf(err, errlen, "malloc failed");
+        goto fail;
+    }
+    memsz = total;
+    memcpy(mem, buf, total);
+#else
     void *mem = mmap(NULL, memsz, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED) {
@@ -1727,6 +1756,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         munmap(mem, memsz);
         goto fail;
     }
+#endif
 
     v->mem = mem;
     v->memsz = memsz;
@@ -1789,7 +1819,13 @@ fail:
 
 void jit_free_version(version_t *v)
 {
-    if (v->mem)
+    if (v->mem) {
+#ifdef RJ_WASM
+        /* Paired with the malloc pivot in jit_build_version (§S6.2). */
+        free(v->mem);
+#else
         munmap(v->mem, v->memsz);
+#endif
+    }
     memset(v, 0, sizeof(*v));
 }

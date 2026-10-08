@@ -1563,7 +1563,15 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
          * See docs/length_dispatch.md §11.0 and
          * tests/test_boundaries.c:sve_vl_bytes (same pattern). */
         size_t true_vl;
+#ifdef RJ_WASM
+        /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2b): no
+         * hardware to query; the VL comes from the synthetic CPU bundle
+         * (cpu->sve_vl), which is also the value assigned to cg.vl
+         * above. Native builds never define RJ_WASM. */
+        true_vl = (size_t)cpu->sve_vl;
+#else
         __asm__ volatile(".arch armv8-a+sve\n\tcntb %0" : "=r"(true_vl));
+#endif
         cg.vl = (int)true_vl;
     }
     cg.U = cand->U;
@@ -1746,6 +1754,21 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         goto fail;
     }
     size_t total = (cg.em.len + 4095) & ~(size_t)4095;
+#ifdef RJ_WASM
+    /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2): no
+     * mmap/mprotect in the browser and no I-cache maintenance to
+     * perform. The emitters are position-independent, so the bytes are
+     * the contract; keep exactly cg.em.len bytes in a malloc'd block.
+     * Native builds never define RJ_WASM. */
+    void *mem = malloc(cg.em.len ? cg.em.len : 1);
+    if (!mem) {
+        free(buf);
+        snprintf(err, errlen, "malloc failed");
+        goto fail;
+    }
+    total = cg.em.len;
+    memcpy(mem, cg.em.buf, cg.em.len);
+#else
     void *mem = mmap(NULL, total, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED) {
@@ -1761,6 +1784,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         snprintf(err, errlen, "mprotect failed");
         goto oom;
     }
+#endif
 
     v->cand = *cand;
     v->kind = pl->kind;
@@ -1814,8 +1838,14 @@ fail:
 
 void jit_free_version(version_t *v)
 {
-    if (v->mem)
+    if (v->mem) {
+#ifdef RJ_WASM
+        /* Paired with the malloc pivot in jit_build_version (§S6.2). */
+        free(v->mem);
+#else
         munmap(v->mem, v->memsz);
+#endif
+    }
     v->mem = NULL;
     v->fn = NULL;
 }

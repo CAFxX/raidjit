@@ -2488,6 +2488,20 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 
     long ps = sysconf(_SC_PAGESIZE);
     size_t memsz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
+#ifdef RJ_WASM
+    /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2): no
+     * mmap/mprotect in the browser. The emitters are
+     * position-independent, so the bytes are the contract; keep them in
+     * a plain malloc'd block. Native builds never define RJ_WASM. */
+    (void)ps;
+    void *mem = malloc(total ? total : 1);
+    if (!mem) {
+        snprintf(err, errlen, "malloc failed");
+        goto fail;
+    }
+    memsz = total;
+    memcpy(mem, buf, total);
+#else
     void *mem = mmap(NULL, memsz, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED) {
@@ -2500,6 +2514,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         munmap(mem, memsz);
         goto fail;
     }
+#endif
 
     v->mem = mem;
     v->memsz = memsz;
@@ -2565,7 +2580,12 @@ fail:
 
 void jit_free_version(version_t *v)
 {
-    if (v->mem)
+    if (v->mem) {
+#ifdef RJ_WASM
+        free(v->mem);
+#else
         munmap(v->mem, v->memsz);
+#endif
+    }
     memset(v, 0, sizeof(*v));
 }
