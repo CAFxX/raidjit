@@ -111,8 +111,12 @@ cp "$REPO/tools/kernels-README.md" "$DEST/README.md"
 # table plus the full disassembly of all six kernels (replaces kernels.zip as
 # the shipped deliverable).
 python3 "$REPO/tools/gen_kernels_md.py" "$STAGE" "$DEST/../raidjit_kernels.md"
+# Interactive explorer page, rebuilt from the .md on every regen. The generator
+# fails loudly on format drift, so the page can never silently desync from the
+# document. Never hand-edit raidjit_kernels.html.
+python3 "$REPO/tools/gen_kernels_page.py" "$DEST/../raidjit_kernels.md" "$DEST/../raidjit_kernels.html"
 NK=$(echo "$NAMES" | wc -w)
-echo "finalize_kernels.sh: installed $NK kernels + manifest.json + README.md, built raidjit_kernels.md"
+echo "finalize_kernels.sh: installed $NK kernels + manifest.json + README.md, built raidjit_kernels.md + raidjit_kernels.html"
 ls -la "$DEST" "$DEST/../raidjit_kernels.md"
 # Refresh the Library-visible hardlink mirror (your_files/).
 sh "$REPO/tools/mirror_your_files.sh"

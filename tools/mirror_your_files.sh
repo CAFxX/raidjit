@@ -9,7 +9,7 @@
 # Canonical home (single source of truth):
 #   ~/workspace/goals/raidjit-follow-on-extensions/files/
 # Library-visible mirror:
-#   ~/workspace/your_files/raidjit/  (+ raidjit-source.zip, + raidjit_kernels.md)
+#   ~/workspace/your_files/raidjit/  (+ raidjit-source.zip, + raidjit_kernels.md, + raidjit_kernels.html)
 #
 # Re-run after any `make kernels` or other deliverable refresh.
 # `make kernels` (tools/finalize_kernels.sh) calls this automatically.
@@ -33,4 +33,9 @@ ln "$G/raidjit-source.zip" "$Y/raidjit-source.zip"
 rm -f "$Y/raidjit_kernels.md"
 ln "$G/raidjit/raidjit_kernels.md" "$Y/raidjit_kernels.md"
 
-echo "mirror: $Y/raidjit, $Y/raidjit-source.zip and $Y/raidjit_kernels.md now hardlink $G"
+# Interactive kernels explorer page (built by tools/gen_kernels_page.py during
+# `make kernels`; top-level hardlink mirrors the .md treatment above).
+rm -f "$Y/raidjit_kernels.html"
+ln "$G/raidjit/raidjit_kernels.html" "$Y/raidjit_kernels.html"
+
+echo "mirror: $Y/raidjit, $Y/raidjit-source.zip, $Y/raidjit_kernels.md and $Y/raidjit_kernels.html now hardlink $G"
