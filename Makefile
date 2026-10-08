@@ -77,7 +77,8 @@ X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
         $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b \
-        $(BUILDDIR)/test_xorbit $(BUILDDIR)/test_mshift
+        $(BUILDDIR)/test_xorbit $(BUILDDIR)/test_mshift \
+        $(BUILDDIR)/test_crc_fast_x86
 ifeq ($(ARCH),x86_64)
 TESTS = $(PORTABLE_TESTS) $(X86_ONLY_TESTS)
 else
@@ -326,6 +327,7 @@ ifeq ($(ARCH),x86_64)
 	./$(BUILDDIR)/test_permi2b
 	./$(BUILDDIR)/test_xorbit
 	./$(BUILDDIR)/test_mshift
+	./$(BUILDDIR)/test_crc_fast_x86
 endif
 	./$(BUILDDIR)/test_nt
 	./$(BUILDDIR)/test_pdelta
@@ -571,6 +573,9 @@ endif
 
 $(BUILDDIR)/test_crc_fast: tests/test_crc_fast.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CRC_FAST_DEFS) -o $@ tests/test_crc_fast.c $(BUILDDIR)/libraidjit.a $(LDFLAGS) $(CRC_FAST_LIBS)
+
+$(BUILDDIR)/test_crc_fast_x86: tests/test_crc_fast_x86.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CRC_FAST_DEFS) -o $@ tests/test_crc_fast_x86.c $(BUILDDIR)/libraidjit.a $(LDFLAGS) $(CRC_FAST_LIBS) -lpthread
 
 $(BUILDDIR)/test_fused: tests/test_fused.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_fused.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
