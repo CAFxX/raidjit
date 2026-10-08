@@ -513,13 +513,15 @@ int rj_list_variants(const rj_topology *topo, rj_op op,
  * meaningful CRC.
  *
  * Dispatch: the call goes to the best backend compiled for the host
- * ISA -- x86-64: VPCLMULQDQ/AVX-512 fusion, else PCLMULQDQ fusion, else
- * hw crc32, else slice-by-8; AArch64: PMULL+SHA3 fusion, else hw
- * crc32, else PMULL fold, else slice-by-8; RISC-V: Zvbc vector fold,
- * else Zbc scalar fold, else slice-by-8; WASM/unknown: slice-by-8.
- * Unknown or absent features degrade to a slower CORRECT variant --
- * never wrong, never SIGILL. See docs/crc.md for the per-ISA variant
- * table, fallback chains, and where each variant wins.
+ * ISA -- x86-64: VPCLMULQDQ/AVX-512 fusion, else PCLMULQDQ fusion
+ * (256-bit VPCLMULQDQ lanes where available), else slice-by-8 (the x86
+ * `crc32` instruction is CRC-32C/Castagnoli-only and unusable for IEEE
+ * CRC-32, so there is no hw-crc32 tier on x86); AArch64: PMULL+SHA3
+ * fusion, else hw crc32, else PMULL fold, else slice-by-8; RISC-V: Zvbc
+ * vector fold, else Zbc scalar fold, else slice-by-8; WASM/unknown:
+ * slice-by-8. Unknown or absent features degrade to a slower CORRECT
+ * variant -- never wrong, never SIGILL. See docs/crc.md for the
+ * per-ISA variant table, fallback chains, and where each variant wins.
  *
  * Performance note: every throughput figure quoted for these paths
  * (docs/crc.md, hidden_files/crc_optimum_research/FINAL_SYNTHESIS.md)

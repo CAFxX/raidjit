@@ -32,10 +32,22 @@ degrade to a slower CORRECT variant — never wrong, never SIGILL.
 
 | Class | Condition | Variant |
 |---|---|---|
-| 3 | `vpclmulqdq` (+ `avx512f`: rung 1; without: rung 2) | Cawley-style fusion: scalar `crc32q` lanes + VPCLMULQDQ vector lanes (rung 1); 256-bit VPCLMULQDQ fusion lanes (rung 2, Zen3). The `rj_crc32_fast_x86_vpclmul` entry selects the rung internally (spec Finding 13) |
-| 2 | `pclmulqdq` (no vpclmulqdq) | 128-bit fold, zlib-ng/Chromium structure (the synthesis table — not fusion — is the arbiter here) |
-| 1 | `sse42` | hw `crc32q` N-way interleave |
+| 3 | `vpclmulqdq && pclmulqdq && avx512f && avx512bw` (`avx512bw` joins per spec review R1-6: the 512-bit fusion's constant broadcast/lane reduction need it) | Cawley-style fusion: scalar `crc32q` lanes + VPCLMULQDQ vector lanes (rung 1); 256-bit VPCLMULQDQ fusion lanes (rung 2, Zen3: `vpclmulqdq` without `avx512f`). The `rj_crc32_fast_x86_vpclmul` entry selects the rung internally (spec Finding 13) |
+| 2 | `pclmulqdq` (no tier-3) | 128-bit PCLMULQDQ fold, zlib-ng/Chromium structure (the synthesis table — not fusion — is the arbiter here) |
 | 0 | else | slice-by-8 |
+
+**There is no `crc32`-instruction tier on x86** (W1 finding, documented
+in `src/x86_64/crc_fast.c`): the x86 `crc32` instruction implements
+CRC-32C (Castagnoli, 0x1EDC6F41), **not** the IEEE CRC-32 (0x04C11DB7)
+this library computes — it cannot be used here, not for a scalar lane,
+not for an N-way interleave. Consequently `rj_crc32_fast_x86_crc32hw`
+delegates to slice-by-8, the internal selector skips it, and class 1 is
+never returned on x86 (an `sse42`-only machine reports class 0). The
+spec's R2 x86 tier 4 ("hw `crc32q` N-way interleave") and the
+synthesis's SSE4.2 row describe CRC-32C throughput, not IEEE CRC-32 —
+flagged for spec remediation; the implementation is authoritative.
+(ARM differs: ARMv8 has distinct IEEE `crc32b/h/w/x` and Castagnoli
+`crc32cb/ch/cw/cx` instructions, so the ARM backend's class 1 is real.)
 
 ### AArch64 (best first)
 
@@ -61,9 +73,11 @@ of the pinned cross-worker contract (spec R2.5).
 
 - **Slice-by-8 baseline**: the class-0 fallback everywhere. Synthesis
   figure: 1–3 GB/s class (spec Finding 17a: cite this, not "<10").
-- **x86 SSE4.1 without CLMUL**: Chorba (Russell 2024, reported "on par
-  with hw") is a better scalar-class option than slice-by-8 and is **not
-  implemented** — recorded as a future lead, not a silent gap.
+- **x86 without CLMUL**: there is no `crc32`-instruction tier for IEEE
+  CRC-32 (see the x86 table above) — an `sse42`-only x86 machine gets
+  slice-by-8. The Chorba scalar construction (Russell 2024, reported "on
+  par with hw") would beat it and is **not implemented** — recorded as a
+  future lead, not a silent gap.
 - **AArch64 N1 without SHA3/PMULL**: scalar `crc32x` (class 1) is picked
   over the pure PMULL fold (class 2) deliberately — the inversion is
   load-bearing, see the table above.
