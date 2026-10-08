@@ -472,17 +472,43 @@ static void test_dispatch(void)
     x86_cpuid(1, 0, &a, &b, &c, &d);
     int hw_pclmul = (c >> 1) & 1;
     int hw_sse42 = (c >> 20) & 1;
-    int hw_vpclmul = 0;
+    int hw_vpclmul = 0, hw_avx512f = 0, hw_avx512bw = 0;
     x86_cpuid(0, 0, &a, &b, &c, &d);
     if (a >= 7) {
         x86_cpuid(7, 0, &a, &b, &c, &d);
         hw_vpclmul = (c >> 10) & 1;
+        int avx512f_hw = (b >> 16) & 1;
+        int avx512bw_hw = (b >> 30) & 1;
+        /* Mirror src/x86_64/cpu.c's XCR0 gating for the AVX-512 flags
+         * (spec R3: pclmulqdq/vpclmulqdq/sse42 need no XCR0 state). */
+        int osxsave = 0;
+        x86_cpuid(1, 0, &a, &b, &c, &d);
+        osxsave = (c >> 27) & 1;
+        unsigned long long xcr0 = 0;
+        if (osxsave) {
+            unsigned lo, hi;
+            __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+            xcr0 = ((unsigned long long)hi << 32) | lo;
+        }
+        int sse_os = (xcr0 & 0x6) == 0x6;
+        int avx_os = sse_os && (xcr0 & 0x4);
+        int avx512_os = avx_os && ((xcr0 & 0xE0) == 0xE0);
+        hw_avx512f = avx512f_hw && avx512_os;
+        hw_avx512bw = avx512bw_hw && avx512_os;
     }
-    /* Spec R2 chain, best first (Finding 13: class 3 covers BOTH vpclmul
-     * fusion rungs -- vpclmulqdq&&avx512f and vpclmulqdq&&!avx512f --
-     * the rj_crc32_fast_x86_vpclmul entry point selects the rung
-     * internally, so the class test does not distinguish them). */
-    int expected = hw_vpclmul ? 3 : hw_pclmul ? 2 : hw_sse42 ? 1 : 0;
+    /* Mirror src/x86_64/crc_fast.c's gates exactly:
+     *   tier 3: vpclmulqdq && pclmulqdq && avx512f && avx512bw
+     *           (avx512bw joins per spec review R1-6)
+     *   tier 2: pclmulqdq (256-bit VPCLMULQDQ lanes when vpclmulqdq is
+     *           set without avx512f -- the Zen3 rung -- else 128-bit)
+     *   class 1 is NEVER returned on x86: the `crc32` instruction is
+     *   CRC-32C (Castagnoli)-only and cannot produce IEEE CRC-32
+     *   (see the IEEE-vs-Castagnoli note in src/x86_64/crc_fast.c).
+     *   sse42-only machines report class 0. */
+    int expected = (hw_vpclmul && hw_pclmul && hw_avx512f && hw_avx512bw)
+                       ? 3
+                   : hw_pclmul ? 2
+                               : 0;
     int present = rj_crc32_fast_test_backend_present();
     int strict = getenv("RJ_CRC_STRICT") != NULL;
     if (!present) {
@@ -500,8 +526,9 @@ static void test_dispatch(void)
     int cls = rj_crc32_fast_x86_class();
     CHECK(cls == expected,
           "x86 class %d != expected %d "
-          "(hw: vpclmul=%d pclmul=%d sse42=%d)",
-          cls, expected, hw_vpclmul, hw_pclmul, hw_sse42);
+          "(hw: vpclmul=%d pclmul=%d avx512f=%d avx512bw=%d sse42=%d)",
+          cls, expected, hw_vpclmul, hw_pclmul, hw_avx512f, hw_avx512bw,
+          hw_sse42);
     /* Informational only: the library's own rj_cpu_detect() may not
      * report the new flags yet (their wiring is backend-worker scope);
      * selection is verified against hardware CPUID directly above, so
@@ -637,6 +664,8 @@ static void test_best_matches_class(void)
         return;
     }
     int cls = rj_crc32_fast_x86_class();
+    /* cls==1 never occurs on x86 (Castagnoli, see test_dispatch), but
+     * the mapping is kept total for the contract. */
     crc_fn_t forced = cls == 3   ? rj_crc32_fast_x86_vpclmul
                       : cls == 2 ? rj_crc32_fast_x86_pclmul
                       : cls == 1 ? rj_crc32_fast_x86_crc32hw
