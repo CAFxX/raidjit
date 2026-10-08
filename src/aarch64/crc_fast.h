@@ -6,9 +6,26 @@
  *   rj_crc32_fast_arm          best available ARM variant (internal
  *                              runtime selection, thread-safe,
  *                              first-call cached).
- *   rj_crc32_fast_arm_fusion   Cawley 2025 fusion: 9 PMULL vector lanes
- *                              (144-byte stride) + 3 scalar crc32 lanes,
- *                              EOR3-combined. Needs pmull && sha3.
+ *   rj_crc32_fast_arm_fusion   Cawley 2025 fusion v9s3x2e_s3 (M1): 9 PMULL
+ *                              vector lanes (144-byte stride) + 3 scalar
+ *                              crc32 lanes, EOR3-combined.
+ *                              Needs pmull && sha3 && crc32.
+ *   rj_crc32_fast_arm_fusion_n1
+ *                              Cawley 2025 fusion v3s4x2e_v2 (N1): 3 PMULL
+ *                              vector lanes (48-byte stride) + 4 scalar
+ *                              crc32 lanes, no EOR3. Needs pmull && sha3
+ *                              && crc32.
+ *                              (Finding 13: per-core lane variants from
+ *                              the synthesis; selected by MIDR
+ *                              implementer — 0x61 Apple → M1 variant,
+ *                              else N1 variant. Rationale: N1's PMULL
+ *                              throughput is 1/cycle, so the M1
+ *                              variant's 9 vector lanes would saturate
+ *                              the vector unit (~10.7 B/c analytic)
+ *                              while the N1 variant balances 6 PMULL
+ *                              against 8 crc32d (~14 B/c analytic,
+ *                              12 B/c reported). Both are bit-exact;
+ *                              the difference is purely throughput.)
  *   rj_crc32_fast_arm_crc32hw  scalar crc32x 3-way interleave (24 B/iter).
  *                              Needs the CRC32 instructions.
  *   rj_crc32_fast_arm_pmull    pure PMULL fold (dougallj structure,
@@ -24,10 +41,13 @@
  * duplicated).
  *
  * Dispatch order (spec R2, remediated review R1-1): fusion first
- * (pmull && sha3), then scalar crc32x, then pure PMULL fold, then
- * slice-by-8. The scalar tier deliberately precedes the pure PMULL
- * fold: on Neoverse N1 the pure PMULL fold measures 7.3 B/cycle while
- * scalar crc32x measures 7.9 B/cycle (the "N1 inversion" documented in
+ * (pmull && sha3 && crc32 — the crc32 conjunct is explicit because both
+ * fusion sub-variants execute the scalar crc32 instructions; without it
+ * they would SIGILL, violating the "never SIGILL" contract),
+ * then scalar crc32x, then pure PMULL fold, then slice-by-8. The scalar
+ * tier deliberately precedes the pure PMULL fold: on Neoverse N1 the
+ * pure PMULL fold measures 7.3 B/cycle while scalar crc32x measures 7.9
+ * B/cycle (the "N1 inversion" documented in
  * hidden_files/crc_optimum_research/FINAL_SYNTHESIS.md); the fusion
  * exists to use both units at once. Apple cores (which always have
  * pmull+sha3+crc32) take tier 1, so no Apple regression.
@@ -53,11 +73,22 @@
 
 uint32_t rj_crc32_fast_arm(uint32_t crc, const void *data, size_t len);
 uint32_t rj_crc32_fast_arm_fusion(uint32_t crc, const void *data, size_t len);
+uint32_t rj_crc32_fast_arm_fusion_n1(uint32_t crc, const void *data, size_t len);
 uint32_t rj_crc32_fast_arm_crc32hw(uint32_t crc, const void *data, size_t len);
 uint32_t rj_crc32_fast_arm_pmull(uint32_t crc, const void *data, size_t len);
 int rj_crc32_fast_arm_class(void);
+
+/* Which fusion sub-variant this machine selected: 0 = M1 v9s3x2e_s3,
+ * 1 = N1 v3s4x2e_v2 (Finding 13). Test-visible; only meaningful when
+ * rj_crc32_fast_arm_class() == 3. */
+int rj_crc32_fast_arm_fusion_sub(void);
 
 /* Pure function of the three feature flags -> variant class. Test-only
  * visibility for the dispatch-chain decision table (all 8 flag combos);
  * production selection goes through rj_cpu_detect. */
 int rj_crc32_fast_arm_pick(int crc32, int pmull, int sha3);
+
+/* Pure function of the MIDR implementer -> fusion sub-variant
+ * (0 = M1 v9s3x2e_s3 iff implementer == 0x61, else 1 = N1 v3s4x2e_v2).
+ * Test-only visibility for the per-core selection (Finding 13). */
+int rj_crc32_fast_arm_pick_fusion(int implementer);
