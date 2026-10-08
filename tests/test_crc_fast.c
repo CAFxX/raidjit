@@ -237,11 +237,15 @@ static void test_bitexact(void)
 #ifdef RJ_CRC_HAVE_ZLIB
                 /* zlib's crc32() consumes the POST-xorout CRC:
                  * crc32(0,buf,len) is the one-shot FINAL value, so it
-                 * equals our running value XORed with 0xFFFFFFFF. */
-                if (((len + (size_t)m) % 11) == 0)
-                    CHECK(crc32(0L, p, (uInt)len) == (exp ^ 0xFFFFFFFFu),
+                 * equals the standard-init running value XORed with
+                 * 0xFFFFFFFF. (exp uses a varying crc0; recompute the
+                 * standard-init value for zlib.) */
+                if (((len + (size_t)m) % 11) == 0) {
+                    uint32_t exp_std = crc32_bitwise(0xFFFFFFFFu, p, len);
+                    CHECK(crc32(0L, p, (uInt)len) == (exp_std ^ 0xFFFFFFFFu),
                           "zlib vs bitwise disagree len=%zu m=%d",
                           len, m);
+                }
 #endif
                 for (size_t v = 0; v < NVAR; v++)
                     CHECK(variants[v].fn(crc0, p, len) == exp,
