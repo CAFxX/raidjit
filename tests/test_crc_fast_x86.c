@@ -28,7 +28,6 @@
 #include "raidjit.h"
 #include "../src/crc.h"
 #include "../src/x86_64/crc_fast.h"
-#include "../src/x86_64/cpu.h"
 
 static int fails = 0;
 #define CHECK(cond, ...) do { \
@@ -80,8 +79,8 @@ static void test_kat(void)
 }
 
 /* Compare variant vs scalar oracle and zlib across lengths/seeds/offsets. */
-static void check_range(const uint8_t *base, size_t base_len,
-                        size_t off, size_t len, uint32_t seed_crc)
+static void check_range(const uint8_t *base, size_t off, size_t len,
+                        uint32_t seed_crc)
 {
     const uint8_t *p = base + off;
     uint32_t ref = rj_crc32_update_scalar(seed_crc, p, len);
@@ -109,7 +108,7 @@ static void test_exhaustive_small(void)
         fill_buf(buf, 512 + 16, seeds[s]);
         for (size_t off = 0; off < 16; off++)
             for (size_t len = 0; len <= 256; len++)
-                check_range(buf, 512 + 16, off, len, crc_seeds[s]);
+                check_range(buf, off, len, crc_seeds[s]);
     }
     free(buf);
     printf("ok exhaustive_small\n");
@@ -130,7 +129,7 @@ static void test_boundaries(void)
         fill_buf(buf, (1u << 20) + 16, seeds[s]);
         for (size_t li = 0; li < sizeof(lens)/sizeof(lens[0]); li++)
             for (size_t off = 0; off < 16; off++)
-                check_range(buf, (1u << 20) + 16, off, lens[li], 0xFFFFFFFFu);
+                check_range(buf, off, lens[li], 0xFFFFFFFFu);
     }
     free(buf);
     printf("ok boundaries\n");

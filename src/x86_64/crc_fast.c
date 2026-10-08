@@ -72,6 +72,7 @@
 
 #include <immintrin.h>
 #include <pthread.h>
+#include <stdlib.h> /* getenv (test-only override) */
 #include <wmmintrin.h>
 
 #include "../cpu.h" /* rj_cpu_detect */
@@ -498,7 +499,11 @@ static int x86_has_vpclmulqw_nof(void)
     /* 256-bit VPCLMULQDQ without AVX-512 (Zen3): usable when the vpclmul
      * tier-3 gate did not fire but the CPU has VPCLMULQDQ at all. avx2 joins
      * because GCC categorizes the 256-bit integer XOR intrinsics as AVX2
-     * (all VPCLMULQDQ CPUs have AVX2). */
+     * (all VPCLMULQDQ CPUs have AVX2).
+     * Test-only override: RJ_CRC_X86_FORCE128=1 forces the 128-bit lane
+     * path so tests can exercise it on VPCLMULQDQ-capable CPUs. */
+    if (getenv("RJ_CRC_X86_FORCE128"))
+        return 0;
     rj_cpu_info ci;
     rj_cpu_detect(&ci);
     return ci.vpclmulqdq && ci.pclmulqdq && ci.avx2;
