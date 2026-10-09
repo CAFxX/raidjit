@@ -55,9 +55,13 @@ INTERLEAVE (fold in-kernel):
   Option A uses ONLY the vector unit (the scalar crc32 unit needs GPRs;
   extracting from vector regs costs more than it saves — synthesis §Phase 2
   "Only the VECTOR unit is usable"). M1-class (24 B/c vector-only) qualifies
-  (0.041 < 0.06). Conservative: gate on a µarch allowlist (initial: Apple
-  M1/M2-class, i.e. `uarch` identifying Firestorm/Icestorm). N1 (7.3 B/c)
-  does NOT qualify — falls back to scalar.
+  (0.041 < 0.06). HOWEVER: Phase 2 does NOT implement AArch64 interleave.
+  The codebase has no Apple-silicon µarch detection (`rj_cpu_uarch` returns
+  RJ_UARCH_UNKNOWN on AArch64), making a conservative allowlist
+  unimplementable. The gate is therefore CLOSED on AArch64 for Phase 2
+  (scalar fallback always). AArch64 interleave is deferred to a future phase
+  that adds the µarch detection. This is a deliberate conservative choice,
+  not an oversight.
 - RISC-V: UNKNOWN (no published vclmul throughput). Conservative: NEVER
   interleave on RISC-V in Phase 2. Always scalar fallback. The gate can be
   revisited when core data exists.
@@ -145,6 +149,26 @@ outputs. The driver calls it as `fn(in, out, len, fold_state)` where:
   `nstreams = n_in + n_out`. Streams `0..n_in-1` = input streams,
   `n_in..n_in+n_out-1` = output streams. Owned by the driver for the
   whole fused call (persists across tiles).
+
+CALLING CONVENTION SAFETY (blocker fix): A crc_fold kernel uses a 4-argument
+calling convention, DIFFERENT from the standard 3-argument `rj_fn`
+(`fn(in, out, len)`). A crc_fold kernel MUST NEVER be installed in the
+normal dispatch table or called via the 3-arg path — doing so would pass
+a garbage `fold_state` pointer (wrong code, potential crash).
+
+Enforcement:
+- `rj_compile` (public) NEVER sets `want_crc`; only the internal fused
+  path does. Therefore no crc_fold kernel can enter the public dispatch
+  tables.
+- The fused driver (`fused.c`) is the SOLE caller of crc_fold kernels.
+  Before each call it checks `rj_jit_crc_fold(v) == 1`; if 0, it uses the
+  3-arg call (scalar fallback). If 1, it uses the 4-arg call.
+- The backend's `jit_build_version` MUST reject (clean error, never
+  wrong code) any attempt to build a crc_fold kernel when the uarch gate
+  is closed, even if `cand.crc_fold=1` somehow arrives.
+- Test: `test_crc_fold_callconv.c` verifies that a crc_fold version
+  is never returned by `rj_compile` (public path) and that the fused
+  driver uses the correct arity.
 
 Kernel behavior:
 - Load fold state at entry (one vector load per stream, or GPR init per
@@ -307,7 +331,10 @@ Structural only (benchmarks postponed):
 - Coordinator (this worktree): spec, planner integration (§3),
   x86-64 backend (§5), fused.c driver (§4.3), verification
   orchestration, reviews, self-attack.
-- Worker A (AArch64 backend): separate worktree, spec addendum for
-  ARM fold formulation + register budget.
+- Worker A (AArch64 backend): separate worktree. Phase 2 scope is
+  FALLBACK-ONLY verification: confirm the planner never enumerates
+  `crc_fold=1` for AArch64, the scalar path is correct under QEMU,
+  and the gate stays closed. (Interleave implementation deferred —
+  see §2.)
 - Worker B (RISC-V): separate worktree, verify fallback-only path
   (no interleave), planner gate test.

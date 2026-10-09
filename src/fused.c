@@ -475,13 +475,9 @@ int fused_crc_interleave_ok(const rj_cpu_info *cpu)
     }
     return 0;
 #elif defined(__aarch64__)
-    /* AArch64: M1/M2-class (Firestorm/Icestorm) with ARMv8.2+SHA3+crypto.
-     * The synthesis allowlists Apple silicon; N1 (7.3 B/c) does NOT
-     * qualify. Conservative: require the crypto+SHA3 features AND an
-     * allowlisted uarch. (uarch detection for Apple silicon: check
-     * how rj_cpu_uarch identifies it; if unavailable, gate closed.) */
-    /* TODO(worker-A): fill in the Apple-silicon uarch detection. For
-     * now the gate is closed on AArch64 (conservative default). */
+    /* AArch64: gate CLOSED for Phase 2 (see spec §2). The codebase has no
+     * Apple-silicon µarch detection, making a conservative allowlist
+     * unimplementable. Always scalar fallback. */
     (void)cpu;
     return 0;
 #else
