@@ -303,9 +303,11 @@ function buildDoc(p) {
   const op = { kind: p.op.kind };
   if (p.op.kind === "recover") {
     op.failed = parseIdxList(p.op.failed);
+    if (!op.failed.length) throw new Error("recover needs a non-empty 'failed' disk list");
     if (p.op.rows) op.rows = parseIdxList(p.op.rows);
   } else if (p.op.kind === "parity_update") {
     op.changed = parseIdxList(p.op.changed);
+    if (!op.changed.length) throw new Error("parity_update needs a non-empty 'changed' disk list");
   }
   let cand = "auto";
   if (!p.candAuto) {
@@ -746,7 +748,7 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">page build <code>2026-10-09g</code> (per-ctor topology defaults;
+<p class="note">page build <code>2026-10-09h</code> (per-ctor topology defaults;
 stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and
