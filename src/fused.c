@@ -18,11 +18,13 @@
  * api_batched.h.
  */
 #include "fused.h"
+#include "api.h"
 #include "crc.h"
 #include "striping.h"
 
 #include <assert.h>
 #include <pthread.h>
+#include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +39,8 @@ struct rj_fused {
     size_t n_flat_in, n_flat_out;
     int crc_op;    /* sequence index of the CRC op, -1 when absent */
     int crc_tgt;   /* its target data-op index */
+    int crc_fold;  /* Phase 2: 1 = the target unit has in-kernel CRC folding
+                    * (4-arg kernel); 0 = scalar fallback (3-arg kernel) */
     int ndata, npar; /* topology dims (for the CRC target layout) */
     size_t tile;   /* plan-time tile size (rj_tile_select) */
     int slot;      /* trampoline slot, -1 when not installed */
@@ -212,7 +216,21 @@ rj_fused *rj_fuse_compile(const rj_topology *topo, const rj_fop_t *ops,
                 snprintf(err, errlen, "out of memory");
             goto fail;
         }
-        rj_jit *u = rj_compile(topo, &op, &o, err, errlen);
+        rj_jit *u = NULL;
+        /* Phase 2: for the CRC target, try in-kernel folding first (when
+         * the uarch gate is open). If want_crc compile fails (no buildable
+         * kernel), fall back to the plain compile + scalar CRC path. */
+        if (k == crc_tgt) {
+            rj_cpu_info cpu;
+            rj_cpu_detect(&cpu);
+            if (fused_crc_interleave_ok(&cpu)) {
+                u = rj_compile_want_crc(topo, &op, &o, err, errlen);
+                /* If want_crc fails, u==NULL and we fall through to the
+                 * plain compile below. */
+            }
+        }
+        if (!u)
+            u = rj_compile(topo, &op, &o, err, errlen);
         rj_op_free(&op);
         if (!u)
             goto fail;
@@ -220,6 +238,9 @@ rj_fused *rj_fuse_compile(const rj_topology *topo, const rj_fop_t *ops,
         f->fns[k] = rj_get_fn(u);
         f->nin[k] = ni;
         f->nout[k] = no;
+        /* Phase 2: record whether this unit folds (for the driver). */
+        if (k == crc_tgt)
+            f->crc_fold = rj_jit_handle_crc_fold(u);
     }
 
     /* ---- flat buffer layout (sequence order) ---- */
@@ -278,9 +299,28 @@ static void fused_driver_call(const struct rj_fused *f,
     int tn = t >= 0 ? f->nin[t] : 0;
     int tno = t >= 0 ? f->nout[t] : 0;
     assert(t < 0 || tn + tno <= RJ_FUSED_MAX_FLAT / 2);
-    if (crc && t >= 0)
-        for (int i = 0; i < tn + tno; i++)
-            rj_crc32_init(&acc[i]);
+    /* Phase 2: fold state (one zmm = 64 bytes per stream) when in-kernel
+     * folding is active. Allocated on the stack, 64-byte aligned. */
+    alignas(64) uint8_t fold_state[RJ_FUSED_MAX_FLAT / 2 * 64];
+    int nstreams = tn + tno;
+    if (f->crc_fold) {
+        assert(t >= 0);
+        /* Initialize fold state: the backend defines the init convention.
+         * For x86-64: 0xFFFFFFFF in low 32 bits of each lane (reflected
+         * init), rest zero. The backend's kernel entry loads this. */
+        memset(fold_state, 0, (size_t)nstreams * 64);
+        for (int i = 0; i < nstreams; i++) {
+            /* Set low 32 bits of each 128-bit lane to 0xFFFFFFFF. */
+            for (int lane = 0; lane < 4; lane++) {
+                uint32_t *p = (uint32_t *)(fold_state + i * 64 + lane * 16);
+                p[0] = 0xFFFFFFFFu;
+            }
+        }
+    } else {
+        if (crc && t >= 0)
+            for (int i = 0; i < tn + tno; i++)
+                rj_crc32_init(&acc[i]);
+    }
 
     for (size_t off = 0; off < len; off += tile) {
         size_t tl = len - off < tile ? len - off : tile;
@@ -296,10 +336,19 @@ static void fused_driver_call(const struct rj_fused *f,
             for (int j = 0; j < f->nout[k]; j++)
                 ftout[boo + (size_t)j] =
                     (uint8_t *)out[boo + (size_t)j] + off;
-            f->fns[k](&ftin[bii], f->nout[k] ? &ftout[boo] : NULL, tl);
+            /* Phase 2: 4-arg call when folding, 3-arg otherwise. */
+            if (f->crc_fold && k == t) {
+                rj_fn_crc_fold fn4 = (rj_fn_crc_fold)(void *)f->fns[k];
+                fn4(&ftin[bii], f->nout[k] ? &ftout[boo] : NULL, tl,
+                    fold_state);
+            } else {
+                f->fns[k](&ftin[bii], f->nout[k] ? &ftout[boo] : NULL, tl);
+            }
         }
-        if (crc && t >= 0) {
-            /* The target's tile buffers are hot in cache here. */
+        if (crc && t >= 0 && !f->crc_fold) {
+            /* Scalar fallback: the target's tile buffers are hot in cache
+             * here. (When folding, the kernel already updated fold_state;
+             * no scalar pass needed.) */
             size_t bii = f->base_in[t], boo = f->base_out[t];
             for (int i = 0; i < tn; i++)
                 acc[i] = rj_crc32_fast(acc[i], ftin[bii + (size_t)i],
@@ -310,9 +359,19 @@ static void fused_driver_call(const struct rj_fused *f,
         }
     }
 
-    if (crc && t >= 0)
-        for (int i = 0; i < tn + tno; i++)
-            crc[i] = rj_crc32_final(acc[i]);
+    if (crc && t >= 0) {
+        if (f->crc_fold) {
+            /* Phase 2: finalize fold state to CRCs. The backend defines
+             * the finalize; for x86-64: reduce 4 lanes per stream via
+             * shift-XOR, then Barrett reduce 128->32, XOR 0xFFFFFFFF.
+             * TODO: implement finalize (x86-64 worker). */
+            for (int i = 0; i < nstreams; i++)
+                crc[i] = 0; /* placeholder */
+        } else {
+            for (int i = 0; i < tn + tno; i++)
+                crc[i] = rj_crc32_final(acc[i]);
+        }
+    }
 }
 
 /* Direct driver call for internal composition (no trampoline slot
