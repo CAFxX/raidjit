@@ -42,15 +42,23 @@ From FINAL_SYNTHESIS.md §Phase 2 "almost free" test (fold_cycles/byte <
 dram_cycles/byte @ 0.06):
 
 INTERLEAVE (fold in-kernel):
-- x86-64: AVX-512 + VPCLMULQDQ on SPR, Zen4, ICL-SP (fold 0.028–0.055 cyc/B
-  < 0.06). Conservative: gate on `cpu->vpclmulqdq && cpu->avx512f` AND a
-  µarch allowlist. The allowlist is the conservative part: we do NOT
-  trust feature bits alone (a weak VPCLMULQDQ implementation would
-  silently be 2-4x, not "almost free"). Initial allowlist: Intel SPR,
-  AMD Zen4, Intel ICL-SP (the three measured/analyzed in the synthesis).
-  Detection: `rj_uarch` already distinguishes these; gate on
-  `uarch == UARCH_SPR || uarch == UARCH_ZEN4 || uarch == UARCH_ICL_SP`
-  (names per src/cpu.h; coordinator confirms exact enum names).
+- x86-64: AVX-512 + VPCLMULQDQ on SPR (fold 0.028 cyc/B < 0.06, 53% margin).
+  Conservative: gate on `cpu->vpclmulqdq && cpu->avx512f` AND
+  `u == RJ_UARCH_INTEL_SAPPHIRERAPIDS`. The allowlist is the conservative
+  part: we do NOT trust feature bits alone (a weak VPCLMULQDQ implementation
+  would silently be 2-4x, not "almost free").
+  
+  Zen4 (0.047, 21% margin) and ICL-SP (0.055, 8% margin) are EXCLUDED from
+  the Phase 2 allowlist. FINAL_SYNTHESIS.md labels both "borderline" and
+  states they "deserve empirical checking first" when benchmarks resume.
+  The prior spike's analytic VPCLMULQDQ throughput estimate for ICL-SP was
+  ~3x optimistic — analytic optimism on exactly these numbers is a
+  demonstrated failure mode. They join the allowlist AFTER measurement
+  confirms the bound, not before. (This is the conservative gate the
+  "almost free" safety claim rests on.)
+  
+  Note: `RJ_UARCH_AMD_ZEN5` exists and is not allowlisted — deliberate
+  conservative default (no data), not an oversight.
 - AArch64: ARMv8.2+SHA3+crypto with the Cawley fusion structure — but
   Option A uses ONLY the vector unit (the scalar crc32 unit needs GPRs;
   extracting from vector regs costs more than it saves — synthesis §Phase 2
@@ -124,6 +132,17 @@ Account fold-state registers when `crc_fold=1`: `nstreams` vector registers
 backend sees them. Per-ISA: x86-64 = 1 zmm per stream (4 lanes packed);
 AArch64 = 1 qreg per stream; RISC-V = N/A (never interleaved).
 
+REGISTER BUDGET ANALYSIS (Major 6, spec deliverable): Before the x86-64
+backend is complete, the implementer MUST produce a per-(topology, U)
+budget table showing which combinations fit in 32 zmm registers:
+`encode_regs(U, topology) + nstreams <= 32`. For RS(10,4) (14 streams),
+14 + ~20 > 32, so large-U combos will be rejected and the driver will
+silently fall back. The table must state the expected coverage (which
+topologies actually get interleave at which U). Silent fallback is "never
+wrong code" but must be VISIBLE — the table is the visibility mechanism.
+If a flagship topology (e.g. RS(10,4)) never qualifies, that is a
+product-level finding to report, not a silent non-event.
+
 ### 3.5 `planid.c`
 
 Encode a `crc_fold` token in the plan ID so stable plan IDs reproduce the
@@ -133,8 +152,21 @@ twin. Format follows existing twin tokens (e.g. `+crc_fold`).
 
 `notail`/`predtail`/`maskedtail` are built from the winning candidate
 post-selection; they copy the winner's `cand`, so `crc_fold` rides along.
-Each backend's tail-twin builder MUST preserve the fold (fold the tail
-bytes too). Covered in the combination test matrix.
+
+CRITICAL: For masked/predicated tails, ONLY the valid tail bytes may be
+folded. The AVX-512 masked tail (k1) stores only r bytes of a 64B vector;
+folding the full 64B vector would fold garbage from masked-off lanes →
+wrong CRC. The backend MUST EITHER:
+(a) zero the masked-off lanes before folding (e.g. via the mask register),
+OR
+(b) use the scalar `rj_crc32_update` tail path for the tail bytes (composed
+via shift-XOR), not the vector fold.
+
+Same for SVE predtail (predicate governs which lanes are valid). A backend
+implementer following "fold the tail bytes" literally without masking ships
+wrong CRCs on tail residues whenever the maskedtail/predtail twin wins.
+Covered in the combination test matrix (§7.4) with tail-residue-specific
+differential tests.
 
 ## 4. Kernel/driver contract
 
@@ -271,6 +303,22 @@ equals exactly `count * uops_per_insn / group_bytes`.
   interleave is allowlisted, the fallback path must be correct) and
   RISC-V (fallback only).
 
+EXECUTION ENVIRONMENT (Major 8): The x86-64 VPCLMULQDQ fold path requires
+SPR silicon (or QEMU x86-64 with `-cpu` exposing VPCLMULQDQ+AVX512F and
+reporting SapphireRapids µarch). If neither is available in CI, the fold
+path cannot be tested — this must be a LOUD skip (not silent), and the
+gate-closed fallback path must still be tested. The spec requires the
+environment to be named in the test report.
+
+MULTI-TILE (Major 9): `fold_state` persists across per-tile kernel calls.
+Tests MUST include:
+- Single-tile vs multi-tile differential: same data, different tile sizes,
+  identical CRCs.
+- Stale-state red-green: skip the state reload at tile entry → test MUST fail
+  (proves the hand-off is load-bearing, not tautological).
+- Tile-boundary residues: lengths that put chunk/lane boundaries at tile
+  edges.
+
 ### 7.2 Red-green
 - Flip a fold constant (K1/K2) → tests fail.
 - Drop a fold (skip one stream) → tests fail.
@@ -308,6 +356,22 @@ Structural only (benchmarks postponed):
   bound says the fold hides under DRAM bandwidth.
 - NO measured numbers presented. The "almost free" claim is
   explicitly analytic/gated, not empirical.
+
+REGIME CONDITION (Major 5): The "almost free" claim is a DRAM-bound
+regime claim. In the cache-resident microbenchmark regime, the fold does
+NOT hide (e.g. SPR: fold at ~108 GB/s vs encode at 100+ GB/s — the fold
+is comparable, not hidden). The gate is static and regime-blind; it
+will interleave even for cache-resident stripes where the overhead is
+higher. This is accepted for Phase 2 because:
+(a) real RAID is DRAM-bound (the target regime),
+(b) the fallback (Phase-1 `rj_crc32_fast` extra pass) is itself fast,
+so the worst case is bounded.
+When benchmarks resume, the regime-specific behavior must be measured.
+
+THRESHOLD ASSUMPTION: The 0.06 cyc/B threshold assumes 50 GB/s DRAM
+bandwidth @ 3 GHz. At higher per-core bandwidth, the threshold tightens
+and the safety margin shrinks. §2's allowlist must be re-evaluated if
+the bandwidth assumption changes.
 
 ## 9. Docs
 

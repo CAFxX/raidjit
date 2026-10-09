@@ -520,16 +520,15 @@ int fused_crc_interleave_ok(const rj_cpu_info *cpu)
         return 0;
 #if defined(__x86_64__)
     /* x86-64: VPCLMULQDQ + AVX-512F required, AND µarch on the
-     * allowlist (SPR, Zen4, ICL-SP). Feature bits alone are not
-     * trusted: a weak VPCLMULQDQ implementation would silently be
-     * 2-4x, not "almost free". */
+     * allowlist (SPR only for Phase 2 — see spec §2; Zen4/ICL-SP are
+     * borderline and await empirical confirmation). Feature bits alone
+     * are not trusted: a weak VPCLMULQDQ implementation would silently
+     * be 2-4x, not "almost free". */
     if (!cpu->vpclmulqdq || !cpu->avx512f)
         return 0;
     {
         rj_uarch_t u = rj_uarch_current();
-        if (u == RJ_UARCH_INTEL_SAPPHIRERAPIDS ||
-            u == RJ_UARCH_AMD_ZEN4 ||
-            u == RJ_UARCH_INTEL_ICELAKE)
+        if (u == RJ_UARCH_INTEL_SAPPHIRERAPIDS)
             return 1;
     }
     return 0;
