@@ -65,11 +65,13 @@ async function disassemble(arch, bytes) {
   const d = await getDisasm();
   const p = d._malloc(bytes.length || 1);
   if (bytes.length) d.HEAPU8.set(bytes, p);
+  // arch is const char*: allocate; base_addr is uint64_t: pass BigInt.
+  const ap = d.stringToNewUTF8(arch);
   let rp;
-  try { rp = d._dj_disasm(arch, p, bytes.length, 0); }
-  catch (e) { d._free(p); return { error: "trap: " + e.message }; }
+  try { rp = d._dj_disasm(ap, p, bytes.length, 0n); }
+  catch (e) { d._free(ap); d._free(p); return { error: "trap: " + e.message }; }
   const arr = JSON.parse(d.UTF8ToString(rp));
-  d._dj_free_string(rp); d._free(p);
+  d._dj_free_string(rp); d._free(ap); d._free(p);
   return { insns: arr };
 }
 /* objdump-style normalization (SPEC: byte equality is the invariant) */
