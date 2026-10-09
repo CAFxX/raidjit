@@ -74,3 +74,13 @@
 ## Key lessons
 - Parity driver MUST be rebuilt from worktree sources; cached main-tree driver is stale
 - Capstone 6.0.0-Alpha11 requires cs_option(NULL, CS_OPT_MEM, ...) before cs_open
+
+- 2026-10-09 08:15 UTC: **S9.4 disasm differential COMPLETE (48/48)**.
+  x86+aarch64 (37 blobs): mnemonic sequences match objdump exactly
+  (documented normalizations: 6690 xchg->nop idiom, b.hs/b.cs b.lo/b.cc
+  aliases, trailing-zero trim, AT&T suffix strip). riscv (11 blobs):
+  objdump cannot decode RVV in binary mode (binutils 2.42); validated
+  WASM disasm.js against a native build of the same dis_api.c
+  (parity/native_ref/disasm_native_ref, gitignored): 11/11 match.
+- 2026-10-09 08:05 UTC: x86 module rebuilt on GHA (job E) from fixed
+  source for consistency; **x86 parity re-verified 33/33**.
