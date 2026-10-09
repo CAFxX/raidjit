@@ -201,16 +201,19 @@ static uint32_t crc32_bitwise(uint32_t crc, const uint8_t *p, size_t n)
 static void test_kat(void)
 {
     static const uint8_t msg[] = "123456789";
+    /* Named so the failure message prints the true expected value even
+     * if this constant is mutated (red-green runs flip it). */
+    static const uint32_t kat = 0xCBF43926u;
     for (size_t v = 0; v < NVAR; v++) {
         /* The entry points return the RUNNING crc (pre-xorout); the
          * catalog check value is post-xorout, hence rj_crc32_final. */
         uint32_t c = rj_crc32_final(variants[v].fn(0xFFFFFFFFu, msg, 9));
-        CHECK(c == 0xCBF43926u, "KAT variant %s: got 0x%08X, want 0xCBF43926",
-              variants[v].name, c);
+        CHECK(c == kat, "KAT variant %s: got 0x%08X, want 0x%08X",
+              variants[v].name, c, kat);
     }
     /* The bitwise oracle agrees with the catalog value (anchors the
      * oracle chain; a broken oracle cannot hide behind the KAT). */
-    CHECK((crc32_bitwise(0xFFFFFFFFu, msg, 9) ^ 0xFFFFFFFFu) == 0xCBF43926u,
+    CHECK((crc32_bitwise(0xFFFFFFFFu, msg, 9) ^ 0xFFFFFFFFu) == kat,
           "bitwise oracle disagrees with catalog KAT");
 }
 
@@ -614,8 +617,11 @@ static int cpuinfo_has_isa_token(const char *tok)
         char *p = strchr(line, ':');
         if (!p)
             continue;
-        for (char *t = strtok(p + 1, " \t\n"); t;
-             t = strtok(NULL, " \t\n")) {
+        /* Delimiters mirror src/riscv/cpu.c has_ext_cpuinfo: the isa line
+         * is "_" separated (rv64imafdcvh_zicbom_..._zbc_...); omitting "_"
+         * fuses every extension into one token and strcmp never matches. */
+        for (char *t = strtok(p + 1, "_ \t\n"); t;
+             t = strtok(NULL, "_ \t\n")) {
             if (strcmp(t, tok) == 0) {
                 found = 1;
                 break;
