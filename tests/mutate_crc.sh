@@ -12,16 +12,23 @@
 #       --desc 'flip CRC polynomial low bit'
 #   tests/mutate_crc.sh --qemu aarch64 --file src/aarch64/crc_fast.c \
 #       --sed 's/0xae689191u/0xae689190u/' --desc 'flip K1 low bit (arm)'
+#   tests/mutate_crc.sh --test-binary test_crc_fast_x86 \
+#       --file src/x86_64/crc_fast.c --sed 's/0xdf068dc2/0xdf068dc3/' \
+#       --desc 'flip rung-2 fold k1 (x86 rung-specific coverage lives in
+#       test_crc_fast_x86, which the default test_crc_fast never runs)'
 #
 # --qemu aarch64|riscv64 cross-builds the mutant and runs it under
 # qemu-user (the in-repo red-green story for the ARM/RV backends).
 # QEMU runs set RJ_CRC_SKIP_HUGE=1 like the Makefile's QEMU recipes.
+# --test-binary selects which test binary the mutant must fail
+# (default test_crc_fast).
 set -eu
 
 FILE=""
 SED=""
 DESC=""
 QEMU=""
+TEST_BIN="test_crc_fast"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -29,6 +36,7 @@ while [ $# -gt 0 ]; do
         --sed)  SED="$2";  shift 2 ;;
         --desc) DESC="$2"; shift 2 ;;
         --qemu) QEMU="$2"; shift 2 ;;
+        --test-binary) TEST_BIN="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -79,16 +87,16 @@ if [ -n "$QEMU" ]; then
     RUN_ENV="RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=$QEMU_LD"
     RUN_BIN_PREFIX="qemu-$QEMU -cpu $QEMU_CPU"
 fi
-BIN="$WT/build-$ARCH/test_crc_fast"
-echo "mutate: building test_crc_fast in worktree (this takes a while)"
+BIN="$WT/build-$ARCH/$TEST_BIN"
+echo "mutate: building $TEST_BIN in worktree (this takes a while)"
 # shellcheck disable=SC2086
-if ! nice -n 19 make -C "$WT" $MAKE_ARGS "build-$ARCH/test_crc_fast" >$BUILD_LOG 2>&1; then
+if ! nice -n 19 make -C "$WT" $MAKE_ARGS "build-$ARCH/$TEST_BIN" >$BUILD_LOG 2>&1; then
     echo "mutate: BUILD FAILED (see $BUILD_LOG) -- counts as infra failure, not a kill" >&2
     tail -20 $BUILD_LOG >&2
     exit 2
 fi
 
-echo "mutate: running test_crc_fast (mutant)${QEMU:+ under qemu-$QEMU}"
+echo "mutate: running $TEST_BIN (mutant)${QEMU:+ under qemu-$QEMU}"
 # shellcheck disable=SC2086
 if env $RUN_ENV $RUN_BIN_PREFIX "$BIN" >$RUN_LOG 2>&1; then
     echo "mutate: SURVIVED -- the test suite did NOT catch: $DESC" >&2

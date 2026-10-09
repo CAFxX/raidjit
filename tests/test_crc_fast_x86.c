@@ -219,8 +219,11 @@ static void test_force256(void)
     if (ci.avx512f && ci.avx512bw)
         CHECK(rung_plain == 1, "unforced rung on AVX-512 host: got %d, want 1",
               rung_plain);
-    else
+    else if (!ci.avx512f)
         CHECK(rung_plain == 2, "unforced rung on non-AVX512 host: got %d, want 2",
+              rung_plain);
+    else
+        CHECK(rung_plain == 0, "unforced rung on avx512f-without-avx512bw host: got %d, want 0",
               rung_plain);
 
     static const size_t lens[] = {
