@@ -448,3 +448,47 @@ int rj_fused_sub_npar(const rj_fused *f, int idx)
         return -1;
     return f->kinds[idx] == RJ_FOP_ENCODE ? f->npar : -1;
 }
+
+/* Phase 2 microarchitecture gate for interleaved CRC folding.
+ * Conservative: returns 1 ONLY for the allowlisted (µarch, feature)
+ * combinations where FINAL_SYNTHESIS.md shows the fold hides under DRAM
+ * bandwidth. Everything else (including unknown/new µarchs) returns 0
+ * for the scalar fallback path. */
+#include "cpu.h"
+int fused_crc_interleave_ok(const rj_cpu_info *cpu)
+{
+    if (!cpu)
+        return 0;
+#if defined(__x86_64__)
+    /* x86-64: VPCLMULQDQ + AVX-512F required, AND µarch on the
+     * allowlist (SPR, Zen4, ICL-SP). Feature bits alone are not
+     * trusted: a weak VPCLMULQDQ implementation would silently be
+     * 2-4x, not "almost free". */
+    if (!cpu->vpclmulqdq || !cpu->avx512f)
+        return 0;
+    {
+        rj_uarch_t u = rj_uarch_current();
+        if (u == RJ_UARCH_INTEL_SAPPHIRERAPIDS ||
+            u == RJ_UARCH_AMD_ZEN4 ||
+            u == RJ_UARCH_INTEL_ICELAKE)
+            return 1;
+    }
+    return 0;
+#elif defined(__aarch64__)
+    /* AArch64: M1/M2-class (Firestorm/Icestorm) with ARMv8.2+SHA3+crypto.
+     * The synthesis allowlists Apple silicon; N1 (7.3 B/c) does NOT
+     * qualify. Conservative: require the crypto+SHA3 features AND an
+     * allowlisted uarch. (uarch detection for Apple silicon: check
+     * how rj_cpu_uarch identifies it; if unavailable, gate closed.) */
+    /* TODO(worker-A): fill in the Apple-silicon uarch detection. For
+     * now the gate is closed on AArch64 (conservative default). */
+    (void)cpu;
+    return 0;
+#else
+    /* RISC-V and others: never interleave in Phase 2 (conservative).
+     * RISC-V throughput data does not exist; unknown ISAs default
+     * to scalar. */
+    (void)cpu;
+    return 0;
+#endif
+}

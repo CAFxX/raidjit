@@ -1517,7 +1517,7 @@ static void compute_regs(cg_t *cg)
                                              pl, U)
                         : plan_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                          MUL_NIBBLE, pl, U, cg->cand.remat,
-                                         cg->cand.pipe);
+                                         cg->cand.pipe, cand->crc_fold);
     assert(cg->vmax + 1 == want_regs);
 }
 
@@ -1713,7 +1713,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     {
         int need = plan_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON,
                                   MUL_NIBBLE, pl, cand->U, cand->remat,
-                                  cand->pipe);
+                                  cand->pipe, cand->crc_fold);
         int nregs = isa_nregs(cg.is_sve ? ISA_SVE : ISA_NEON);
         if (need > nregs) {
             snprintf(err, errlen,

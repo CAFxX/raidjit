@@ -155,6 +155,17 @@ typedef struct {
                   * combined with ternlog/permi2b/remat/xorsched/xorbit/
                   * mshift (different bodies). Pinned in prune.c's
                   * twin_dominates like every other axis. */
+    int crc_fold; /* 1 = fold CRC-32/ISO-HDLC over all n_in input streams
+                   * and n_out output streams while computing them
+                   * (interleaved Option A, Phase 2). Enumerated by
+                   * plan_candidates ONLY when pl->want_crc &&
+                   * fused_crc_interleave_ok(cpu); otherwise every
+                   * candidate has crc_fold=0. The fold state lives in
+                   * dedicated vector registers (never spilled in the
+                   * steady state); the backend rejects (clean error) if
+                   * the register budget does not fit. Byte-exact vs
+                   * rj_crc32_update. Pinned in prune.c's twin_dominates
+                   * like every other axis (SAME change). */
 } cand_t;
 
 typedef struct {
@@ -181,6 +192,13 @@ typedef struct {
                                * nothing to share); built by plan_build,
                                * freed by plan_free. The xorbit candidate
                                * twin reads it. */
+    int want_crc; /* 1 = the fused driver wants in-kernel CRC folding
+                   * (Phase 2). Set ONLY via the internal fused path
+                   * (fused.c -> internal rj_compile variant, declared in
+                   * src/api.h, NOT public). plan_candidates enumerates
+                   * crc_fold=1 candidates only when want_crc=1 (and the
+                   * uarch gate is open); otherwise every candidate has
+                   * crc_fold=0. */
 } plan_t;
 
 typedef struct {
@@ -273,7 +291,7 @@ int isa_vl(isa_t isa); /* vector length in bytes */
  * returns INT_MAX (the backend rejects those builds cleanly, and the
  * planner's filter drops them). */
 int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
-                   int pipe);
+                   int pipe, int crc_fold);
 
 /* Per-microarchitecture port-pressure weights for the static cost
  * model (I3). Each t_* is cycles per instruction -- the reciprocal

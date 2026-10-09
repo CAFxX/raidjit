@@ -2442,7 +2442,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     int want_regs = cand->xorbit ? xorbit_need_regs(cand->isa, pl, U)
                     : cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
                                      : plan_need_regs(cand->isa, cand->mul, pl,
-                                                     U, cand->remat, cand->pipe) +
+                                                     U, cand->remat, cand->pipe, cand->crc_fold) +
                                        (cg.msh != 0 ? 1 : 0);
     assert(vmax + 1 == want_regs);
     /* Over-pressure must fail cleanly (return -1), not abort or emit
