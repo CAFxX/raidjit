@@ -239,6 +239,7 @@ int planid_format(char *out, size_t outlen, const topo_int_t *ti,
         TWIN_TOK(cand->mshift, "mshift");
         TWIN_TOK(cand->permi2b, "permi2b");
         TWIN_TOK(cand->pipe, "pipe");
+        TWIN_TOK(cand->crc_fold, "crc_fold");
         if (cand->lmul) {
             if (!first && cur_putc(&c, '+'))
                 return -1;
@@ -695,6 +696,9 @@ int planid_parse(const char *id, const topo_int_t *ti, const char *toponame,
             } else if (field_eq(tok, "pipe")) {
                 if (c->pipe) goto dup_twin;
                 c->pipe = 1;
+            } else if (field_eq(tok, "crc_fold")) {
+                if (c->crc_fold) goto dup_twin;
+                c->crc_fold = 1;
             } else if (tok.n > 2 && memcmp(tok.p, "pf", 2) == 0) {
                 field_t vf2 = {tok.p + 2, tok.n - 2};
                 unsigned long long d;

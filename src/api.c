@@ -1553,3 +1553,11 @@ lv_done:
     topo_int_free(&ti);
     return rc == 0 ? total : -1;
 }
+
+/* Phase 2: query in-kernel CRC folding. The version folds iff its
+ * candidate has crc_fold=1 (set by plan_candidates when want_crc=1 and
+ * the uarch gate is open). */
+int rj_jit_crc_fold(const version_t *v)
+{
+    return v && v->cand.crc_fold;
+}

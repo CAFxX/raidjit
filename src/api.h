@@ -43,3 +43,10 @@ int api_tail_duel_gate(version_t *tw, version_t *general, const plan_t *wpl,
  */
 int api_permi2b_duel_eligible(const version_t *winner, const plan_t *wpl,
                               const rj_cpu_info *cpu);
+
+/* Phase 2 (interleaved CRC fold): query whether a compiled version has
+ * in-kernel CRC folding active. 1 = the kernel expects a fold_state
+ * argument (nstreams*16 bytes, 16-byte aligned, nstreams known to the
+ * driver from the topology); 0 = plain encode kernel (scalar fallback
+ * path). Internal only (fused.c driver); NOT public. */
+int rj_jit_crc_fold(const version_t *v);
