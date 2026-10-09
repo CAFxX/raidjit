@@ -90,3 +90,12 @@
   tools/wasm/out/raidjit_kernels.html (4.3MB, self-contained, file://).
   S9.6 smoke PASS in Node: compile case_1 -> 512 bytes, disassemble ->
   101 insns.
+
+- 2026-10-09 08:45 UTC: **S9.3 native no-regression PROOF**.
+  x86 runtime before(2c9e8cc^)/after(HEAD), pure native (no RJ_WASM):
+  29/29 comparable cases byte-identical code blobs; 4/4 expect=fail
+  cases fail identically on both. (Also 33/33 identical with -DRJ_WASM.)
+  Preprocessor: plan.c IDENTICAL under __x86_64__/__aarch64__/__riscv;
+  the three jit.c differ only in #ifdef whitespace, braces around
+  single-statement ifs, and __LINE__ in asserts (semantically null;
+  x86 .o differs only in assert line-number immediates).
