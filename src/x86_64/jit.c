@@ -2227,6 +2227,15 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "x86_64 backend: xorbit excludes other body twins");
         return -1;
     }
+    /* The xorbit body follows pl->bit_sched; xorbit_build() returns NULL
+     * when there is nothing to share. A NULL schedule would abort in
+     * gen_body_xorbit's assertion. User-reachable via pinned candidates:
+     * fail cleanly, never abort. */
+    if (cand->xorbit && !pl->bit_sched) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit needs a plan with bit-level sharing");
+        return -1;
+    }
     /* VPMULTISHIFTQB nibble twin (track I2): AVX-512 MUL_NIBBLE
      * GF-multiply rows only (P_MULACC/P_DELTA/P_HORNER), never combined
      * with the other body twins (xorbit/permi2b/remat/xorsched are
@@ -2247,6 +2256,15 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
          cand->xorsched)) {
         snprintf(err, errlen,
                  "x86_64 backend: mshift excludes other body twins");
+        return -1;
+    }
+    /* VPTERNLOGD twin: AVX-512 only (emits vpternlogd). The P_XOR
+     * ternlog fold is selected by the planner; a pinned candidate can
+     * request it on any ISA, so gate here. User-reachable via pinned
+     * candidates: fail cleanly, never abort. */
+    if (cand->ternlog && cand->isa != ISA_AVX512) {
+        snprintf(err, errlen,
+                 "x86_64 backend: ternlog needs AVX-512");
         return -1;
     }
     memset(v, 0, sizeof(*v));
@@ -2321,7 +2339,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     if (cand->pipe) {
         /* Software-pipelined shape (track I8): the D/Dn datasets (U
          * regs each) replace the single input temp t (dead: -1).
-         * Validation below rejects unsupported combos, so only
+         * Validation above rejects unsupported combos, so only
          * P_MULACC/P_HORNER x MUL_NIBBLE, non-remat, reach here. Must
          * stay in lockstep with plan_need_regs' pipe formulas
          * (asserted below). */
