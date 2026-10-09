@@ -79,9 +79,15 @@ function compileKernel(mod, optsObj) {
   let rp;
   try { rp = mod._rjw_compile(p); }
   catch (e) { mod._free(p); return { ok: false, err: "trap: " + e.message }; }
-  const res = JSON.parse(mod.UTF8ToString(rp));
+  let res;
+  try {
+    res = JSON.parse(mod.UTF8ToString(rp));
+  } catch (e) {
+    mod._rjw_free_string(rp); mod._free(p);
+    return { ok: false, err: "bad JSON from rjw_compile: " + e.message };
+  }
   mod._rjw_free_string(rp); mod._free(p);
-  if (!res.ok) return res;
+  if (!res || typeof res !== "object" || !res.ok) return res || { ok: false, err: "bad result" };
   const lenp = mod._malloc(8);
   const cp = mod._rjw_code_bytes(lenp);
   const clen = mod.getValue(lenp, "i32");
@@ -96,7 +102,9 @@ function compileKernel(mod, optsObj) {
 
 /* ---- disassembly ---- */
 async function disassemble(arch, bytes) {
-  const d = await getDisasm();
+  let d;
+  try { d = await getDisasm(); }
+  catch (e) { return { error: "disasm module load failed: " + e.message }; }
   const p = d._malloc(bytes.length || 1);
   if (bytes.length) d.HEAPU8.set(bytes, p);
   // arch is const char*: allocate; base_addr is uint64_t: pass BigInt.
@@ -104,8 +112,16 @@ async function disassemble(arch, bytes) {
   let rp;
   try { rp = d._dj_disasm(ap, p, bytes.length, 0n); }
   catch (e) { d._free(ap); d._free(p); return { error: "trap: " + e.message }; }
-  const arr = JSON.parse(d.UTF8ToString(rp));
+  if (!rp) { d._free(ap); d._free(p); return { error: "dj_disasm returned NULL" }; }
+  let arr;
+  try {
+    arr = JSON.parse(d.UTF8ToString(rp));
+  } catch (e) {
+    d._dj_free_string(rp); d._free(ap); d._free(p);
+    return { error: "bad JSON from dj_disasm: " + e.message };
+  }
   d._dj_free_string(rp); d._free(ap); d._free(p);
+  if (!Array.isArray(arr)) return { error: "dj_disasm did not return an array" };
   return { insns: arr };
 }
 /* objdump-style normalization (SPEC: byte equality is the invariant) */
@@ -200,7 +216,15 @@ function readHash() {
   for (const part of h.split("&")) {
     const [k, v] = part.split("=");
     if ((k === "a" || k === "b") && v) {
-      try { out[k] = JSON.parse(b64urlDecode(v)); } catch (e) { /* ignore */ }
+      try {
+        const o = JSON.parse(b64urlDecode(v));
+        // validate shape against defaultPane(); fall back to defaults on mismatch
+        if (o && typeof o === "object" && typeof o.isa === "string" &&
+            o.topology && typeof o.topology.ctor === "string" &&
+            o.op && typeof o.op.kind === "string") {
+          out[k] = o;
+        }
+      } catch (e) { /* ignore */ }
     }
   }
   return out;
