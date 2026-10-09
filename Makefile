@@ -210,6 +210,13 @@ _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_riscv_remat
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pipe
 	RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_crc_fast
+	# CRC class coverage: the default QEMU_RVV_CPU line above exercises
+	# class 1 (zbc fold). zbc=false forces class 0 (slice-by-8); -cpu max
+	# advertises zvbc in the guest isa line, selecting class 2 (the Zvbc
+	# fold is portable C implementing the SEW=64 dataflow, so it runs
+	# under QEMU 8.2.2 despite the missing vclmul.vv TCG support).
+	RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),zbc=false ./$(BUILDDIR)/test_crc_fast
+	RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu max ./$(BUILDDIR)/test_crc_fast
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_pipe
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_pipe
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_riscv_prefetch

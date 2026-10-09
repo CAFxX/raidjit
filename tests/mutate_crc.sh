@@ -10,22 +10,25 @@
 #   tests/mutate_crc.sh --file src/crc.c \
 #       --sed 's/0xEDB88320u/0xEDB88321u/' \
 #       --desc 'flip CRC polynomial low bit'
+#   tests/mutate_crc.sh --qemu aarch64 --file src/aarch64/crc_fast.c \
+#       --sed 's/0xae689191u/0xae689190u/' --desc 'flip K1 low bit (arm)'
 #
-# The worktree keeps the mutation out of the shared working tree (sibling
-# workers' builds never see it). Requires the backend under test to be
-# present in the worktree: for per-backend mutations (e.g. flip K1/K2 in
-# src/x86_64/crc_fast.c) run after W1/W2/W3 land.
+# --qemu aarch64|riscv64 cross-builds the mutant and runs it under
+# qemu-user (the in-repo red-green story for the ARM/RV backends).
+# QEMU runs set RJ_CRC_SKIP_HUGE=1 like the Makefile's QEMU recipes.
 set -eu
 
 FILE=""
 SED=""
 DESC=""
+QEMU=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --file) FILE="$2"; shift 2 ;;
         --sed)  SED="$2";  shift 2 ;;
         --desc) DESC="$2"; shift 2 ;;
+        --qemu) QEMU="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -57,16 +60,33 @@ echo "mutate: $DESC"
 diff "$WT/$FILE.orig" "$WT/$FILE" | head -8 || true
 
 ARCH="$(uname -m)"
+MAKE_ARGS=""
+RUN_ENV=""
+RUN_BIN_PREFIX=""
+if [ -n "$QEMU" ]; then
+    case "$QEMU" in
+        aarch64) QEMU_CPU="max"; QEMU_LD="/usr/aarch64-linux-gnu" ;;
+        riscv64) QEMU_CPU="max,zvbc=false,zvkg=false"; QEMU_LD="/usr/riscv64-linux-gnu" ;;
+        *) echo "unknown --qemu arch: $QEMU (want aarch64|riscv64)" >&2; exit 2 ;;
+    esac
+    command -v "qemu-$QEMU" >/dev/null 2>&1 || { echo "qemu-$QEMU not found" >&2; exit 2; }
+    ARCH="$QEMU"
+    MAKE_ARGS="ARCH=$QEMU CROSS_COMPILE=$QEMU-linux-gnu-"
+    RUN_ENV="RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=$QEMU_LD"
+    RUN_BIN_PREFIX="qemu-$QEMU -cpu $QEMU_CPU"
+fi
 BIN="$WT/build-$ARCH/test_crc_fast"
 echo "mutate: building test_crc_fast in worktree (this takes a while)"
-if ! nice -n 19 make -C "$WT" "build-$ARCH/test_crc_fast" >/tmp/crc-mut-build.log 2>&1; then
+# shellcheck disable=SC2086
+if ! nice -n 19 make -C "$WT" $MAKE_ARGS "build-$ARCH/test_crc_fast" >/tmp/crc-mut-build.log 2>&1; then
     echo "mutate: BUILD FAILED (see /tmp/crc-mut-build.log) -- counts as infra failure, not a kill" >&2
     tail -20 /tmp/crc-mut-build.log >&2
     exit 2
 fi
 
-echo "mutate: running test_crc_fast (mutant)"
-if "$BIN" >/tmp/crc-mut-run.log 2>&1; then
+echo "mutate: running test_crc_fast (mutant)${QEMU:+ under qemu-$QEMU}"
+# shellcheck disable=SC2086
+if env $RUN_ENV $RUN_BIN_PREFIX "$BIN" >/tmp/crc-mut-run.log 2>&1; then
     echo "mutate: SURVIVED -- the test suite did NOT catch: $DESC" >&2
     tail -5 /tmp/crc-mut-run.log >&2
     exit 1

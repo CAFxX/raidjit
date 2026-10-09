@@ -53,7 +53,7 @@ flagged for spec remediation; the implementation is authoritative.
 
 | Class | Condition | Variant |
 |---|---|---|
-| 3 | `pmull && sha3` | Cawley fusion (`crc32_armv8_pmull_eor3.c` structure) |
+| 3 | `pmull && sha3 && crc32` | Cawley fusion (`crc32_armv8_pmull_eor3.c` structure) — the `crc32` conjunct is required because the fusion's lane management uses the scalar crc32 unit (spec amendment 2026-10-09, peer-review-blessed) |
 | 1 | `crc32` | scalar `crc32x` N-way interleave — **before** the pure PMULL fold because of the documented N1 inversion (pure PMULL fold 7.3 B/c < scalar crc32x 7.9 B/c on N1); Apple cores always take class 3, so no Apple regression |
 | 2 | `pmull` (no CRC32 hw) | pure PMULL fold (dougallj structure) |
 | 0 | else | slice-by-8 |
@@ -113,12 +113,16 @@ Pinned entry points, exact names (spec R2.5):
 Dispatch mechanics: `src/crc_fast.c`'s dispatcher references the
 best-variant entries with strong-undefined references so the linker
 extracts a real backend TU from `libraidjit.a` for *every* consumer.
-`rj_crc32_fast_test_backend_present()` (test-only) reports whether a
-backend TU is linked, so `tests/test_crc_fast.c`'s dispatch assertions
-go strict automatically once a backend lands. (During development a
-transitional `src/crc_fast_fallback.c` provided weak slice-by-8
-definitions of the entry points until all three backend TUs landed; it
-has since been deleted with its Makefile stanza.)
+`rj_crc32_fast_test_backend_present()` (test-only, defined in
+`src/crc_fast.c`) reports whether the statically bound entry is a real
+backend (`g_crc_fast_fn != rj_crc32_update`), so
+`tests/test_crc_fast.c`'s dispatch assertions go strict exactly when a
+backend is linked and defer (loudly, or fail under `RJ_CRC_STRICT=1`)
+on the slice-by-8 fallback path. (During development a transitional
+`src/crc_fast_fallback.c` provided weak slice-by-8 definitions of the
+entry points until all three backend TUs landed; it has since been
+deleted with its Makefile stanza, and the probe moved into the
+dispatcher.)
 
 ## Testing
 
@@ -166,13 +170,13 @@ For W4-owned code:
 
 ## WASM coordination
 
-`tools/wasm/Makefile.wasm` lists its sources explicitly and does not
-include `src/crc_fast.c`, so the WASM modules currently fail to link
-(`fused.c` now calls `rj_crc32_fast`). The `rj_cpu_info` field additions
-are additive and do not break the `cpu_wasm_*.c` stubs. Per the spec,
-`tools/wasm/*` is coordinator-owned: the fix (add
-`$(REPO)/src/crc_fast.c` to `COMMON_SRCS` there) is flagged, not applied
-here.
+The WASM build (`tools/wasm/*`, coordinator-owned per the spec) wires
+its own sources; the CRC contract it must honor is: (1) link
+`src/crc_fast.c` (or provide the `rj_crc32_fast` symbol — `fused.c`
+calls it), and (2) the `rj_cpu_info` field additions are additive, so
+the `cpu_wasm_*.c` stubs keep working as long as they zero-initialize
+the struct. The WASM track owns this wiring — details live in
+`tools/wasm/`, not here.
 
 ## Consistency
 

@@ -68,7 +68,12 @@ be a drop-in replacement: for all inputs,
   `rj_crc32_fast_x86_crc32hw` entry point is retained for interface
   stability but delegates to slice-by-8; class 1 is never returned.
 - AArch64 chain:
-  1. `pmull && sha3` → Cawley fusion (`crc32_armv8_pmull_eor3.c` structure).
+  1. `pmull && sha3 && crc32` → Cawley fusion (`crc32_armv8_pmull_eor3.c`
+     structure). (Amendment 2026-10-09: the `crc32` conjunct was added
+     during implementation — the fusion's lane management uses the
+     scalar crc32 unit, so without it the fusion cannot run; peer review
+     blessed the stricter gate, and the test matrix now pins all 8 flag
+     combos via `rj_crc32_fast_arm_pick`.)
      Lane structure follows the synthesis PER-CORE variants (M1 v9s3x2e_s3
      vs N1 v3s4x2e_v2 — Finding 13): select via MIDR implementer
      (0x61 → M1 variant, else N1 variant; same parse as R10) or document

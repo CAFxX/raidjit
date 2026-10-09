@@ -28,6 +28,10 @@
  *                  backend TU is not linked (W1/W2/W3 in flight) these
  *                  go through the DEFERRED path (loud NOTE, counted);
  *                  RJ_CRC_STRICT=1 turns deferrals into failures.
+ *   selhooks       pure selection hooks (test-only) over synthetic
+ *                  feature flags: the full dispatch decision tables
+ *                  (arm_pick x8 combos, MIDR sub-variant pick, riscv
+ *                  class_for/fn_for), independent of host hardware.
  *   oneshot        rj_crc32() routes through rj_crc32_fast (spec R1-5).
  *
  * Oracles (independent of the code under test):
@@ -70,14 +74,22 @@ int rj_crc32_fast_x86_class(void);
 #elif defined(__aarch64__)
 uint32_t rj_crc32_fast_arm(uint32_t crc, const void *d, size_t n);
 uint32_t rj_crc32_fast_arm_fusion(uint32_t crc, const void *d, size_t n);
+uint32_t rj_crc32_fast_arm_fusion_n1(uint32_t crc, const void *d, size_t n);
 uint32_t rj_crc32_fast_arm_crc32hw(uint32_t crc, const void *d, size_t n);
 uint32_t rj_crc32_fast_arm_pmull(uint32_t crc, const void *d, size_t n);
 int rj_crc32_fast_arm_class(void);
+/* Pure selection hooks (test-only): decision tables provable without
+ * depending on host hardware. */
+int rj_crc32_fast_arm_pick(int crc32, int pmull, int sha3);
+int rj_crc32_fast_arm_pick_fusion(int implementer);
 #elif defined(__riscv)
 uint32_t rj_crc32_fast_riscv(uint32_t crc, const void *d, size_t n);
 uint32_t rj_crc32_fast_riscv_zvbc(uint32_t crc, const void *d, size_t n);
 uint32_t rj_crc32_fast_riscv_zbc(uint32_t crc, const void *d, size_t n);
 int rj_crc32_fast_riscv_class(void);
+/* Pure selection hooks (test-only): take synthetic rj_cpu_info. */
+int rj_crc32_fast_riscv_class_for(const rj_cpu_info *info);
+crc_fn_t rj_crc32_fast_riscv_fn_for(const rj_cpu_info *info);
 #endif
 /* Test-only probe: 1 when a backend TU's strong definitions are linked,
  * 0 while only the portable slice-by-8 path is reachable. */
@@ -122,6 +134,7 @@ static const struct crc_variant variants[] = {
     { "public", rj_crc32_fast },
     { "arm/best", rj_crc32_fast_arm },
     { "arm/fusion", rj_crc32_fast_arm_fusion },
+    { "arm/fusion_n1", rj_crc32_fast_arm_fusion_n1 },
     { "arm/crc32hw", rj_crc32_fast_arm_crc32hw },
     { "arm/pmull", rj_crc32_fast_arm_pmull },
 };
@@ -578,10 +591,14 @@ static void test_dispatch(void)
     int hw_crc32 = (hwcap & HWCAP_CRC32) != 0;
     int hw_pmull = (hwcap & HWCAP_PMULL) != 0;
     int hw_sha3 = (hwcap & HWCAP_SHA3) != 0;
-    /* Spec R2 chain: fusion, then crc32hw BEFORE pmull (the documented
-     * N1 inversion: pure PMULL fold is slower than scalar crc32x there). */
-    int expected =
-        (hw_pmull && hw_sha3) ? 3 : hw_crc32 ? 1 : hw_pmull ? 2 : 0;
+    /* Dispatch chain (mirrors rj_crc32_fast_arm_pick): fusion needs all
+     * three of pmull+sha3+crc32 (the fusion's lane management uses the
+     * scalar crc32 unit), then crc32hw BEFORE pmull (the documented N1
+     * inversion: pure PMULL fold is slower than scalar crc32x there). */
+    int expected = (hw_pmull && hw_sha3 && hw_crc32) ? 3
+                 : hw_crc32                          ? 1
+                 : hw_pmull                          ? 2
+                                                     : 0;
     int present = rj_crc32_fast_test_backend_present();
     int strict = getenv("RJ_CRC_STRICT") != NULL;
     if (!present) {
@@ -769,6 +786,69 @@ static void test_best_matches_class(void)
 }
 #endif
 
+/* Pure selection hooks (test-only): the dispatch decision tables as
+ * pure functions of synthetic feature flags, provable without depending
+ * on host hardware. Catches dispatch-logic bugs that test_dispatch
+ * (which only sees the host's single flag combo) cannot. */
+#if defined(__aarch64__)
+static void test_selection_hooks(void)
+{
+    int c, p, s;
+    for (c = 0; c <= 1; c++)
+        for (p = 0; p <= 1; p++)
+            for (s = 0; s <= 1; s++) {
+                /* Mirrors rj_crc32_fast_arm_pick: fusion needs all
+                 * three (its lane management uses the scalar unit). */
+                int expected = (p && s && c) ? 3 : c ? 1 : p ? 2 : 0;
+                CHECK(rj_crc32_fast_arm_pick(c, p, s) == expected,
+                      "arm_pick(c=%d,p=%d,s=%d)=%d, want %d", c, p, s,
+                      rj_crc32_fast_arm_pick(c, p, s), expected);
+            }
+    /* MIDR implementer -> fusion sub-variant: 0x61 (Apple) selects the
+     * M1 lane structure, everything else the N1 one. */
+    CHECK(rj_crc32_fast_arm_pick_fusion(0x61) == 0,
+          "pick_fusion(Apple 0x61) != 0 (M1)");
+    CHECK(rj_crc32_fast_arm_pick_fusion(0x41) == 1,
+          "pick_fusion(Arm 0x41) != 1 (N1)");
+    CHECK(rj_crc32_fast_arm_pick_fusion(0x43) == 1,
+          "pick_fusion(Cavium 0x43) != 1 (N1)");
+    CHECK(rj_crc32_fast_arm_pick_fusion(0x00) == 1,
+          "pick_fusion(unknown 0x00) != 1 (N1 default)");
+}
+#elif defined(__riscv)
+static void test_selection_hooks(void)
+{
+    static const struct {
+        int zvbc, zbc, want;
+        crc_fn_t fn;
+    } rows[] = {
+        { 1, 1, 2, rj_crc32_fast_riscv_zvbc },
+        { 1, 0, 2, rj_crc32_fast_riscv_zvbc },
+        { 0, 1, 1, rj_crc32_fast_riscv_zbc },
+        { 0, 0, 0, rj_crc32_update },
+    };
+    size_t i;
+    for (i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        rj_cpu_info info;
+        memset(&info, 0, sizeof(info));
+        info.rvv_zvbc = rows[i].zvbc;
+        info.zbc = rows[i].zbc;
+        CHECK(rj_crc32_fast_riscv_class_for(&info) == rows[i].want,
+              "class_for(zvbc=%d,zbc=%d)=%d, want %d", rows[i].zvbc,
+              rows[i].zbc, rj_crc32_fast_riscv_class_for(&info),
+              rows[i].want);
+        CHECK(rj_crc32_fast_riscv_fn_for(&info) == rows[i].fn,
+              "fn_for(zvbc=%d,zbc=%d) != expected entry", rows[i].zvbc,
+              rows[i].zbc);
+    }
+}
+#else
+static void test_selection_hooks(void)
+{
+    printf("SKIP selection hooks (no pure dispatch hooks on this ISA)\n");
+}
+#endif
+
 /* rj_crc32() one-shot routes through rj_crc32_fast (spec R1-5). */
 static void test_oneshot(void)
 {
@@ -794,6 +874,7 @@ int main(void)
     test_threads();
     test_dispatch();
     test_best_matches_class();
+    test_selection_hooks();
     test_oneshot();
     free(tbuf);
     printf("test_crc_fast: %s (failures=%d deferred=%d)%s\n",

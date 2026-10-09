@@ -55,3 +55,13 @@ uint32_t rj_crc32_fast(uint32_t crc, const void *data, size_t len)
 {
     return g_crc_fast_fn(crc, data, len);
 }
+
+/* Test-only probe for tests/test_crc_fast.c: 1 when the statically
+ * bound entry is a real per-ISA backend TU, 0 when the dispatcher fell
+ * back to the portable slice-by-8 (WASM/unknown ISA). Lets the test's
+ * dispatch assertions go strict exactly when a backend is linked, and
+ * defer (or fail under RJ_CRC_STRICT=1) otherwise. */
+int rj_crc32_fast_test_backend_present(void)
+{
+    return g_crc_fast_fn != rj_crc32_update;
+}
