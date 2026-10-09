@@ -99,3 +99,11 @@
   the three jit.c differ only in #ifdef whitespace, braces around
   single-statement ifs, and __LINE__ in asserts (semantically null;
   x86 .o differs only in assert line-number immediates).
+
+- 2026-10-09 10:00 UTC: **S9.7 peer review (3 reviewers)**. Reviewer 1 found
+  three pinned tail-flag combinations that aborted the WASM module via
+  backend assert instead of clean error: x86 maskedtail+notail,
+  x86 maskedtail+non-AVX512 ISA, aarch64 notail+predtail. Fixed in
+  feature_gates (commit 13f053d); modules rebuilt on GHA (jobs F);
+  verified all three now return clean errors; x86 parity 33/33
+  re-verified; page regenerated.
