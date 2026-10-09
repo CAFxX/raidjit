@@ -84,3 +84,9 @@
   (parity/native_ref/disasm_native_ref, gitignored): 11/11 match.
 - 2026-10-09 08:05 UTC: x86 module rebuilt on GHA (job E) from fixed
   source for consistency; **x86 parity re-verified 33/33**.
+
+- 2026-10-09 08:20 UTC: **First working page**. tools/gen_live_kernels_page.py
+  fixed (OUT_DIR -> tools/wasm/out, dj_disasm JS bindings), generated
+  tools/wasm/out/raidjit_kernels.html (4.3MB, self-contained, file://).
+  S9.6 smoke PASS in Node: compile case_1 -> 512 bytes, disassemble ->
+  101 insns.

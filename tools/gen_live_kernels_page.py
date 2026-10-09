@@ -14,7 +14,7 @@ import sys
 import html
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(HERE, "out")
+OUT_DIR = os.path.join(HERE, "wasm", "out")
 MODULES = ["raidjit_x86.js", "raidjit_aarch64.js", "raidjit_riscv.js",
            "disasm.js"]
 
