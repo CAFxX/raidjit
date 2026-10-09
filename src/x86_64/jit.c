@@ -13,6 +13,7 @@
 #include "gf.h"
 #include "cpu.h"
 #include "xorsched.h"
+#include "fused.h" /* Phase 2: fused_crc_interleave_ok (backend re-check) */
 
 #include <sys/mman.h>
 #include <stdlib.h>
@@ -2145,7 +2146,47 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                       const rj_cpu_info *cpu, const rj_options *opts,
                       version_t *v, char *err, size_t errlen)
 {
-    (void)cpu;
+    /* Phase 2 (interleaved CRC fold): the uarch gate in src/fused.c is
+     * the single source of truth. A crc_fold=1 candidate must never be
+     * built when the gate is closed on this CPU (e.g. a hand-crafted
+     * +crc_fold plan ID reaching rj_compile_pinned): reject cleanly,
+     * never wrong code, never an assertion abort. */
+    if (cand->crc_fold && !fused_crc_interleave_ok(cpu)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: crc_fold=1 but the interleaved-CRC "
+                 "uarch gate is closed on this CPU");
+        return -1;
+    }
+    /* Phase 2 (crc_fold) backend requirements: AVX-512 with VPCLMULQDQ
+     * (for the PCLMULQDQ fold), MUL_NIBBLE or MUL_GFNI multiply, and no
+     * incompatible body twins. The 4-lane every-4th-chunk fold specified
+     * in the original Phase 2 spec is mathematically impossible (the
+     * 4 lane states do not determine the stream CRC; proven by
+     * counterexample 2026-10-09). The backend implements the corrected
+     * single-128-bit-stream fold (verified bit-exact vs zlib). Reject
+     * incompatible combinations cleanly -- never wrong code. */
+    if (cand->crc_fold) {
+        if (cand->isa != ISA_AVX512) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 requires ISA_AVX512");
+            return -1;
+        }
+        if (cand->mul != MUL_NIBBLE && cand->mul != MUL_GFNI) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 requires MUL_NIBBLE or "
+                     "MUL_GFNI (got %d)", cand->mul);
+            return -1;
+        }
+        if (cand->pipe || cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->mshift || cand->remat || cand->maskedtail ||
+            cand->ternlog || cand->predtail) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 incompatible with "
+                     "pipe/xorbit/xorsched/permi2b/mshift/remat/maskedtail/"
+                     "ternlog/predtail twins");
+            return -1;
+        }
+    }
     /* Rematerialization is implemented only for P_HORNER; the planner
      * never generates remat twins for other plan kinds, and the backend
      * would silently ignore the flag elsewhere. */

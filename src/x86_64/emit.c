@@ -966,3 +966,50 @@ void em_mov_r8r8(em_t *e, int d, int s)
     em_u8(e, 0x8A);
     em_u8(e, (unsigned)(0xC0 | ((d & 7) << 3) | (s & 7)));
 }
+
+/* VPCLMULQDQ (carryless multiply, quadword granular).
+ * EVEX.66.0F3A.W1 44 /r ib : VPCLMULQDQ zmm1, zmm2, zmm3, imm8.
+ * One 64x64->128 carryless multiply per 128-bit lane:
+ *   imm=0x00: lane = CLMUL(src1[63:0], src2[63:0])
+ *   imm=0x11: lane = CLMUL(src1[127:64], src2[127:64])
+ *   imm=0x01: lane = CLMUL(src1[63:0], src2[127:64])
+ *   imm=0x10: lane = CLMUL(src1[127:64], src2[63:0])
+ * Requires AVX512F + VPCLMULQDQ. Used by the crc_fold twin for the
+ * PCLMULQDQ CRC fold (single 128-bit stream state; the 4-lane
+ * every-4th-chunk structure is not combinable -- see the impossibility
+ * proof in the Phase 2 work notes). */
+void em_vpclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm)
+{
+    /* dest (vd) in ModRM.reg, src2 (vs2) in r/m, src1 (vs1) in vvvv.
+     * EVEX.R/R' extend reg (vd); EVEX.X/B extend r/m (vs2). */
+    int R = (vd >> 3) & 1;
+    int X = (vs2 >> 4) & 1;
+    int B = (vs2 >> 3) & 1;
+    int R2 = (vd >> 4) & 1;
+    /* WIG: W is ignored; use 0 to match GAS. */
+    emit_evex(e, 3, 0, R, X, B, R2, vs1, 2, 1, 0, 0);
+    em_u8(e, 0x44);
+    em_u8(e, (unsigned)(0xC0 | ((vd & 7) << 3) | (vs2 & 7)));
+    em_u8(e, imm & 0xFF);
+}
+
+/* VEXTRACTI32X4: extract 128 bits from a zmm to an xmm.
+ * EVEX.66.0F3A.W0 39 /r ib : VEXTRACTI32X4 xmm1, zmm2, imm8.
+ * imm8 selects the 128-bit lane (0..3). Dest xmm is zero-extended.
+ * Requires AVX512F. Used by the crc_fold twin to split a 64B vector
+ * into 16B chunks for the sequential single-stream CRC fold. */
+void em_vextracti32x4(em_t *e, int vd, int vs, unsigned imm)
+{
+    /* VEXTRACT is store-like: src (zmm) in ModRM.reg, dest (xmm) in r/m.
+     * EVEX.R/R' extend reg (vs); EVEX.X/B extend r/m (vd).
+     * vvvv unused: 1111b (R=1, V'=1). */
+    int R = (vs >> 3) & 1;
+    int X = (vd >> 4) & 1;
+    int B = (vd >> 3) & 1;
+    int R2 = (vs >> 4) & 1;
+    /* vvvv=0 encodes 1111b (inverted storage); LL=2 for the 512-bit source. */
+    emit_evex(e, 3, 0, R, X, B, R2, 0, 2, 1, 0, 0);
+    em_u8(e, 0x39);
+    em_u8(e, (unsigned)(0xC0 | ((vs & 7) << 3) | (vd & 7)));
+    em_u8(e, imm & 0xFF);
+}
