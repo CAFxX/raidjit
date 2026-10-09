@@ -28,6 +28,7 @@
 #include "emit.h"
 #include "gf.h"
 #include "xorsched.h"
+#include "fused.h" /* Phase 2: fused_crc_interleave_ok (backend re-check) */
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1529,6 +1530,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     memset(&cg, 0, sizeof(cg));
     cg.pl = pl;
     cg.cand = *cand;
+    /* Phase 2 (interleaved CRC fold): the uarch gate in src/fused.c is
+     * the single source of truth. A crc_fold=1 candidate must never be
+     * built when the gate is closed on this CPU (e.g. a hand-crafted
+     * +crc_fold plan ID reaching rj_compile_pinned): reject cleanly,
+     * never wrong code, never an assertion abort. */
+    if (cand->crc_fold && !fused_crc_interleave_ok(cpu)) {
+        snprintf(err, errlen,
+                 "aarch64 backend: crc_fold=1 but the interleaved-CRC "
+                 "uarch gate is closed on this CPU");
+        return -1;
+    }
     /* The planner never generates remat twins for other plan kinds, and
      * the backend only implements remat for P_HORNER. */
     assert(!(cand->remat && pl->kind != P_HORNER));
