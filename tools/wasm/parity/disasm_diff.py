@@ -26,7 +26,12 @@ ARCH = {
     # -D (not -d): blobs are raw binaries with no sections to select
     "x86": ("x86_64", "objdump", ["-D", "-M", "att"]),
     "aarch64": ("aarch64", "aarch64-linux-gnu-objdump", ["-D"]),
-    "riscv": ("riscv64", "riscv64-linux-gnu-objdump", ["-D"]),
+    # riscv: binutils objdump cannot decode RVV in binary mode (2.42).
+    # Use the native dis_api.c reference instead:
+    #   ./native_ref/disasm_native_ref riscv64 <blob>  (see RESUME_STATE.md)
+    # The script skips riscv objdump; the native-ref comparison is done
+    # separately (11/11 verified).
+    "riscv": ("riscv64", None, []),
 }
 
 
@@ -64,6 +69,9 @@ def objdump_disasm(arch, blob):
     import shutil
     import tempfile
     _, prog, flags = ARCH[arch]
+    if prog is None:
+        raise RuntimeError(f"{arch}: objdump cannot decode this ISA; "
+                           f"use the native-ref procedure (see ARCH table)")
     if shutil.which(prog) is None:
         raise RuntimeError(f"{prog} not installed")
     # strip trailing zero padding (see capstone_disasm)

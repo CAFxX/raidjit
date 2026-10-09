@@ -32,6 +32,7 @@ COMMON_SRCS := $(REPO)/src/gf.c $(REPO)/src/plan.c $(REPO)/src/topo.c \
 
 EMFLAGS := -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
   -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
+  -sWASM_BIGINT=1 \
   -sEXPORTED_FUNCTIONS=_rjw_compile,_rjw_code_bytes,_rjw_const_bytes,_rjw_free_string,_malloc,_free \
   -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
   -sEXPORT_NAME=RaidjitX86
@@ -82,6 +83,7 @@ disasm: check-env $(OUT)
 	  -o $(OUT)/disasm.js \
 	  -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
 	  -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
+	  -sWASM_BIGINT=1 \
 	  -sEXPORTED_FUNCTIONS=_dj_disasm,_dj_free_string,_malloc,_free \
 	  -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
 	  -sEXPORT_NAME=Disasm
