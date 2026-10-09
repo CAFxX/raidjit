@@ -22,14 +22,21 @@ mkdir -p "$WORK"
 ARCHS="${1:-all}"
 
 CFLAGS="-O2 -std=c11 -D_POSIX_C_SOURCE=200809L -ffp-contract=off \
+  -DRJ_WASM \
   -I$REPO/include -I$REPO/src -I$WASM_DIR"
+# NOTE: -DRJ_WASM for the driver activates only the const-pool gap memset
+# (src/*/jit.c) and the malloc pivot — both byte-neutral for emitted code.
+# The driver is compile-only (never executes), so this is safe, and it makes
+# the native const blob deterministic: without it, gap bytes hold malloc
+# garbage that varies with the driver's own allocation history, causing
+# flaky blob mismatches (e.g. raid6-5/enc/auto passed with one driver build,
+# failed with another). Library native builds (make kernels) are unaffected.
 COMMON="$REPO/src/gf.c $REPO/src/plan.c $REPO/src/topo.c $REPO/src/bench.c \
   $REPO/src/ref.c $REPO/src/api.c $REPO/src/prune.c $REPO/src/dispatch.c \
   $REPO/src/xorsched.c $REPO/src/matrix_search.c $REPO/src/xorcode.c \
   $REPO/src/survivor.c $REPO/src/prefetch_calib.c $REPO/src/planid.c \
   $REPO/src/crc.c $REPO/src/striping.c $REPO/src/api_crc.c \
-  $REPO/src/fused.c $REPO/src/api_batched.c $REPO/src/crc_fast.c \
-  $REPO/src/crc_fast_fallback.c \
+  $REPO/src/fused.c $REPO/src/api_batched.c \
   $WASM_DIR/rjw_api.c $WASM_DIR/vendor/cJSON.c $PARITY_DIR/parity_driver.c"
 
 build_driver() { # <arch> <cc> <rjwdef> <archsrcs> <cpu stub note>
