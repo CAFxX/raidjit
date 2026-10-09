@@ -1013,9 +1013,17 @@ char *rjw_compile(const char *json)
             goto fail;
     }
     char plan_id[RJ_PLAN_ID_MAX];
-    planid_tail_t tail = {0, 0, 0};
+    /* Stage-2 tail flags live in the plan-ID <tail> axis, never in the
+     * candidate: planid_format rejects them in cand by design ("fail,
+     * don't mis-encode"). The rjw API pins them as candidate axes
+     * (SPEC S5.4) and the backend consumed them for the build, so move
+     * them to the tail struct for ID formatting. */
+    planid_tail_t tail = { bw->cand.notail, bw->cand.predtail,
+                           bw->cand.maskedtail };
+    cand_t idcand = bw->cand;
+    idcand.notail = idcand.predtail = idcand.maskedtail = 0;
     if (planid_format(plan_id, sizeof(plan_id), &ti,
-                      topo_internal_name(topo), &opd, &pl, &bw->cand,
+                      topo_internal_name(topo), &opd, &pl, &idcand,
                       &tail) != 0) {
         snprintf(err, sizeof(err), "plan ID did not fit");
         goto fail;

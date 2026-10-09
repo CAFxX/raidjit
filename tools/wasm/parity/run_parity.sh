@@ -131,6 +131,14 @@ while IFS=$'\t' read -r name module expect options; do
     # both failed: only the failure itself is compared (agreement is enough)
     pass=$((pass + 1)); continue
   fi
+  if [ "$wok" = "false" ]; then
+    # both failed but expect=ok: genuine failure — report it cleanly
+    # instead of crashing on the missing 'result' key below.
+    echo "FAIL $name: both sides failed (expect=ok)"
+    echo "  native: $(cat "$prefix.native.json" 2>/dev/null | head -c 300)"
+    echo "  wasm:   $(echo "$wjson" | head -c 300)"
+    fail=$((fail + 1)); failed_cases+=("$name"); continue
+  fi
   # both ok: compare result JSON + blob hashes
   nres=$(cat "$prefix.native.json")
   wres=$(echo "$wjson" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['result'], sort_keys=True))")
