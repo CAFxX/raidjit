@@ -1,6 +1,7 @@
 # SPEC: raidjit WASM live kernel explorer
 
-Status: DRAFT (pending peer review) — 2026-10-08
+Status: FINAL — 2026-10-09 (peer-reviewed; all S9 acceptance gates green,
+see §S12 verification record)
 Owner request: compile raidjit + a disassembler to WebAssembly so a web page
 compiles ANY option combination live in-browser, replacing the static
 150-kernel explorer page.
@@ -129,6 +130,12 @@ Disassembler module API (`tools/wasm/dis_api.c` over Capstone):
 char *dj_disasm(const char *arch, const uint8_t *bytes, size_t len,
                 uint64_t base_addr);
 ```
+
+Capstone 6 requirement: `cs_option(NULL, CS_OPT_MEM, ...)` with a full
+`cs_opt_mem` callback set MUST be called before the first `cs_open()`
+— without it `cs_open` fails with `CS_ERR_MEMSETUP` (Capstone 6
+changed its allocator setup; v5 did not require this). The callbacks
+are plain `malloc`/`calloc`/`realloc`/`free`/`vsnprintf` shims.
 
 JS-side normalization (~30 lines, tested): strip objdump size suffixes
 (`vpxord`→`vpxor`), comma spacing, hex case — so output is comparable to the
@@ -380,3 +387,41 @@ No benchmarks anywhere in this track (C1).
 - D5. `exec_validated:false` shown in the page's config table with a
       one-line explanation (byte-identity vs the CI-validated native build
       is the correctness argument).
+
+## S12. Verification record (2026-10-09, branch `wasm-explorer`)
+
+- S9.2 parity: x86 **33/33**, riscv **11/11**, aarch64 **10/10** —
+  WASM code+const byte-identical to native drivers, metadata identical.
+  (Fixes on the way: const-pool gap memset `-DRJ_WASM`; rjw_api.c
+  predtail tail-axis fix; a flaky driver rebuilt from worktree sources.)
+- S9.3 native no-regression: `make kernels` before/after — **29/29**
+  comparable cases byte-identical, 4/4 expect-fail fail identically;
+  preprocessor output identical under `__x86_64__`/`__aarch64__`/`__riscv`
+  (jit.c diffs are `#ifdef` whitespace/braces/`__LINE__` only).
+- S9.4 disasm differential: **48/48** (x86+aarch64 37 blobs vs objdump
+  with documented normalizations; riscv 11 blobs vs a native build of the
+  same `dis_api.c`, since binutils 2.42 cannot decode RVV in binary mode).
+- S9.5 native suite: `make test` **green** (full run 2026-10-09: make
+  progressed sequentially through test_batched — make stops on first
+  failure — and the tail (test_batched/test_lrc/test_twin_audit) was
+  re-run explicitly: all OK, 2733 checks 0 failures, twin_audit ok).
+- S9.6 page smoke: Node — compile case_1 → 512 bytes, disassemble →
+  101 insns; A/B mode + deep-link round-trip pass.
+- S9.7 peer reviews: 3/3 complete, all findings remediated
+  (13f053d: tail-flag combos now fail closed via `feature_gates`;
+  disasm_diff.py riscv path fix; `-sWASM_BIGINT=1` pinned;
+  page JS robustness — JSON.parse guards, disassemble error paths,
+  hash validation).
+- S9.8 self-attack: **102/102** (`tools/wasm/self_attack/attack.js` —
+  29 adversarial compile docs + recovery probes, 20 deep-link hash
+  attacks incl. prototype-pollution, 12 disasm attacks). No traps,
+  no hangs, no state corruption. See `SELF_ATTACK.md`.
+- S9.9 docs: README.md + this SPEC finalized; `tools/kernels-README.md`
+  notes the static page is superseded; regen wiring mirrors the live page.
+
+Build flow (as executed): the four modules were built on GitHub Actions
+(`CAFxX/fanout` tenant `wasm-build`, emsdk **6.0.11** — the 4.0.11 pin
+predates `-sSINGLE_FILE_BINARY_ENCODE` and fails; local toolchain is
+6.0.11) and verified locally before use (GHA outputs are leads, never
+verdicts). Local rebuild: `make -f tools/wasm/Makefile.wasm` with emsdk
+6.0.11 on PATH; `-sSINGLE_FILE_BINARY_ENCODE=0` pinned (base64 embedding).

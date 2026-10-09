@@ -115,6 +115,28 @@ const code = mod.HEAPU8.slice(cp, cp + mod.getValue(lenp, 'i32'));
 `aarch64`, or `riscv64` (RVV 1.0 + Zvbc enabled). Undecodable bytes are
 emitted as `.byte` entries (never silently dropped).
 
+Capstone 6 requirement: `dis_api.c` calls
+`cs_option(NULL, CS_OPT_MEM, ...)` with a full `cs_opt_mem` callback set
+before the first `cs_open()` — Capstone 6 fails `cs_open` with
+`CS_ERR_MEMSETUP` without it (v5 did not require this).
+
+## Build flow
+
+Local: `make -f tools/wasm/Makefile.wasm` (emsdk **6.0.11** on PATH;
+`source ~/tools/emsdk/emsdk_env.sh`). `-sSINGLE_FILE=1` with
+`-sSINGLE_FILE_BINARY_ENCODE=0` pinned (base64 embedding — emscripten
+≥ 4.0.18 changed the default to a UTF-8 string).
+
+GHA (as executed 2026-10-09): the four modules were built on GitHub
+Actions via the `wasm-build` tenant in `CAFxX/fanout` (Dockerfile pins
+emsdk 6.0.11; shard driver builds disasm + one ISA module per shard;
+results committed back under `results/wasm-build/`). The Docker image
+auto-builds via `build-image.yml`. A 4.0.11 emsdk pin was tried and
+failed (predates `-sSINGLE_FILE_BINARY_ENCODE`); a slim source tarball
+needed 20 extra self-contained Capstone `*Module.h` files.
+GHA outputs are leads, never verdicts: every module is re-verified
+locally (parity matrix) before use.
+
 ## Parity harness (`parity/`)
 
 `parity_driver.c` links `rjw_api.c` **natively** per ARCH (without
@@ -127,9 +149,32 @@ gate (SPEC §S9.2).
 ## Page
 
 `../gen_live_kernels_page.py` inlines the four `out/*.js` bundles into
-`raidjit_kernels.html` (single + optional A/B comparison mode,
-deep-linkable via `#a=<base64url(JSON)>[&b=...]`), mirrored to
-`~/workspace/your_files/raidjit/`.
+`raidjit_kernels.html` — a single self-contained file (`file://`-safe,
+no server, no fetch, no threads).
+
+- **Any-combination options UI:** ISA selector (x86 / aarch64 / riscv)
+  with per-ISA target bundles (`avx512-gfni`, `avx2`, `sse` /
+  `sve2`, `neon` / `rvv`, `rvv-zvbc32e`, `rvv-zicbop`), topology
+  constructor + numeric params (or `matrix_hex` for custom), operation
+  (`encode` / `recover` with failed-disk list / `parity_update` with
+  changed list), auto candidate (planner heuristic) or pinned candidate
+  (ISA, mul method, U, lmul, prefetch distance + all twin checkboxes,
+  with pairwise-exclusive body twins greyed out), codegen options
+  (`loop_align`, `emit_endbr`, `emit_shadow_stack`). Compiles
+  automatically on change (debounced); backend `{ok:false, err}` is shown
+  verbatim. Config table mirrors the `.md` fields + plan ID +
+  `exec_validated:false` + static-model labeling.
+- **A/B mode (toggle):** two fully independent panes side by side, each
+  with its own option set, config table, and disassembly pane.
+- **Deep links:** `#a=<base64url(JSON option set)>` (single),
+  `#a=...&b=...` (comparison). The "copy link" button copies the
+  current URL; pane state is restored on load. Malformed hashes are
+  ignored safely (shape-validated against the option model; see S9.8).
+
+The page is mirrored to `~/workspace/your_files/raidjit/`,
+**replacing** the static 150-kernel explorer at the same filename
+(`raidjit_kernels.html`). The Markdown reference
+(`raidjit_kernels.md`) stays as the archived verification corpus.
 
 ## Constraints (non-negotiable)
 

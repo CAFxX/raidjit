@@ -1,5 +1,13 @@
 # Kernel Dumps: RAID-5(4+1) and RAID-6(5+2)
 
+> **Note 2026-10-09:** the static HTML explorer built from these dumps
+> (`raidjit_kernels.html`) has been superseded by the **live WASM kernel
+> explorer** at the same deliverable path — the page now compiles any
+> option combination in-browser via WebAssembly (see
+> `tools/wasm/README.md`, SPEC §S7). The Markdown reference below and
+> the shipped `.code.bin`/`.const.bin`/`.asm` files remain the archived
+> verification corpus (S9.3 byte-identity proof, parity harness).
+
 Regenerated 2026-10-07 with `make kernels` (see `tools/gen_kernels.c` in the
 raidjit repo). Each kernel was JIT-compiled with `benchmark=0` (heuristic
 candidate selection) for a synthetic CPU matching the target ISA — never the

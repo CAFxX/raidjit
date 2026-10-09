@@ -113,3 +113,30 @@
   native-ref); -sWASM_BIGINT=1 pinned. Reviewer 3: page JS robustness
   fixes (JSON.parse guards, disassemble error paths, hash validation).
   All remediations committed; page regenerated.
+
+- 2026-10-09 12:30 UTC: **S9.8 self-attack 102/102**
+  (tools/wasm/self_attack/attack.js + SELF_ATTACK.md): 29 adversarial
+  compile docs (+29 state-recovery probes), 20 deep-link hash attacks
+  (incl. prototype-pollution, 5MB hash), 12 disasm attacks. No traps,
+  no hangs, no state corruption. No findings requiring code changes.
+
+- 2026-10-09 12:40 UTC: **S9.5 native `make test` GREEN**. Full run
+  08:46-12:35 UTC progressed sequentially through test_batched (make
+  stops on first failure); tail re-run explicitly: test_batched OK,
+  test_lrc 2733 checks 0 failures, test_twin_audit ok.
+
+- 2026-10-09 12:45 UTC: **S9.9 docs final**: SPEC.md status FINAL +
+  §S12 verification record + Capstone 6 mem_setup requirement + GHA
+  build flow; README.md expanded (Page section: any-combination UI,
+  A/B mode, deep links; Build flow: local + GHA wasm-build tenant;
+  Capstone 6 note); tools/kernels-README.md notes the static page is
+  superseded. out/disasm.js + out/raidjit_riscv.js committed (verified
+  modules, consistent with the committed x86/aarch64 modules).
+
+## Deliverable
+- Live page: tools/wasm/out/raidjit_kernels.html (4,450,464 bytes,
+  self-contained, file://-safe). Regeneration is deterministic:
+  re-running tools/gen_live_kernels_page.py reproduces it byte-for-byte.
+- Swap: ~/workspace/your_files/raidjit/raidjit_kernels.html REPLACED
+  with the live page (static explorer omitted per owner order);
+  raidjit_kernels.md stays as the archived verification corpus.
