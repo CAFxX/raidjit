@@ -17,6 +17,24 @@
 #include <capstone/capstone.h>
 #include "vendor/cJSON.h"
 
+/* Capstone 6 requires explicit memory-function setup before cs_open()
+ * (CS_OPT_MEM with a NULL handle); otherwise cs_open fails with
+ * CS_ERR_MEMSETUP. Idempotent: safe to call per dj_disasm invocation. */
+static void capstone_mem_setup(void)
+{
+    static int done = 0;
+    if (done)
+        return;
+    cs_opt_mem mem;
+    mem.malloc = malloc;
+    mem.calloc = calloc;
+    mem.realloc = realloc;
+    mem.free = free;
+    mem.vsnprintf = vsnprintf;
+    cs_option(0, CS_OPT_MEM, (uintptr_t)&mem);
+    done = 1;
+}
+
 static void bytes_hex(const uint8_t *b, size_t n, char *out)
 {
     static const char *hexd = "0123456789abcdef";
@@ -45,6 +63,7 @@ char *dj_disasm(const char *arch, const uint8_t *bytes, size_t len,
         return NULL;
     }
 
+    capstone_mem_setup();
     csh handle;
     if (cs_open(csarch, csmode, &handle) != CS_ERR_OK)
         return NULL;
