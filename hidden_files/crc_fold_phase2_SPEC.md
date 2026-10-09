@@ -201,8 +201,8 @@ RISC-V: N/A (never interleave in Phase 2).
 
 ### 4.3 Driver (`src/fused.c`)
 
-- Allocates `nstreams * 16` bytes per fused call (16-byte aligned),
-  initializes per backend convention.
+- Allocates `nstreams * 64` bytes per fused call (64-byte aligned, one
+  zmm per stream), initializes per backend convention.
 - Passes `fold_state` to each tile's kernel call.
 - After all tiles: finalizes 128-bit → 32-bit per stream (backend-defined;
   x86-64: driver-side Barrett reduction of the 4 lanes then XOR per

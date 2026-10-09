@@ -1517,7 +1517,7 @@ static void compute_regs(cg_t *cg)
                                              pl, U)
                         : plan_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                          MUL_NIBBLE, pl, U, cg->cand.remat,
-                                         cg->cand.pipe, cand->crc_fold);
+                                         cg->cand.pipe, cg->cand.crc_fold);
     assert(cg->vmax + 1 == want_regs);
 }
 
