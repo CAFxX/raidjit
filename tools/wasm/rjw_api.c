@@ -623,8 +623,10 @@ static int build_pinned_cand(cJSON *cj, const plan_t *pl,
         }
     } else {
 #if defined(RJW_X86)
-        cand->mul =
-            (cand->isa == ISA_AVX512 && cpu->gfni) ? MUL_GFNI : MUL_NIBBLE;
+        /* P_XOR plans have no GF multiply: the planner never selects
+         * GFNI for them, so the default follows suit (nibble). */
+        cand->mul = (cand->isa == ISA_AVX512 && cpu->gfni &&
+                     pl->kind != P_XOR) ? MUL_GFNI : MUL_NIBBLE;
 #else
         cand->mul = MUL_NIBBLE;
 #endif

@@ -95,12 +95,21 @@ function fmtHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 }
 function renderDisasm(insns) {
-  return insns.map(e => {
-    const addr = e.addr.toString(16).padStart(4, "0");
-    let line = addr + ":\t" + e.bytes + "\t" + e.mnemonic;
-    if (e.op_str) line += "\t" + e.op_str;
-    return line;
-  }).join("\n");
+  const tbl = el("table", { class: "disasm" });
+  const head = el("tr");
+  for (const h of ["offset", "bytes", "instruction"])
+    head.appendChild(el("th", {}, h));
+  tbl.appendChild(head);
+  for (const e of insns) {
+    const tr = el("tr");
+    tr.appendChild(el("td", { class: "off" },
+      e.addr.toString(16).padStart(4, "0")));
+    tr.appendChild(el("td", { class: "bytes" }, e.bytes));
+    tr.appendChild(el("td", { class: "insn" },
+      e.mnemonic + (e.op_str ? " " + e.op_str : "")));
+    tbl.appendChild(tr);
+  }
+  return tbl;
 }
 
 /* ---- option model ---- */
@@ -128,7 +137,7 @@ const CTOR_DEFAULTS = {
   raid6_rs: { p1: 4 }, rdp: { p1: 5 }, evenodd: { p1: 5 }, liberation: { p1: 4 },
   rs: { p1: 4, p2: 2 }, lrc: { p1: 8, p2: 2, p3: 2 }, lrc_azure: {},
   lrc_optimal: { p1: 20, p2: 2, p3: 4 },
-  custom: { p1: 6, p2: 2, matrix_hex: "0101010101010203040506" },
+  custom: { p1: 6, p2: 2, matrix_hex: "010101020103010401050106" },
 };
 function ctorDefaults(ctor) {
   return Object.assign({ ctor: ctor }, CTOR_DEFAULTS[ctor] || { p1: 4 });
@@ -206,7 +215,12 @@ function buildDoc(p) {
   let cand = "auto";
   if (!p.candAuto) {
     cand = { mul: p.cand.mul === "auto" ? undefined : p.cand.mul,
-             U: p.cand.U | 0, lmul: p.cand.lmul | 0,
+             U: p.cand.U | 0,
+             /* lmul is RVV-only (backend rejects it elsewhere): only send
+              * it for riscv; 0 means "default" to the backend. The lmul
+              * selector is hidden for non-RVV ISAs, so sending the stored
+              * default 1 would reject a configuration the user never chose. */
+             lmul: p.isa === "riscv" ? (p.cand.lmul | 0) : 0,
              prefetch_dist: p.cand.prefetch_dist | 0 };
     for (const t of TWINS) cand[t] = !!p.twins[t];
     if (p.cand.isaVer) cand.isa = p.cand.isaVer;
@@ -343,7 +357,7 @@ function buildPane(state) {
   root.appendChild(P.status);
   P.cfgTable = el("table", { class: "cfg" });
   root.appendChild(P.cfgTable);
-  P.disasm = el("pre", { class: "disasm" });
+  P.disasm = el("div", { class: "disasm" });
   root.appendChild(P.disasm);
 
   P.isaSel.onchange = () => {
@@ -489,7 +503,7 @@ async function runPane(P) {
   if (!r.ok) {
     P.status.textContent = "build failed: " + r.err;
     P.status.className = "status err";
-    P.cfgTable.innerHTML = ""; P.disasm.textContent = "";
+    P.cfgTable.innerHTML = ""; P.disasm.innerHTML = "";
     writeHash(panes.map(q => q.state));
     return;
   }
@@ -524,7 +538,9 @@ async function runPane(P) {
   P.status.textContent = "ok";
   P.status.className = "status ok";
   const d = await disassemble(DISASM_ARCH[s.isa], r.code);
-  P.disasm.textContent = d.error ? d.error : renderDisasm(d.insns);
+  P.disasm.innerHTML = "";
+  if (d.error) P.disasm.textContent = d.error;
+  else P.disasm.appendChild(renderDisasm(d.insns));
   writeHash(panes.map(q => q.state));
 }
 
@@ -578,8 +594,14 @@ label{margin-right:.2em}
 table.cfg{border-collapse:collapse;margin:.5em 0;font-size:.85em}
 table.cfg td{border:1px solid #ddd;padding:.15em .5em;vertical-align:top}
 td.k{font-weight:bold;white-space:nowrap}
-pre.disasm{background:#f6f6f6;padding:.8em;overflow:auto;font-size:.8em;
-  max-height:40em}
+div.disasm{overflow:auto;max-height:40em}
+table.disasm{border-collapse:collapse;font-family:monospace;font-size:.8em;
+  background:#f6f6f6}
+table.disasm th,table.disasm td{padding:.1em .7em;vertical-align:top;
+  text-align:left;white-space:pre}
+table.disasm th{border-bottom:1px solid #bbb}
+table.disasm td.off{color:#666;text-align:right}
+table.disasm td.bytes{color:#064}
 .status{font-weight:bold;margin:.3em 0}
 .status.busy{color:#a60}.status.ok{color:#070}.status.err{color:#a00}
 .twin{display:inline-block;margin:.15em .6em .15em 0;font-size:.85em}
