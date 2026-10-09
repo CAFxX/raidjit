@@ -133,6 +133,44 @@ const CTOR_DEFAULTS = {
 function ctorDefaults(ctor) {
   return Object.assign({ ctor: ctor }, CTOR_DEFAULTS[ctor] || { p1: 4 });
 }
+function isPrime(n) {
+  n = n | 0;
+  if (n < 2) return false;
+  for (let i = 2; i * i <= n; i++) if (n % i === 0) return false;
+  return true;
+}
+/* Repair a topology object so it satisfies the backend validity envelope
+ * (rjw_api.c). Stale deep links — e.g. saved when the page defaulted p=4
+ * for every ctor, or hand-crafted with an unknown ctor — self-heal to the
+ * per-ctor defaults instead of showing a backend rejection for a
+ * configuration the user never chose. */
+function sanitizeTopology(t) {
+  const d = ctorDefaults(t && t.ctor);
+  if (!CTORS[d.ctor]) return ctorDefaults("raid5");
+  if (!t || typeof t !== "object") return d;
+  const p1 = t.p1 | 0, p2 = t.p2 | 0, p3 = t.p3 | 0;
+  let ok;
+  switch (d.ctor) {
+    case "rdp": case "evenodd": ok = isPrime(p1); break;
+    case "liberation": ok = p1 >= 2; break;
+    case "rs": ok = p1 >= 1 && p2 >= 1; break;
+    case "lrc": case "lrc_optimal": ok = p1 >= 2 && p2 >= 1 && p3 >= 2; break;
+    case "custom":
+      ok = p1 >= 1 && p2 >= 1 && typeof t.matrix_hex === "string" &&
+           t.matrix_hex.length === 2 * p1 * p2;
+      break;
+    case "raid1": case "lrc_azure": ok = true; break;
+    default: ok = p1 >= 1; break; /* raid0/raid5/raid6/raid6_rs */
+  }
+  if (!ok) return d;
+  const out = { ctor: d.ctor };
+  const par = CTORS[d.ctor];
+  if (par[0] !== "matrix_hex") out.p1 = p1;
+  if (par[1] && par[1] !== "matrix_hex") out.p2 = p2;
+  if (par[2] && par[2] !== "matrix_hex") out.p3 = p3;
+  if (par.includes("matrix_hex")) out.matrix_hex = t.matrix_hex;
+  return out;
+}
 const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
                "permi2b", "xorsched", "xorbit", "mshift", "pipe"];
 /* pairwise-exclusive body twins */
@@ -193,6 +231,32 @@ function b64urlDecode(s) {
   while (s.length % 4) s += "=";
   return decodeURIComponent(escape(atob(s)));
 }
+/* Normalize a deep-linked pane state: fill every sub-object from the
+ * defaults so a partially-specified link can never crash page init
+ * (buildDoc/buildPane assume complete state), and repair the topology
+ * against the backend validity envelope. Unknown ISA/ctor/op fall back
+ * to defaults. */
+const OP_KINDS = ["encode", "recover", "parity_update"];
+function normalizeState(o) {
+  const d = defaultPane();
+  if (!o || typeof o !== "object" || !TARGETS[o.isa]) return d;
+  const target = TARGETS[o.isa].includes(o.target) ? o.target : TARGETS[o.isa][0];
+  const op = (o.op && typeof o.op === "object") ? o.op : {};
+  return {
+    isa: o.isa,
+    target: target,
+    cpu: (o.cpu && typeof o.cpu === "object") ? o.cpu : {},
+    topology: sanitizeTopology(o.topology),
+    op: {
+      kind: OP_KINDS.includes(op.kind) ? op.kind : "encode",
+      failed: op.failed, rows: op.rows, changed: op.changed,
+    },
+    candAuto: o.candAuto !== false,
+    cand: Object.assign({}, d.cand, (o.cand && typeof o.cand === "object") ? o.cand : {}),
+    twins: (o.twins && typeof o.twins === "object") ? o.twins : {},
+    options: Object.assign({}, d.options, (o.options && typeof o.options === "object") ? o.options : {}),
+  };
+}
 function readHash() {
   const h = location.hash.replace(/^#/, "");
   const out = {};
@@ -200,14 +264,8 @@ function readHash() {
     const [k, v] = part.split("=");
     if ((k === "a" || k === "b") && v) {
       try {
-        const o = JSON.parse(b64urlDecode(v));
-        // validate shape against defaultPane(); fall back to defaults on mismatch
-        if (o && typeof o === "object" && typeof o.isa === "string" &&
-            o.topology && typeof o.topology.ctor === "string" &&
-            o.op && typeof o.op.kind === "string") {
-          out[k] = o;
-        }
-      } catch (e) { /* ignore */ }
+        out[k] = normalizeState(JSON.parse(b64urlDecode(v)));
+      } catch (e) { /* ignore malformed links */ }
     }
   }
   return out;
@@ -533,7 +591,8 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">Compiles kernels live in your browser via WebAssembly
+<p class="note">page build <code>2026-10-09c</code> (per-ctor topology defaults;
+stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and
 correctness is argued by byte-identity with the native build
