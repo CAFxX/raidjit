@@ -137,6 +137,8 @@
 - Live page: tools/wasm/out/raidjit_kernels.html (4,450,464 bytes,
   self-contained, file://-safe). Regeneration is deterministic:
   re-running tools/gen_live_kernels_page.py reproduces it byte-for-byte.
+- S9.6 re-smoke on the final page modules (2026-10-09 12:50 UTC):
+  compile raid5(4)/avx512-gfni → 512 bytes, disassemble → 101 insns. PASS.
 - Swap: ~/workspace/your_files/raidjit/raidjit_kernels.html REPLACED
   with the live page (static explorer omitted per owner order);
   raidjit_kernels.md stays as the archived verification corpus.
