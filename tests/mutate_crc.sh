@@ -39,10 +39,14 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WT_PARENT="${TMPDIR:-$HOME/workspace/tmp}"
 mkdir -p "$WT_PARENT"
 WT="$(mktemp -d "$WT_PARENT/crc-mut.XXXXXX")"
+# Per-run log paths (mktemp): concurrent runs must not clobber each
+# other's build/run logs.
+BUILD_LOG="$(mktemp /tmp/crc-mut-build.XXXXXX.log)"
+RUN_LOG="$(mktemp /tmp/crc-mut-run.XXXXXX.log)"
 cleanup() {
     cd "$REPO" 2>/dev/null || true
     git worktree remove --force "$WT" >/dev/null 2>&1 || true
-    rm -rf "$WT"
+    rm -rf "$WT" "$BUILD_LOG" "$RUN_LOG"
 }
 trap cleanup EXIT INT TERM
 
@@ -78,20 +82,20 @@ fi
 BIN="$WT/build-$ARCH/test_crc_fast"
 echo "mutate: building test_crc_fast in worktree (this takes a while)"
 # shellcheck disable=SC2086
-if ! nice -n 19 make -C "$WT" $MAKE_ARGS "build-$ARCH/test_crc_fast" >/tmp/crc-mut-build.log 2>&1; then
-    echo "mutate: BUILD FAILED (see /tmp/crc-mut-build.log) -- counts as infra failure, not a kill" >&2
-    tail -20 /tmp/crc-mut-build.log >&2
+if ! nice -n 19 make -C "$WT" $MAKE_ARGS "build-$ARCH/test_crc_fast" >$BUILD_LOG 2>&1; then
+    echo "mutate: BUILD FAILED (see $BUILD_LOG) -- counts as infra failure, not a kill" >&2
+    tail -20 $BUILD_LOG >&2
     exit 2
 fi
 
 echo "mutate: running test_crc_fast (mutant)${QEMU:+ under qemu-$QEMU}"
 # shellcheck disable=SC2086
-if env $RUN_ENV $RUN_BIN_PREFIX "$BIN" >/tmp/crc-mut-run.log 2>&1; then
+if env $RUN_ENV $RUN_BIN_PREFIX "$BIN" >$RUN_LOG 2>&1; then
     echo "mutate: SURVIVED -- the test suite did NOT catch: $DESC" >&2
-    tail -5 /tmp/crc-mut-run.log >&2
+    tail -5 $RUN_LOG >&2
     exit 1
 else
     echo "mutate: KILLED (test failed as required): $DESC"
-    grep -m3 "^FAIL" /tmp/crc-mut-run.log || true
+    grep -m3 "^FAIL" $RUN_LOG || true
     exit 0
 fi
