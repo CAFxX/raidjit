@@ -32,7 +32,7 @@ degrade to a slower CORRECT variant — never wrong, never SIGILL.
 
 | Class | Condition | Variant |
 |---|---|---|
-| 3 | `vpclmulqdq && pclmulqdq && avx512f && avx512bw` (`avx512bw` joins per spec review R1-6: the 512-bit fusion's constant broadcast/lane reduction need it) | Cawley-style fusion: scalar `crc32q` lanes + VPCLMULQDQ vector lanes (rung 1); 256-bit VPCLMULQDQ fusion lanes (rung 2, Zen3: `vpclmulqdq` without `avx512f`). The `rj_crc32_fast_x86_vpclmul` entry selects the rung internally (spec Finding 13) |
+| 3 | `vpclmulqdq && pclmulqdq && avx512f && avx512bw` (`avx512bw` joins per spec review R1-6: the 512-bit fusion's constant broadcast/lane reduction need it) | Cawley-style fusion: PCLMUL-based scalar lanes (`crc_u64_step` — the x86 `crc32` instruction is CRC-32C-only and unusable here) + VPCLMULQDQ vector lanes (rung 1); 256-bit VPCLMULQDQ fusion lanes (rung 2, Zen3: `vpclmulqdq` without `avx512f`). The `rj_crc32_fast_x86_vpclmul` entry selects the rung internally (spec Finding 13); `RJ_CRC_X86_FORCE256=1` forces rung 2 on AVX-512 hosts for test coverage |
 | 2 | `pclmulqdq` (no tier-3) | 128-bit PCLMULQDQ fold, zlib-ng/Chromium structure (the synthesis table — not fusion — is the arbiter here) |
 | 0 | else | slice-by-8 |
 

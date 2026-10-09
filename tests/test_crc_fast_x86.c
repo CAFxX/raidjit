@@ -10,6 +10,9 @@
  *  - Guard-page: no over-read past the buffer end (ASan + PROT_NONE page).
  *  - NULL/len-0, garbage crc, concurrent dispatch.
  *  - rj_crc32_fast_x86_class matches detected features.
+ *  - RJ_CRC_X86_FORCE256: the rung-2 (256-bit) fusion path is executed on
+ *    AVX-512 hosts via the test-only override; the rung query proves the
+ *    override engages before the bit-exact matrix trusts it.
  *
  * Red-green: each correctness test fails if a fold constant is corrupted.
  * Demonstrated by corrupting K1/K2 (or a lane constant), rebuilding, and
@@ -184,7 +187,7 @@ static void test_class(void)
     int expect = 0;
     if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw)
         expect = 3;  /* rung 1 */
-    else if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2)
+    else if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2 && !ci.avx512f)
         expect = 3;  /* rung 2 */
     else if (ci.pclmulqdq)
         expect = 2;  /* rung 3: pclmul128 fold */
@@ -193,6 +196,58 @@ static void test_class(void)
     printf("cpu: pclmulqdq=%d vpclmulqdq=%d sse42=%d avx512f=%d avx512bw=%d avx2=%d -> class %d\n",
            ci.pclmulqdq, ci.vpclmulqdq, ci.sse42, ci.avx512f, ci.avx512bw, ci.avx2, cls);
     printf("ok class\n");
+}
+
+/* RJ_CRC_X86_FORCE256: execute the rung-2 (256-bit) fusion path on
+ * AVX-512 hosts, where it would otherwise never run (Zen3's production
+ * path). First proves via the test-only rung query that the override
+ * actually switches rungs -- without this, the matrix below could
+ * silently re-exercise rung 1 -- then runs a bit-exact matrix through
+ * the forced entry vs the scalar oracle and zlib. */
+static void test_force256(void)
+{
+    rj_cpu_info ci;
+    rj_cpu_detect(&ci);
+    if (!ci.vpclmulqdq || !ci.pclmulqdq || !ci.avx2) {
+        printf("SKIP force256 (no VPCLMULQDQ/AVX2 on this host)\n");
+        return;
+    }
+    int rung_plain = rj_crc32_fast_x86_test_rung(0);
+    int rung_forced = rj_crc32_fast_x86_test_rung(1);
+    CHECK(rung_forced == 2, "FORCE256 did not select rung 2 (got %d)",
+          rung_forced);
+    if (ci.avx512f && ci.avx512bw)
+        CHECK(rung_plain == 1, "unforced rung on AVX-512 host: got %d, want 1",
+              rung_plain);
+    else
+        CHECK(rung_plain == 2, "unforced rung on non-AVX512 host: got %d, want 2",
+              rung_plain);
+
+    static const size_t lens[] = {
+        0, 1, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65,
+        127, 128, 129, 1000, 10000, 1u << 20
+    };
+    uint8_t *buf = malloc((1u << 20) + 16);
+    CHECK(buf != NULL, "oom");
+    fill_buf(buf, (1u << 20) + 16, 0xF0256u);
+    setenv("RJ_CRC_X86_FORCE256", "1", 1);
+    for (size_t li = 0; li < sizeof(lens) / sizeof(lens[0]); li++)
+        for (size_t off = 0; off < 16; off++) {
+            size_t len = lens[li];
+            const uint8_t *p = buf + off;
+            uint32_t seed_crc = 0xFFFFFFFFu;
+            uint32_t got = rj_crc32_fast_x86_vpclmul(seed_crc, p, len);
+            uint32_t ref = rj_crc32_update_scalar(seed_crc, p, len);
+            uint32_t zref = (uint32_t)crc32((uLong)seed_crc ^ 0xFFFFFFFFu,
+                                            p, (uInt)len) ^ 0xFFFFFFFFu;
+            CHECK(got == ref, "force256 len=%zu off=%zu: got 0x%08x want 0x%08x (scalar)",
+                  len, off, got, ref);
+            CHECK(got == zref, "force256 len=%zu off=%zu: got 0x%08x want 0x%08x (zlib)",
+                  len, off, got, zref);
+        }
+    unsetenv("RJ_CRC_X86_FORCE256");
+    free(buf);
+    printf("ok force256\n");
 }
 
 /* Guard-page: buffer ends exactly at a PROT_NONE page; any over-read faults. */
@@ -284,6 +339,7 @@ int main(void)
     test_chaining();
     test_null_zero();
     test_class();
+    test_force256();
     test_guard_page();
     test_threads();
     test_sizet_arith();

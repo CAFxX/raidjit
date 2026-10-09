@@ -53,3 +53,9 @@ int rj_crc32_fast_x86_class(void);
  *   3 = vpclmul (rungs 1+2), 2 = pclmul128 (rung 3), 0 = scalar.
  * (1 = crc32hw is never returned: no distinct IEEE hw tier exists on x86-64;
  * an sse42-only CPU reports 0.) */
+
+int rj_crc32_fast_x86_test_rung(int force256);
+/* Test-only: which rung rj_crc32_fast_x86_vpclmul would take on this machine
+ * with the given RJ_CRC_X86_FORCE256 override (1 = 512-bit fusion, 2 =
+ * 256-bit fusion, 0 = degrade to the pclmul entry). Lets the test prove the
+ * override engages before trusting forced-rung coverage. */

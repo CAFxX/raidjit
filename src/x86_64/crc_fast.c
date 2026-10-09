@@ -476,13 +476,6 @@ static uint32_t pclmul_256_body(uint32_t crc0, const uint8_t *buf, size_t len)
  * matching src/crc.c style.
  * ------------------------------------------------------------------------- */
 
-static int x86_has_vpclmul_tier(void)
-{
-    rj_cpu_info ci;
-    rj_cpu_detect(&ci);
-    return ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw;
-}
-
 static int x86_has_pclmul(void)
 {
     rj_cpu_info ci;
@@ -490,21 +483,39 @@ static int x86_has_pclmul(void)
     return ci.pclmulqdq;
 }
 
-static int x86_has_vpclmulqw_nof(void)
+/* Rung selection for rj_crc32_fast_x86_vpclmul as a pure function of the
+ * detected features and the test-only override flag. Returns 1 (512-bit
+ * VPCLMULQDQ fusion), 2 (256-bit VPCLMULQDQ fusion, Zen3), or 0 (degrade
+ * to the pclmul entry, rung 3+).
+ *
+ * Rung 2 needs avx2 because GCC categorizes the 256-bit integer XOR
+ * intrinsics as AVX2 (all VPCLMULQDQ CPUs have AVX2).
+ *
+ * Test-only override: force256 (RJ_CRC_X86_FORCE256=1) selects rung 2 on
+ * AVX-512-capable CPUs so tests can execute the Zen3 path there. It is
+ * honored BEFORE the AVX-512 tier -- previously the tier check ran first
+ * and shadowed the override, making it dead on exactly the CPUs it
+ * targets (peer review MAJOR-1). The hardware requirement
+ * (vpclmulqdq && pclmulqdq && avx2) is never bypassed. */
+static int x86_vpclmul_rung(const rj_cpu_info *ci, int force256)
 {
-    /* Rung 2: 256-bit VPCLMULQDQ fusion without AVX-512 (Zen3). avx2 joins
-     * because GCC categorizes the 256-bit integer XOR intrinsics as AVX2
-     * (all VPCLMULQDQ CPUs have AVX2).
-     * Test-only override: RJ_CRC_X86_FORCE256=1 forces the rung-2 256-bit
-     * path inside rj_crc32_fast_x86_vpclmul so tests can exercise it on
-     * AVX-512-capable CPUs. The hardware requirement is never bypassed. */
+    if (ci->vpclmulqdq && ci->pclmulqdq && ci->avx2 &&
+        (force256 || !ci->avx512f))
+        return 2;
+    if (ci->vpclmulqdq && ci->pclmulqdq && ci->avx512f && ci->avx512bw)
+        return 1;
+    return 0;
+}
+
+/* Test-only: which rung rj_crc32_fast_x86_vpclmul would take on this
+ * machine with the given force256 override (1/2/0 as above). Lets the
+ * test prove the override engages before trusting forced-rung coverage:
+ * without this, a forced matrix could silently re-exercise rung 1. */
+int rj_crc32_fast_x86_test_rung(int force256)
+{
     rj_cpu_info ci;
     rj_cpu_detect(&ci);
-    if (!ci.vpclmulqdq || !ci.pclmulqdq || !ci.avx2)
-        return 0;
-    if (getenv("RJ_CRC_X86_FORCE256"))
-        return 1;
-    return !ci.avx512f;
+    return x86_vpclmul_rung(&ci, force256);
 }
 
 uint32_t rj_crc32_fast_x86_vpclmul(uint32_t crc, const void *d, size_t n)
@@ -512,11 +523,16 @@ uint32_t rj_crc32_fast_x86_vpclmul(uint32_t crc, const void *d, size_t n)
     /* Rungs 1+2 (spec R2.5): select internally. */
     if (n == 0)
         return crc;
-    if (x86_has_vpclmul_tier())
+    rj_cpu_info ci;
+    rj_cpu_detect(&ci);
+    switch (x86_vpclmul_rung(&ci, getenv("RJ_CRC_X86_FORCE256") != NULL)) {
+    case 1:
         return vpclmul_512_body(crc, (const uint8_t *)d, n);
-    if (x86_has_vpclmulqw_nof())
+    case 2:
         return pclmul_256_body(crc, (const uint8_t *)d, n);
-    return rj_crc32_fast_x86_pclmul(crc, d, n);
+    default:
+        return rj_crc32_fast_x86_pclmul(crc, d, n);
+    }
 }
 
 uint32_t rj_crc32_fast_x86_pclmul(uint32_t crc, const void *d, size_t n)
@@ -545,12 +561,15 @@ static pthread_once_t x86_select_once = PTHREAD_ONCE_INIT;
 
 static void x86_select_init(void)
 {
-    /* Spec R2 chain as amended by Finding 13. */
+    /* Spec R2 chain as amended by Finding 13. The avx512f-without-avx512bw
+     * row is hypothetical (no shipping CPU); it is routed to rung 3
+     * directly so class() stays truthful -- the vpclmul entry would
+     * degrade there anyway (x86_vpclmul_rung returns 0). */
     rj_cpu_info ci;
     rj_cpu_detect(&ci);
     if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw)
         x86_selected_fn = rj_crc32_fast_x86_vpclmul;  /* rung 1: 512-bit fusion */
-    else if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2)
+    else if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2 && !ci.avx512f)
         x86_selected_fn = rj_crc32_fast_x86_vpclmul;  /* rung 2: 256-bit fusion */
     else if (ci.pclmulqdq)
         x86_selected_fn = rj_crc32_fast_x86_pclmul;   /* rung 3: 128-bit fold */
@@ -574,7 +593,7 @@ int rj_crc32_fast_x86_class(void)
     rj_cpu_detect(&ci);
     if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx512f && ci.avx512bw)
         return 3;
-    if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2)
+    if (ci.vpclmulqdq && ci.pclmulqdq && ci.avx2 && !ci.avx512f)
         return 3;
     if (ci.pclmulqdq)
         return 2;
