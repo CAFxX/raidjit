@@ -672,13 +672,27 @@ static int build_pinned_cand(cJSON *cj, const plan_t *pl,
     if (err[0])
         return -1;
 
-    if (planid_cand_valid(pl, cand, err, errlen) != 0) {
+    /* planid_cand_valid rejects stage-2 tail flags (notail/predtail/
+     * maskedtail live in the plan-ID <tail> field, never <twins>), but the
+     * rjw API pins them directly as candidate axes (SPEC S5.4) and the
+     * backends consume cand->predtail etc. Validate the shape with the
+     * tail flags masked out, then re-apply: feature_gates + the backend's
+     * asserts are the tail-flag validators on this path. */
+    int save_notail = cand->notail, save_predtail = cand->predtail;
+    int save_maskedtail = cand->maskedtail;
+    cand->notail = cand->predtail = cand->maskedtail = 0;
+    int shape_ok = planid_cand_valid(pl, cand, err, errlen);
+    cand->notail = save_notail;
+    cand->predtail = save_predtail;
+    cand->maskedtail = save_maskedtail;
+    if (shape_ok != 0) {
         /* U=0 is our "auto-U" spelling: validate the shape with a
          * placeholder U (the real U is chosen by the scan in
          * rjw_compile). */
         if (cand->U == 0) {
             cand_t tmp = *cand;
             tmp.U = 8;
+            tmp.notail = tmp.predtail = tmp.maskedtail = 0;
             if (planid_cand_valid(pl, &tmp, err, errlen) != 0)
                 return -1;
         } else {
@@ -900,9 +914,18 @@ char *rjw_compile(const char *json)
             }
             int unv = 0;
             char lasterr[256] = "";
+            /* Mask stage-2 tail flags for planid_cand_valid (see
+             * build_pinned_cand): the shape check is tail-agnostic. */
+            int pt_notail = pinned.notail, pt_predtail = pinned.predtail;
+            int pt_maskedtail = pinned.maskedtail;
             for (int U = 1; U <= 8; U++) {
                 pinned.U = U;
-                if (planid_cand_valid(&pl, &pinned, e2, sizeof(e2)) != 0) {
+                pinned.notail = pinned.predtail = pinned.maskedtail = 0;
+                int vok = planid_cand_valid(&pl, &pinned, e2, sizeof(e2));
+                pinned.notail = pt_notail;
+                pinned.predtail = pt_predtail;
+                pinned.maskedtail = pt_maskedtail;
+                if (vok != 0) {
                     snprintf(lasterr, sizeof(lasterr), "%s", e2);
                     continue;
                 }
