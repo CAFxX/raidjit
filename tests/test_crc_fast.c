@@ -79,8 +79,8 @@ uint32_t rj_crc32_fast_riscv_zvbc(uint32_t crc, const void *d, size_t n);
 uint32_t rj_crc32_fast_riscv_zbc(uint32_t crc, const void *d, size_t n);
 int rj_crc32_fast_riscv_class(void);
 #endif
-/* Test-only scaffolding from src/crc_fast_fallback.c: 1 once a backend
- * TU's strong definitions are linked, 0 while the weak fallback holds. */
+/* Test-only probe: 1 when a backend TU's strong definitions are linked,
+ * 0 while only the portable slice-by-8 path is reachable. */
 int rj_crc32_fast_test_backend_present(void);
 
 static int failures = 0;

@@ -110,18 +110,15 @@ Pinned entry points, exact names (spec R2.5):
   `rj_crc32_fast_riscv_zvbc`, `rj_crc32_fast_riscv_zbc`,
   `rj_crc32_fast_riscv_class`
 
-Transitional scaffolding (W4): until the three backend TUs land,
-`src/crc_fast_fallback.c` provides **weak** definitions of all twelve
-entry points (slice-by-8; bit-exact, unaccelerated), and
-`src/crc_fast.c`'s dispatcher references the best-variant entries with
-strong-undefined references so the linker prefers a real backend TU for
-*every* consumer. The fallback TU sorts **after** `ARCH_SRCS` in
-`libraidjit.a` (GNU ld extracts the first archive member satisfying a
-symbol — order verified empirically). `rj_crc32_fast_test_backend_present()`
-(test-only) reports which state is linked, so `tests/test_crc_fast.c`'s
-dispatch assertions go strict automatically once a backend lands.
-**Delete `src/crc_fast_fallback.c` and its Makefile stanza once all three
-backend TUs are in.**
+Dispatch mechanics: `src/crc_fast.c`'s dispatcher references the
+best-variant entries with strong-undefined references so the linker
+extracts a real backend TU from `libraidjit.a` for *every* consumer.
+`rj_crc32_fast_test_backend_present()` (test-only) reports whether a
+backend TU is linked, so `tests/test_crc_fast.c`'s dispatch assertions
+go strict automatically once a backend lands. (During development a
+transitional `src/crc_fast_fallback.c` provided weak slice-by-8
+definitions of the entry points until all three backend TUs landed; it
+has since been deleted with its Makefile stanza.)
 
 ## Testing
 
@@ -159,7 +156,6 @@ Spec R5 requires the truncation test **plus** a code-review assertion.
 For W4-owned code:
 
 - `src/crc_fast.c`: no arithmetic on `len` at all — pure forwarding.
-- `src/crc_fast_fallback.c`: forwards to `rj_crc32_update`.
 - `src/crc.c` (`rj_crc32_update`, `rj_crc32_update_scalar`): all
   block/byte counts are `size_t`; loops decrement toward zero; no
   32-bit intermediates, no pointer wraparound (buffers are caller-valid

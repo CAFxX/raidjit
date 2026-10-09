@@ -15,18 +15,12 @@
  *
  * The backend entry points are declared here as plain externs. Their
  * definitions live in the per-ISA backend TUs (src/<isa>/crc_fast.c,
- * spec R2.5). Until those land, src/crc_fast_fallback.c provides WEAK
- * definitions (slice-by-8) so the tree builds and the test matrix runs
- * against a correct implementation; the weak definitions lose to the
- * backends' strong ones at link time (GNU ld extracts the first archive
- * member satisfying a strong-undefined symbol and a strong definition
- * always overrides a weak one, so the fallback TU sorts AFTER the
- * backend TUs in the archive -- see the Makefile). The reference from
- * this TU to the backend entry is deliberately a strong-undefined one:
- * that is what forces the linker to prefer a real backend TU over the
- * weak fallback for every consumer, not just the test binaries.
- * tests/test_crc_fast.c distinguishes the two states via
- * rj_crc32_fast_test_backend_present().
+ * spec R2.5), which are unconditionally part of ARCH_SRCS. The reference
+ * from this TU to the backend entry is deliberately a strong-undefined
+ * one: that is what forces the linker to extract the real backend TU
+ * from the archive for every consumer, not just the test binaries.
+ * tests/test_crc_fast.c distinguishes backend-present from
+ * slice-by-8-fallback via rj_crc32_fast_test_backend_present().
  */
 #include "crc.h"
 

@@ -32,16 +32,7 @@ else
 $(error Unsupported ARCH=$(ARCH); want x86_64, aarch64, or riscv64)
 endif
 
-# Weak-fallback definitions for the fast-CRC backend entry points (spec
-# R2.5; W1/W2/W3 land the real per-ISA TUs in ARCH_SRCS). MUST sort after
-# ARCH_SRCS in the archive: GNU ld extracts the first member satisfying a
-# strong-undefined symbol, weak or strong, so the fallback has to lose the
-# race to a real backend TU. Delete this file (and this stanza) once
-# src/x86_64/crc_fast.c, src/aarch64/crc_fast.c and src/riscv/crc_fast.c
-# have all landed.
-CRC_FALLBACK_SRCS = src/crc_fast_fallback.c
-
-SRCS = $(COMMON_SRCS) $(ARCH_SRCS) $(CRC_FALLBACK_SRCS)
+SRCS = $(COMMON_SRCS) $(ARCH_SRCS)
 # Objects live in the arch-specific build dir, mirroring source paths.
 OBJS = $(addprefix $(BUILDDIR)/,$(SRCS:.c=.o))
 HDRS = $(wildcard include/*.h src/*.h src/aarch64/*.h src/riscv/*.h src/x86_64/*.h)
