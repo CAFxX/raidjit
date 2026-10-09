@@ -1,44 +1,35 @@
-# WASM live explorer — resume state (written 2026-10-09 ~01:05 CEST by main agent)
+# WASM Explorer Resume State (worktree ~/workspace/raidjit-wasm, branch wasm-explorer)
 
-Two coordinators died in daemon restarts (2026-10-08 ~23:00, 2026-10-09 ~00:54).
-Respawns paused until the runtime stabilizes; all state below is on disk.
+## Verified good (do not redo)
+- x86: 33/33 parity (clean worktree driver, -DRJ_WASM deterministic const gaps)
+- riscv: 11/11 parity (first clean run)
+- aarch64: 9/10 parity (predtail case failed; fix committed, module rebuild pending)
 
-## What the original coordinator completed (handoff received)
-- x86 module: built AND verified 33/33 parity vs native.
-- Spec: `tools/wasm/SPEC.md` (reviewed). Incorporated: stub-list fixes
-  (two `#ifdef RJ_WASM` VL fixes + pthread stub removal), `-ffp-contract=off`
-  determinism pin, SINGLE_FILE + base64 for file://.
-- The six errored workers were daemon-restart losses, already accounted for.
+## Commits on wasm-explorer
+- 22f98cc: RJ_WASM const-pool gap memset + plan.c ifdefs (from main tree)
+- run_parity.sh: -DRJ_WASM for native driver (deterministic const gaps)
+- tools/gen_live_kernels_page.py (from main tree)
+- rjw_api.c: mask stage-2 tail flags for planid_cand_valid (predtail pinnable)
 
-## On disk, ready to use
-- `tools/wasm/out/raidjit_x86.js` (built 2026-10-08 19:00)
-- `tools/wasm/out/raidjit_aarch64.js` (built 2026-10-08 19:53)
-- Parity harness: `tools/wasm/parity/` (was 33 passed / 0 failed / 54 x86 cases)
-- Capstone 6.0.0-Alpha11 in `tools/wasm/vendor/`
-- `tools/wasm/dis_api.c`, `rjw_api.c`, `rjw_wasm.h`,
-  `cpu_wasm_{x86,aarch64,riscv}.c`
-- Pending-build fixes synced to `~/workspace/tmp/wasm-s93/`
+## Fixes applied
+1. run_parity.sh: native driver built with -DRJ_WASM (fixes flaky const-blob gaps)
+2. rjw_api.c: predtail/notail/maskedtail masked for planid_cand_valid (both in
+   build_pinned_cand and the U-scan loop); feature_gates + backend validate them
+3. dis_api.c: Capstone 6 CS_OPT_MEM setup before cs_open (fixes CS_ERR_MEMSETUP);
+   verified natively: cs_open OK, disassembles correctly
 
-## Tree tangle (MUST resolve first)
-- `~/workspace/raidjit` is on branch `crc-fast`, NOT master, and carries
-  UNCOMMITTED WASM changes (the two VL fixes in src/*/jit.c, test
-  expectation updates, SPEC.md +7). The WASM pivots commit `2c9e8cc` is
-  already an ancestor of crc-fast.
-- The original coordinator reported "native builds blocked on the CRC
-  track's merge conflicts" — this is the same tangle.
-- RECOMMENDATION: do WASM work in a dedicated worktree branched from a
-  clean base (or commit the WASM changes to their own branch first).
-  Never mix WASM and CRC uncommitted changes. Coordinate with the CRC
-  track; do not fight over the working tree.
+## In progress
+- disasm.js rebuild (with mem_setup fix) — running
+- aarch64.js rebuild (with predtail fix) — pending after disasm
 
-## Still to do
-1. Verify the x86 33/33 claim independently (don't trust the handoff).
-2. aarch64/riscv/disasm builds from the wasm-s93 fixes.
-3. Capstone-wasm disassembly wiring.
-4. The live page (any combo compiled live; single + side-by-side A/B with
-   deep links; replaces the static page).
-5. Byte-identical wasm-vs-native proof, peer reviews, self-attack.
+## Remaining
+1. aarch64 parity 10/10 (after rebuild)
+2. disasm.js smoke test (after rebuild)
+3. S9.4 disasm differential vs objdump
+4. Live page: python3 tools/gen_live_kernels_page.py
+5. S9.3 native no-regression (make kernels before/after)
+6. S9.5 native suite, S9.6 page smoke, S9.7 peer reviews, S9.8 self-attack, S9.9 docs
 
-## Constraints (repeat every resume)
-No timing benchmarks. No perf guard. No push. `nice` everything.
-`TMPDIR=~/workspace/tmp`. Additive `#ifdef RJ_WASM` only.
+## Key lessons
+- Parity driver MUST be rebuilt from worktree sources; cached main-tree driver is stale
+- Capstone 6.0.0-Alpha11 requires cs_option(NULL, CS_OPT_MEM, ...) before cs_open
