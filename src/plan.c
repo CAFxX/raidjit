@@ -1,4 +1,5 @@
 #include "plan.h"
+#include "fused.h"
 #include "gf.h"
 #include "ports.h"
 #include "prefetch_calib.h"
@@ -85,6 +86,8 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
                                 int U, int remat, int pipe)
 {
     int n_out = pl->n_out;
+    /* Phase 2: one vector register per stream for fold state. */
+    
     if (isa == ISA_PEXT) {
         /* No PEXT backend exists (RISC-V P-extension work is deferred),
          * so no pressure model is proven. Fail loudly instead of
@@ -117,8 +120,10 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
              * per nontrivial row instead (tables from hreg). The
              * single t temp is dead (replaced by D/Dn). */
             if (pl->kind == P_HORNER)
-                return (n_out + 2) * U + 5 + 2 * horner_ntriv(pl);
-            return (n_out + 2) * U + 6;
+                return ((n_out + 2) * U + 5 + 2 * horner_ntriv(pl));
+
+            return ((n_out + 2) * U + 6);
+
         }
         if (a64) {
             /* accs (n_out*U) + D,Dn (2*U) + tlo,thi,r1,r2 (4) +
@@ -126,20 +131,25 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
              * no r1: the staged dataset feeds the input directly) and
              * compacts 2 hreg per nontrivial row. */
             if (pl->kind == P_HORNER)
-                return (n_out + 2) * U + 4 + 2 * horner_ntriv(pl);
-            return (n_out + 2) * U + 7;
+                return ((n_out + 2) * U + 4 + 2 * horner_ntriv(pl));
+
+            return ((n_out + 2) * U + 7);
+
         }
         /* RVV: accs (n_out*U) + vd0/D (U) + Dn (U) + tlo,thi,r1,r2,
          * tbl_lo,tbl_hi,mask (7); HORNER: tlo,thi,r1,r2,mask (5) +
          * 2 hreg per nontrivial row. Logical registers; the caller
          * scales by lmul. */
         if (pl->kind == P_HORNER)
-            return (n_out + 2) * U + 5 + 2 * horner_ntriv(pl);
-        return (n_out + 2) * U + 7;
+            return ((n_out + 2) * U + 5 + 2 * horner_ntriv(pl));
+
+        return ((n_out + 2) * U + 7);
+
     }
     if (pl->kind == P_XOR)
         /* accumulators + one load temp (cg->t / vd0) */
-        return n_out * U + 1;
+        return (n_out * U + 1);
+
     int x86 = (isa == ISA_SSE || isa == ISA_AVX2 || isa == ISA_AVX512);
     int a64 = (isa == ISA_NEON || isa == ISA_SVE);
     int gfni = (mul == MUL_GFNI);
@@ -162,8 +172,10 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
         if (pl->kind == P_HORNER) {
             int ntriv = horner_ntriv(pl);
             if (remat)
-                return n_out * U + (gfni ? 3 : 7);
-            return n_out * U + (gfni ? 2 : 6) + (gfni ? ntriv : 2 * ntriv);
+                return (n_out * U + (gfni ? 3 : 7));
+
+            return (n_out * U + (gfni ? 2 : 6) + (gfni ? ntriv : 2 * ntriv));
+
         }
         /* P_MULACC / P_DELTA (DELTA reuses r1/t2 as its delta temp) */
         if (gfni) {
@@ -171,14 +183,17 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
              * table and temp are only used for c outside {0,1}, and the
              * delta temp dt (= t2) is only read on the SSE path, which
              * GFNI never takes. */
-            return n_out * U + (nontriv ? 3 : 1);
+            return (n_out * U + (nontriv ? 3 : 1));
+
         }
         if (nontriv) {
             /* PDELTA on AVX512 pins the NIBHI table in tbl2 (item 7):
              * one more vector register than the ping-pong form. */
             if (pl->kind == P_DELTA && isa == ISA_AVX512)
-                return n_out * U + 8;
-            return n_out * U + 7;
+                return (n_out * U + 8);
+
+            return (n_out * U + 7);
+
         }
         /* All-trivial: the nibble split never runs, so tlo/thi/r2/tbl/
          * mask are dead. r1 survives on SSE as the delta temp (P_DELTA's
@@ -198,15 +213,18 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
          * reloaded into tbl_lo; no hreg). */
         if (pl->kind == P_HORNER) {
             if (remat)
-                return n_out * U + 6;
-            return n_out * U + 5 + 2 * horner_ntriv(pl);
+                return (n_out * U + 6);
+
+            return (n_out * U + 5 + 2 * horner_ntriv(pl));
+
         }
         /* P_MULACC / P_DELTA: all-trivial kills tlo/thi/r2/tbl_lo/tbl_hi/
          * mask, but r1 stays live as the P_DELTA delta temp on both NEON
          * and SVE (old^new is formed into r1 for every column
          * unconditionally). (P_MULACC all-trivial is unreachable; its r1
          * would be dead.) */
-        return n_out * U + (nontriv ? 8 : (pl->kind == P_DELTA ? 2 : 1));
+        return (n_out * U + (nontriv ? 8 : (pl->kind == P_DELTA ? 2 : 1)));
+
     }
     /* RVV: the backend stages U input chunks in vd0..vd0+U-1, then the
      * usual temps (tlo,thi,r1,r2,tbl_lo,tbl_hi,mask for MULACC/DELTA;
@@ -220,39 +238,48 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
          * tables, no mask. remat is meaningless here (no tables to
          * rematerialize); the planner never enumerates it. */
         if (pl->kind == P_HORNER)
-            return (n_out + 1) * U + 4 + horner_ntriv(pl);
+            return ((n_out + 1) * U + 4 + horner_ntriv(pl));
+
         /* P_MULACC / P_DELTA: all-trivial kills r1/r2/r3/cvec/kvec;
          * tlo/thi stay live as the P_DELTA delta temps (the body borrows
          * them to load old/new for every column unconditionally).
          * (P_MULACC all-trivial is unreachable; its tlo/thi would be
          * dead.) */
         if (nontriv)
-            return (n_out + 1) * U + (pl->kind == P_DELTA ? 7 : 5);
+            return ((n_out + 1) * U + (pl->kind == P_DELTA ? 7 : 5));
+
         if (pl->kind == P_DELTA)
-            return (n_out + 1) * U + 2;
-        return (n_out + 1) * U;
+            return ((n_out + 1) * U + 2);
+
+        return ((n_out + 1) * U);
+
     }
     if (pl->kind == P_HORNER) {
         if (remat)
-            return (n_out + 1) * U + 6;
-        return (n_out + 1) * U + 5 + 2 * horner_ntriv(pl);
+            return ((n_out + 1) * U + 6);
+
+        return ((n_out + 1) * U + 5 + 2 * horner_ntriv(pl));
+
     }
     /* P_MULACC / P_DELTA: all-trivial kills r1/r2/tbl_lo/tbl_hi/mask;
      * tlo/thi stay live as the P_DELTA delta temps (the body borrows
      * them to load old/new for every column unconditionally).
      * (P_MULACC all-trivial is unreachable; its tlo/thi would be dead.) */
     if (nontriv)
-        return (n_out + 1) * U + 7;
+        return ((n_out + 1) * U + 7);
+
     if (pl->kind == P_DELTA)
-        return (n_out + 1) * U + 2;
+        return ((n_out + 1) * U + 2);
+
     /* P_MULACC all-trivial: only the U data regs survive. Unlike x86's
      * separate t temp, RVV stages inputs into vd0..vd0+U-1, already
      * counted in (n_out+1)*U, so no extra register is needed. */
-    return (n_out + 1) * U;
+    return ((n_out + 1) * U);
+
 }
 
 int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
-                   int pipe, int maskedtail)
+                   int pipe, int maskedtail, int crc_fold)
 {
     int n = plan_need_regs_inner(isa, mul, pl, U, remat, pipe);
     if (maskedtail) {
@@ -264,6 +291,10 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
          * bug. */
         assert(isa == ISA_RVV);
         n += 1;
+    }
+    if (crc_fold) {
+        /* Phase 2: one vector register per stream for fold state. */
+        n += pl->n_in + pl->n_out;
     }
     return n;
 }
@@ -835,7 +866,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int nU = 8;
             for (int ui = 0; ui < nU && n < maxout; ui++) {
                 int U = Us[ui];
-                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
+                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0, pl->want_crc);
                 if (need > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
@@ -849,9 +880,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int ui = 0; ui < nU && n < maxout; ui++) {
                     int U = Us[ui];
                     int need_normal =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0, pl->want_crc);
                     int need_remat =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0, 0, pl->want_crc);
                     if (need_normal <= nregs)
                         continue;
                     if (need_remat > nregs)
@@ -902,7 +933,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int li = 0; li < 4 && n < maxout; li++) {
                     int U = Us[ui];
                     int lmul = lmuls[li];
-                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0, 0) *
+                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0, 0, pl->want_crc) *
                                lmul;
                     if (need > nregs)
                         continue;
@@ -925,10 +956,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                         int U = Us[ui];
                         int lmul = lmuls[li];
                         int need_normal =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0, 0, pl->want_crc) *
                             lmul;
                         int need_remat =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0, 0, pl->want_crc) *
                             lmul;
                         if (need_normal <= nregs)
                             continue;
@@ -967,7 +998,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         if (pl->kind == P_XOR) {
             for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                 int U = Us[ui];
-                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0) > nregs)
+                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0, pl->want_crc) > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
             }
@@ -991,7 +1022,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     /* Exact backend register need (accumulators n_out*U
                      * plus the backend's temp/table registers); see
                      * plan_need_regs. */
-                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0);
+                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0, pl->want_crc);
                     if (need > nregs)
                         continue;
                     out[n++] = (cand_t){.isa = isa, .mul = muls[mi], .U = U};
@@ -1013,9 +1044,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                         int U = Us[ui];
                         int need_normal =
-                            plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0, pl->want_crc);
                         int need_remat =
-                            plan_need_regs(isa, muls[mi], pl, U, 1, 0, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 1, 0, 0, pl->want_crc);
                         if (need_normal <= nregs)
                             continue; /* normal already fits; remat pointless */
                         if (need_remat > nregs)
@@ -1095,9 +1126,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             if (xorsched_need_regs(isa, pl, U) * lmul > isa_nregs(isa))
                 continue;
             long u_naive =
-                xorsched_version_uops(pl->xor_sched, pl, isa, U, 0, 0, 0);
+                xorsched_version_uops(pl->xor_sched, pl, isa, U, 0, 0, pl->want_crc);
             long u_sched =
-                xorsched_version_uops(pl->xor_sched, pl, isa, U, 1, 0, 0);
+                xorsched_version_uops(pl->xor_sched, pl, isa, U, 1, 0, pl->want_crc);
             if (u_sched >= u_naive)
                 continue;
             out[n] = out[i];
@@ -1182,7 +1213,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             /* Pressure filter: the twin needs one more live register
              * (the multishift control) than plan_need_regs models; keep
              * the +1 in lockstep with jit_build_version's want_regs. */
-            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0, 0) + 1 >
+            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0, 0, pl->want_crc) + 1 >
                 isa_nregs(ISA_AVX512))
                 continue;
             /* Static uop gate (per (i,u) split): the multishift split
@@ -1346,6 +1377,18 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             out[n].prefetch_dist = d;
             n++;
         }
+    }
+    /* Phase 2 (interleaved CRC fold): when the plan wants CRC and the
+     * uarch gate is open, every candidate folds (no plain candidates).
+     * When the gate is closed, return zero candidates so the caller
+     * falls back to the scalar path (fused.c recompiles want_crc=0).
+     * The gate is re-checked by the backend at build time (defense in
+     * depth). */
+    if (pl->want_crc) {
+        if (!fused_crc_interleave_ok(cpu))
+            return 0;
+        for (int i = 0; i < n; i++)
+            out[i].crc_fold = 1;
     }
     return n;
 }

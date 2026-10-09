@@ -1953,7 +1953,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         int want_regs = cand->xorsched ? xorsched_need_regs(ISA_RVV, pl, U)
                                        : plan_need_regs(ISA_RVV, cand->mul,
                                                        pl, U, cand->remat, cand->pipe,
-                                                       0);
+                                                       0, cand->crc_fold);
         /* The maskedtail twin reserves v0 on top of the base map, for
          * either body shape. */
         want_regs += cand->maskedtail ? 1 : 0;

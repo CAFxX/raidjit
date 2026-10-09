@@ -28,3 +28,9 @@ int rj_fused_sub_npar(const rj_fused *f, int idx);  /* -1 unless ENCODE */
  * trampoline slot. Same contract as rj_fn_fused. */
 void rj_fused_call(const rj_fused *f, const void *const *in, void *const *out,
                    size_t len, uint32_t *crc);
+
+/* Phase 2 (interleaved CRC fold) microarchitecture gate: 1 if in-kernel
+ * CRC folding is allowed on this CPU, 0 for scalar fallback. Conservative:
+ * unknown/new µarchs always return 0. See
+ * hidden_files/crc_fold_phase2_SPEC.md §2. */
+int fused_crc_interleave_ok(const rj_cpu_info *cpu);
