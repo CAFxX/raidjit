@@ -1058,6 +1058,9 @@ char *rjw_compile(const char *json)
         cJSON_AddStringToObject(r, "topology", topo_internal_name(topo));
         cJSON_AddStringToObject(r, "operation", kind);
         cJSON_AddStringToObject(r, "strategy", kind_name(pl.kind));
+        /* plan flags for client-side twin grey-out */
+        cJSON_AddNumberToObject(r, "plan_xor_sched", pl.xor_sched ? 1 : 0);
+        cJSON_AddNumberToObject(r, "plan_n_out", pl.n_out);
         cJSON_AddStringToObject(r, "isa", isa_name(bw->cand.isa));
         cJSON_AddStringToObject(r, "mul", mul_name(bw->cand.mul));
         cJSON_AddNumberToObject(r, "unroll", bw->cand.U);

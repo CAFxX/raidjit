@@ -190,22 +190,26 @@ const TAIL_TWINS = ["notail", "predtail", "maskedtail"];
 
 /* Plan-kind gates for twins. The strategy (plan kind) is cached per
  * (topology, operation); a probe compile with auto candidate populates it
- * when unknown. Only these plan-deterministic gates are greyed out. */
+ * when unknown. Only these plan-deterministic gates are greyed out.
+ * s.lastPlan holds {strategy, xor_sched, n_out} from the last compile. */
 const TWIN_PLAN_OK = {
-  remat:    (st) => st === "horner",
-  xorbit:   (st) => st === "mulacc" || st === "delta" || st === "horner",
-  xorsched: (st) => st === "xor",
-  permi2b:  (st) => st === "mulacc" || st === "delta",
-  mshift:   (st) => st === "mulacc" || st === "delta" || st === "horner",
-  pipe:     (st) => st === "mulacc" || st === "horner",
-  ternlog:  (st) => st === "xor" || st === "mulacc" || st === "delta",
+  remat:    (p) => p.strategy === "horner",
+  xorbit:   (p) => p.strategy === "mulacc" || p.strategy === "delta" ||
+    p.strategy === "horner",
+  xorsched: (p) => p.strategy === "xor" && p.xor_sched === 1,
+  permi2b:  (p) => p.strategy === "mulacc" || p.strategy === "delta",
+  mshift:   (p) => p.strategy === "mulacc" || p.strategy === "delta" ||
+    p.strategy === "horner",
+  pipe:     (p) => p.strategy === "mulacc" || p.strategy === "horner",
+  ternlog:  (p) => (p.strategy === "xor" && p.n_out >= 2) ||
+    p.strategy === "mulacc" || p.strategy === "delta",
 };
 const strategyCache = {};
 function strategyKey(s) {
   return JSON.stringify([s.topology, s.op.kind]);
 }
 /* Probe the plan kind with an auto compile (cheap, compile-only). Returns
- * the strategy string or null on failure. */
+ * {strategy, xor_sched, n_out} or null on failure. */
 async function probeStrategy(P) {
   const s = P.state;
   const key = strategyKey(s);
@@ -215,8 +219,10 @@ async function probeStrategy(P) {
   const doc = buildDoc({ ...s, candAuto: true });
   const r = compileKernel(mod, doc);
   if (r.ok && r.strategy) {
-    strategyCache[key] = r.strategy;
-    return r.strategy;
+    const plan = { strategy: r.strategy, xor_sched: r.plan_xor_sched | 0,
+      n_out: r.plan_n_out | 0 };
+    strategyCache[key] = plan;
+    return plan;
   }
   return null;
 }
@@ -263,11 +269,11 @@ function sanitizeIsaGated(s) {
     s.cand.mul = "auto";
   }
 }
-/* Uncheck twins that the plan kind invalidates (needs s.lastStrategy). */
+/* Uncheck twins that the plan kind invalidates (needs s.lastPlan). */
 function sanitizePlanGated(s) {
-  if (!s.lastStrategy) return;
+  if (!s.lastPlan) return;
   for (const t of TWINS) {
-    if (s.twins[t] && TWIN_PLAN_OK[t] && !TWIN_PLAN_OK[t](s.lastStrategy)) {
+    if (s.twins[t] && TWIN_PLAN_OK[t] && !TWIN_PLAN_OK[t](s.lastPlan)) {
       s.twins[t] = false;
     }
   }
@@ -281,7 +287,7 @@ function defaultPane() {
     candAuto: true,
     cand: { mul: "auto", U: 0, lmul: 1, prefetch_dist: 0 },
     twins: {},
-    lastStrategy: null,
+    lastPlan: null,
     options: { loop_align: 0, emit_endbr: false, emit_shadow_stack: false },
   };
 }
@@ -460,19 +466,19 @@ function buildPane(state) {
     sanitizeIsaGated(state);
     refreshPane(P); scheduleCompile(P); };
   P.ctorSel.onchange = () => { state.topology = ctorDefaults(P.ctorSel.value);
-    state.lastStrategy = null;
+    state.lastPlan = null;
     refreshPane(P); scheduleCompile(P);
-    probeStrategy(P).then(st => { if (st) { state.lastStrategy = st;
+    probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
       sanitizePlanGated(state); refreshPane(P); } }); };
   P.opSel.onchange = () => { state.op = { kind: P.opSel.value };
-    state.lastStrategy = null;
+    state.lastPlan = null;
     refreshPane(P); scheduleCompile(P);
-    probeStrategy(P).then(st => { if (st) { state.lastStrategy = st;
+    probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
       sanitizePlanGated(state); refreshPane(P); } }); };
   P.autoChk.onchange = () => { state.candAuto = P.autoChk.checked;
     refreshPane(P); scheduleCompile(P);
-    if (!state.candAuto && !state.lastStrategy) {
-      probeStrategy(P).then(st => { if (st) { state.lastStrategy = st;
+    if (!state.candAuto && !state.lastPlan) {
+      probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
         sanitizePlanGated(state); refreshPane(P); } });
     } };
   refreshPane(P);
@@ -575,8 +581,8 @@ function refreshPane(P) {
       /* grey out twins excluded by another selected twin in the same
        * exclusivity group, by ISA gate, or by plan-kind gate */
       const isaOk = !TWIN_ISA_OK[t] || TWIN_ISA_OK[t](effIsa(s));
-      const planOk = !TWIN_PLAN_OK[t] || !s.lastStrategy ||
-        TWIN_PLAN_OK[t](s.lastStrategy);
+      const planOk = !TWIN_PLAN_OK[t] || !s.lastPlan ||
+        TWIN_PLAN_OK[t](s.lastPlan);
       let excl = false;
       if (BODY_TWINS.includes(t)) {
         excl = BODY_TWINS.some(o => o !== t && s.twins[o]);
@@ -648,11 +654,17 @@ async function runPane(P) {
   P.status.textContent = "ok";
   P.status.className = "status ok";
   /* capture plan kind for twin grey-out; refresh if it changed */
-  if (r.strategy && r.strategy !== s.lastStrategy) {
-    s.lastStrategy = r.strategy;
-    strategyCache[strategyKey(s)] = r.strategy;
-    sanitizePlanGated(s);
-    refreshPane(P);
+  if (r.strategy) {
+    const plan = { strategy: r.strategy, xor_sched: r.plan_xor_sched | 0,
+      n_out: r.plan_n_out | 0 };
+    const key = strategyKey(s);
+    if (!s.lastPlan || s.lastPlan.strategy !== plan.strategy ||
+        s.lastPlan.xor_sched !== plan.xor_sched) {
+      s.lastPlan = plan;
+      strategyCache[key] = plan;
+      sanitizePlanGated(s);
+      refreshPane(P);
+    }
   }
   const d = await disassemble(DISASM_ARCH[s.isa], r.code);
   P.disasm.innerHTML = "";
@@ -734,7 +746,7 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">page build <code>2026-10-09f</code> (per-ctor topology defaults;
+<p class="note">page build <code>2026-10-09g</code> (per-ctor topology defaults;
 stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and
