@@ -932,7 +932,12 @@ char *rjw_compile(const char *json)
              * build_pinned_cand): the shape check is tail-agnostic. */
             int pt_notail = pinned.notail, pt_predtail = pinned.predtail;
             int pt_maskedtail = pinned.maskedtail;
-            for (int U = 1; U <= 8; U++) {
+            /* Largest-first: matches plan_candidates' Us[] order
+             * ({8,7,6,5,4,3,2,1}). heuristic_select keeps the earliest
+             * candidate on ties (strict <), so this resolves U-ties the
+             * same way auto mode does. Smallest-first used to resolve
+             * memory-bound ties to U=1 while auto chose U=8. */
+            for (int U = 8; U >= 1; U--) {
                 pinned.U = U;
                 pinned.notail = pinned.predtail = pinned.maskedtail = 0;
                 int vok = planid_cand_valid(&pl, &pinned, e2, sizeof(e2));

@@ -185,6 +185,49 @@ const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
 /* pairwise-exclusive body twins */
 const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat"];
 
+/* Effective ISA for a pane: the pinned isaVer wins when set, otherwise the
+ * target implies it. Used to grey out options that are ISA-invalid. */
+function effIsa(s) {
+  if (!s.candAuto && s.cand.isaVer) return s.cand.isaVer;
+  const t = s.target;
+  if (t === "avx512-gfni") return "avx512";
+  if (t === "avx2") return "avx2";
+  if (t === "sse") return "sse";
+  if (t === "sve2") return "sve";
+  if (t === "neon") return "neon";
+  return "rvv";
+}
+/* ISA-deterministic twin gates (from src/plan.c enumeration and the per-ISA
+ * backend asserts in src/.../jit.c). Only these are greyed out client-side;
+ * plan-kind gates (P_XOR vs P_MULACC etc.) stay backend-validated. */
+const TWIN_ISA_OK = {
+  ternlog:    (isa) => isa === "avx512",
+  permi2b:    (isa) => isa === "avx512",
+  mshift:     (isa) => isa === "avx512",
+  maskedtail: (isa) => isa === "avx512",
+  pipe:       (isa) => isa === "neon" || isa === "sve" || isa === "rvv",
+  predtail:   (isa) => isa === "sve",
+};
+/* ISA-deterministic mul gates. nibble is valid everywhere; gfni needs the
+ * avx512-gfni target (cpu->gfni) at full AVX-512; zvbc needs rvv-zvbc32e. */
+function mulIsaOk(m, s) {
+  if (m === "gfni") return s.isa === "x86" && s.target === "avx512-gfni" &&
+    effIsa(s) === "avx512";
+  if (m === "zvbc") return s.isa === "riscv" && s.target === "rvv-zvbc32e";
+  return true;
+}
+/* Uncheck twins / reset mul that the new ISA or target invalidates, so a
+ * configuration change can never leave a selected-but-impossible option. */
+function sanitizeIsaGated(s) {
+  const isa = effIsa(s);
+  for (const t of TWINS) {
+    if (s.twins[t] && TWIN_ISA_OK[t] && !TWIN_ISA_OK[t](isa)) s.twins[t] = false;
+  }
+  if (s.cand.mul && s.cand.mul !== "auto" && !mulIsaOk(s.cand.mul, s)) {
+    s.cand.mul = "auto";
+  }
+}
+
 function defaultPane() {
   return {
     isa: "x86", target: "avx512-gfni", cpu: {},
@@ -299,11 +342,12 @@ function el(tag, attrs, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
-function select(opts, val) {
+function select(opts, val, isDisabled) {
   const s = el("select");
   for (const o of opts) {
     const op = el("option", { value: o }, o);
     if (o === val) op.selected = true;
+    if (isDisabled && isDisabled(o)) op.disabled = true;
     s.appendChild(op);
   }
   return s;
@@ -363,10 +407,12 @@ function buildPane(state) {
   P.isaSel.onchange = () => {
     state.isa = P.isaSel.value;
     state.target = TARGETS[state.isa][0];
+    sanitizeIsaGated(state);
     refreshPane(P); scheduleCompile(P);
   };
   P.targetSel.onchange = () => { state.target = P.targetSel.value;
-    scheduleCompile(P); };
+    sanitizeIsaGated(state);
+    refreshPane(P); scheduleCompile(P); };
   P.ctorSel.onchange = () => { state.topology = ctorDefaults(P.ctorSel.value);
     refreshPane(P); scheduleCompile(P); };
   P.opSel.onchange = () => { state.op = { kind: P.opSel.value };
@@ -437,11 +483,12 @@ function refreshPane(P) {
       const iv = select(["auto"].concat(isaVers),
         c.isaVer || "auto");
       iv.onchange = () => { c.isaVer = iv.value === "auto" ? undefined
-        : iv.value; scheduleCompile(P); };
+        : iv.value; sanitizeIsaGated(s); refreshPane(P); scheduleCompile(P); };
       r1.appendChild(iv);
     }
     r1.appendChild(el("label", {}, "mul "));
-    const mul = select(["auto", "nibble", "gfni", "zvbc"], c.mul || "auto");
+    const mul = select(["auto", "nibble", "gfni", "zvbc"], c.mul || "auto",
+      (o) => !mulIsaOk(o, s));
     mul.onchange = () => { c.mul = mul.value; scheduleCompile(P); };
     r1.appendChild(mul);
     r1.appendChild(el("label", {}, " U (0=auto) "));
@@ -469,10 +516,14 @@ function refreshPane(P) {
       cb.checked = !!s.twins[t];
       cb.onchange = () => { s.twins[t] = cb.checked; refreshPane(P);
         scheduleCompile(P); };
-      /* grey out body twins excluded by another selected body twin */
+      /* grey out body twins excluded by another selected body twin, and
+       * twins whose ISA gate is closed for the effective ISA */
+      const isaOk = !TWIN_ISA_OK[t] || TWIN_ISA_OK[t](effIsa(s));
       if (BODY_TWINS.includes(t)) {
         const other = BODY_TWINS.some(o => o !== t && s.twins[o]);
-        cb.disabled = other && !s.twins[t];
+        cb.disabled = (other && !s.twins[t]) || !isaOk;
+      } else {
+        cb.disabled = !isaOk;
       }
       lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + t));
       P.twinBox.appendChild(lab);
@@ -613,7 +664,7 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">page build <code>2026-10-09d</code> (per-ctor topology defaults;
+<p class="note">page build <code>2026-10-09e</code> (per-ctor topology defaults;
 stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and
