@@ -2146,10 +2146,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                       version_t *v, char *err, size_t errlen)
 {
     (void)cpu;
-    /* Rematerialization is implemented only for P_HORNER; the planner
-     * never generates remat twins for other plan kinds, and the backend
-     * would silently ignore the flag elsewhere. */
-    assert(!(cand->remat && pl->kind != P_HORNER));
+    /* Rematerialization is implemented only for P_HORNER. User-reachable
+     * via pinned candidates (WASM API): fail cleanly, never abort. */
+    if (cand->remat && pl->kind != P_HORNER) {
+        snprintf(err, errlen,
+                 "x86_64 backend: remat twin needs P_HORNER");
+        return -1;
+    }
     /* Software-pipelined loop twin (track I8): implemented for the
      * P_MULACC/P_HORNER nibble bodies only (non-remat, no other twins).
      * Anything else fails the build cleanly -- never wrong code. The
@@ -2168,34 +2171,84 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     }
     /* Length-dispatch tail twins are disjoint: a version is never both.
      * The masked tail needs AVX-512 (opmask registers); the vpermi2b
-     * twin needs the AVX-512 MULACC/DELTA nibble path. */
-    assert(!(cand->maskedtail && cand->notail));
-    assert(!(cand->maskedtail && cand->isa != ISA_AVX512));
-    assert(!(cand->permi2b && (cand->isa != ISA_AVX512 ||
-                               cand->mul != MUL_NIBBLE ||
-                               (pl->kind != P_MULACC && pl->kind != P_DELTA))));
+     * twin needs the AVX-512 MULACC/DELTA nibble path. User-reachable
+     * via pinned candidates: fail cleanly, never abort. */
+    if (cand->maskedtail && cand->notail) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail and notail are disjoint");
+        return -1;
+    }
+    if (cand->maskedtail && cand->isa != ISA_AVX512) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail needs AVX-512");
+        return -1;
+    }
+    /* Masked tail plan-kind gate (mirrors api.c's twin gate and
+     * gen_tail_masked's assertion): P_XOR plain body, or GFNI multiply.
+     * Nibble masked tails are not implemented. */
+    if (cand->maskedtail) {
+        int gfni = cand->mul == MUL_GFNI;
+        int ok = (pl->kind == P_XOR && !cand->xorsched && !cand->ternlog) ||
+                 (gfni && !cand->permi2b &&
+                  (pl->kind == P_MULACC || pl->kind == P_DELTA ||
+                   pl->kind == P_HORNER));
+        if (!ok) {
+            snprintf(err, errlen,
+                     "x86_64 backend: maskedtail needs P_XOR plain or GFNI multiply");
+            return -1;
+        }
+    }
+    if (cand->permi2b && (cand->isa != ISA_AVX512 ||
+                          cand->mul != MUL_NIBBLE ||
+                          (pl->kind != P_MULACC && pl->kind != P_DELTA))) {
+        snprintf(err, errlen,
+                 "x86_64 backend: permi2b needs AVX-512 MULACC/DELTA nibble");
+        return -1;
+    }
     /* Bit-program twin (track A1): only for GF-multiply rows, only from
-     * a MUL_NIBBLE base, never combined with the other body twins. */
-    assert(!(cand->xorbit &&
-             (pl->kind != P_MULACC && pl->kind != P_DELTA &&
-              pl->kind != P_HORNER)));
-    assert(!(cand->xorbit && cand->mul != MUL_NIBBLE));
-    assert(!(cand->xorbit &&
-             (cand->ternlog || cand->permi2b || cand->remat ||
-              cand->xorsched)));
+     * a MUL_NIBBLE base, never combined with the other body twins.
+     * User-reachable via pinned candidates: fail cleanly. */
+    if (cand->xorbit &&
+        (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+         pl->kind != P_HORNER)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit needs GF-multiply rows");
+        return -1;
+    }
+    if (cand->xorbit && cand->mul != MUL_NIBBLE) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit needs MUL_NIBBLE");
+        return -1;
+    }
+    if (cand->xorbit &&
+        (cand->ternlog || cand->permi2b || cand->remat ||
+         cand->xorsched)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit excludes other body twins");
+        return -1;
+    }
     /* VPMULTISHIFTQB nibble twin (track I2): AVX-512 MUL_NIBBLE
      * GF-multiply rows only (P_MULACC/P_DELTA/P_HORNER), never combined
      * with the other body twins (xorbit/permi2b/remat/xorsched are
      * different bodies/splits). Independent of ternlog (split vs fold).
      * The instruction is AVX512_VBMI; the api/planner gate additionally
-     * requires cpu->vbmi before the twin can be selected. */
-    assert(!(cand->mshift &&
-             (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE ||
-              (pl->kind != P_MULACC && pl->kind != P_DELTA &&
-               pl->kind != P_HORNER))));
-    assert(!(cand->mshift &&
-             (cand->xorbit || cand->permi2b || cand->remat ||
-              cand->xorsched)));
+     * requires cpu->vbmi before the twin can be selected.
+     * User-reachable via pinned candidates: fail cleanly. */
+    if (cand->mshift &&
+        (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE ||
+         (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+          pl->kind != P_HORNER))) {
+        snprintf(err, errlen,
+                 "x86_64 backend: mshift needs AVX-512 MULACC/DELTA/HORNER nibble");
+        return -1;
+    }
+    if (cand->mshift &&
+        (cand->xorbit || cand->permi2b || cand->remat ||
+         cand->xorsched)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: mshift excludes other body twins");
+        return -1;
+    }
     memset(v, 0, sizeof(*v));
     v->cand = *cand;
     v->kind = pl->kind;

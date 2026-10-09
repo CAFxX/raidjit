@@ -1351,8 +1351,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         return -1;
     }
     /* The planner never generates remat twins for other plan kinds, and
-     * the backend only implements remat for P_HORNER. */
-    assert(!(cand->remat && pl->kind != P_HORNER));
+     * the backend only implements remat for P_HORNER. User-reachable
+     * via pinned candidates: fail cleanly, never abort. */
+    if (cand->remat && pl->kind != P_HORNER) {
+        snprintf(err, errlen,
+                 "riscv backend: remat twin needs P_HORNER");
+        return -1;
+    }
     /* Software-pipelined loop twin (track I8): implemented for the
      * P_MULACC/P_HORNER nibble bodies only (non-remat). Anything else
      * fails the build cleanly -- never wrong code; the planner only
