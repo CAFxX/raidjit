@@ -26,6 +26,10 @@ table.disasm td.bytes{color:#064}
 .status{font-weight:bold;margin:.3em 0}
 .status.busy{color:#a60}.status.ok{color:#070}.status.err{color:#a00}
 .twin{display:inline-block;margin:.15em .6em .15em 0;font-size:.85em}
+.twin input:disabled{cursor:not-allowed;opacity:.45}
+.twin:has(input:disabled){color:#999;cursor:not-allowed}
+select option:disabled{color:#999}
+input:disabled{cursor:not-allowed}
 .cand{margin:.3em 0}
 .toolbar{margin:.5em 0}
 .note{font-size:.85em;color:#555;max-width:72em}
@@ -34,7 +38,7 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">page build <code>2026-10-09e</code> (per-ctor topology defaults;
+<p class="note">page build <code>2026-10-09f</code> (per-ctor topology defaults;
 stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and
@@ -225,6 +229,42 @@ const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
                "permi2b", "xorsched", "xorbit", "mshift", "pipe"];
 /* pairwise-exclusive body twins */
 const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat"];
+/* pairwise-exclusive tail twins (backend: "maskedtail and notail are disjoint",
+ * predtail disjoint from notail) */
+const TAIL_TWINS = ["notail", "predtail", "maskedtail"];
+
+/* Plan-kind gates for twins. The strategy (plan kind) is cached per
+ * (topology, operation); a probe compile with auto candidate populates it
+ * when unknown. Only these plan-deterministic gates are greyed out. */
+const TWIN_PLAN_OK = {
+  remat:    (st) => st === "horner",
+  xorbit:   (st) => st === "mulacc" || st === "delta" || st === "horner",
+  xorsched: (st) => st === "xor",
+  permi2b:  (st) => st === "mulacc" || st === "delta",
+  mshift:   (st) => st === "mulacc" || st === "delta" || st === "horner",
+  pipe:     (st) => st === "mulacc" || st === "horner",
+  ternlog:  (st) => st === "xor" || st === "mulacc" || st === "delta",
+};
+const strategyCache = {};
+function strategyKey(s) {
+  return JSON.stringify([s.topology, s.op.kind]);
+}
+/* Probe the plan kind with an auto compile (cheap, compile-only). Returns
+ * the strategy string or null on failure. */
+async function probeStrategy(P) {
+  const s = P.state;
+  const key = strategyKey(s);
+  if (strategyCache[key]) return strategyCache[key];
+  let mod;
+  try { mod = await getModule(s.isa); } catch (e) { return null; }
+  const doc = buildDoc({ ...s, candAuto: true });
+  const r = compileKernel(mod, doc);
+  if (r.ok && r.strategy) {
+    strategyCache[key] = r.strategy;
+    return r.strategy;
+  }
+  return null;
+}
 
 /* Effective ISA for a pane: the pinned isaVer wins when set, otherwise the
  * target implies it. Used to grey out options that are ISA-invalid. */
@@ -268,6 +308,15 @@ function sanitizeIsaGated(s) {
     s.cand.mul = "auto";
   }
 }
+/* Uncheck twins that the plan kind invalidates (needs s.lastStrategy). */
+function sanitizePlanGated(s) {
+  if (!s.lastStrategy) return;
+  for (const t of TWINS) {
+    if (s.twins[t] && TWIN_PLAN_OK[t] && !TWIN_PLAN_OK[t](s.lastStrategy)) {
+      s.twins[t] = false;
+    }
+  }
+}
 
 function defaultPane() {
   return {
@@ -277,6 +326,7 @@ function defaultPane() {
     candAuto: true,
     cand: { mul: "auto", U: 0, lmul: 1, prefetch_dist: 0 },
     twins: {},
+    lastStrategy: null,
     options: { loop_align: 0, emit_endbr: false, emit_shadow_stack: false },
   };
 }
@@ -455,11 +505,21 @@ function buildPane(state) {
     sanitizeIsaGated(state);
     refreshPane(P); scheduleCompile(P); };
   P.ctorSel.onchange = () => { state.topology = ctorDefaults(P.ctorSel.value);
-    refreshPane(P); scheduleCompile(P); };
+    state.lastStrategy = null;
+    refreshPane(P); scheduleCompile(P);
+    probeStrategy(P).then(st => { if (st) { state.lastStrategy = st;
+      sanitizePlanGated(state); refreshPane(P); } }); };
   P.opSel.onchange = () => { state.op = { kind: P.opSel.value };
-    refreshPane(P); scheduleCompile(P); };
+    state.lastStrategy = null;
+    refreshPane(P); scheduleCompile(P);
+    probeStrategy(P).then(st => { if (st) { state.lastStrategy = st;
+      sanitizePlanGated(state); refreshPane(P); } }); };
   P.autoChk.onchange = () => { state.candAuto = P.autoChk.checked;
-    refreshPane(P); scheduleCompile(P); };
+    refreshPane(P); scheduleCompile(P);
+    if (!state.candAuto && !state.lastStrategy) {
+      probeStrategy(P).then(st => { if (st) { state.lastStrategy = st;
+        sanitizePlanGated(state); refreshPane(P); } });
+    } };
   refreshPane(P);
   return P;
 }
@@ -557,15 +617,18 @@ function refreshPane(P) {
       cb.checked = !!s.twins[t];
       cb.onchange = () => { s.twins[t] = cb.checked; refreshPane(P);
         scheduleCompile(P); };
-      /* grey out body twins excluded by another selected body twin, and
-       * twins whose ISA gate is closed for the effective ISA */
+      /* grey out twins excluded by another selected twin in the same
+       * exclusivity group, by ISA gate, or by plan-kind gate */
       const isaOk = !TWIN_ISA_OK[t] || TWIN_ISA_OK[t](effIsa(s));
+      const planOk = !TWIN_PLAN_OK[t] || !s.lastStrategy ||
+        TWIN_PLAN_OK[t](s.lastStrategy);
+      let excl = false;
       if (BODY_TWINS.includes(t)) {
-        const other = BODY_TWINS.some(o => o !== t && s.twins[o]);
-        cb.disabled = (other && !s.twins[t]) || !isaOk;
-      } else {
-        cb.disabled = !isaOk;
+        excl = BODY_TWINS.some(o => o !== t && s.twins[o]);
+      } else if (TAIL_TWINS.includes(t)) {
+        excl = TAIL_TWINS.some(o => o !== t && s.twins[o]);
       }
+      cb.disabled = (excl && !s.twins[t]) || !isaOk || !planOk;
       lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + t));
       P.twinBox.appendChild(lab);
     }
@@ -629,6 +692,13 @@ async function runPane(P) {
   }
   P.status.textContent = "ok";
   P.status.className = "status ok";
+  /* capture plan kind for twin grey-out; refresh if it changed */
+  if (r.strategy && r.strategy !== s.lastStrategy) {
+    s.lastStrategy = r.strategy;
+    strategyCache[strategyKey(s)] = r.strategy;
+    sanitizePlanGated(s);
+    refreshPane(P);
+  }
   const d = await disassemble(DISASM_ARCH[s.isa], r.code);
   P.disasm.innerHTML = "";
   if (d.error) P.disasm.textContent = d.error;
