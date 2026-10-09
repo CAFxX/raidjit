@@ -472,7 +472,9 @@ function buildPane(state) {
     refreshPane(P); scheduleCompile(P);
     probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
       sanitizePlanGated(state); refreshPane(P); } }); };
-  P.opSel.onchange = () => { state.op = { kind: P.opSel.value };
+  P.opSel.onchange = () => { const kind = P.opSel.value;
+    state.op = kind === "recover" ? { kind, failed: "0" } :
+      kind === "parity_update" ? { kind, changed: "0" } : { kind };
     state.lastPlan = null;
     refreshPane(P); scheduleCompile(P);
     probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
@@ -748,7 +750,7 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">page build <code>2026-10-09h</code> (per-ctor topology defaults;
+<p class="note">page build <code>2026-10-09i</code> (per-ctor topology defaults;
 stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and
