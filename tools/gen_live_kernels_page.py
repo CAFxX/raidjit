@@ -116,6 +116,23 @@ const CTORS = {
   rs: ["ndata", "npar"], lrc: ["k", "h", "r"], lrc_azure: [],
   lrc_optimal: ["k", "h", "r"], custom: ["ndata", "npar", "matrix_hex"],
 };
+/* Per-ctor default parameters. Every entry must satisfy the backend
+ * validity envelope (rjw_api.c), so that switching constructors always
+ * lands on a compilable configuration — never a rejected one.
+ * rdp/evenodd need p prime >= 3 (p=5 -> 4 data disks, as in the archived
+ * doc's rdp-4 sample); rs needs npar >= 1; lrc/lrc_optimal need
+ * k>=2,h>=1,r>=2 (doc's lrc-8-2-2 / lrc-opt-20-2-4 samples); custom needs
+ * a matrix_hex of exactly 2*ndata*npar hex chars (any bytes accepted). */
+const CTOR_DEFAULTS = {
+  raid0: { p1: 4 }, raid1: {}, raid5: { p1: 4 }, raid6: { p1: 4 },
+  raid6_rs: { p1: 4 }, rdp: { p1: 5 }, evenodd: { p1: 5 }, liberation: { p1: 4 },
+  rs: { p1: 4, p2: 2 }, lrc: { p1: 8, p2: 2, p3: 2 }, lrc_azure: {},
+  lrc_optimal: { p1: 20, p2: 2, p3: 4 },
+  custom: { p1: 6, p2: 2, matrix_hex: "0101010101010203040506" },
+};
+function ctorDefaults(ctor) {
+  return Object.assign({ ctor: ctor }, CTOR_DEFAULTS[ctor] || { p1: 4 });
+}
 const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
                "permi2b", "xorsched", "xorbit", "mshift", "pipe"];
 /* pairwise-exclusive body twins */
@@ -124,7 +141,7 @@ const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat"];
 function defaultPane() {
   return {
     isa: "x86", target: "avx512-gfni", cpu: {},
-    topology: { ctor: "raid5", p1: 4 },
+    topology: ctorDefaults("raid5"),
     op: { kind: "encode" },
     candAuto: true,
     cand: { mul: "auto", U: 0, lmul: 1, prefetch_dist: 0 },
@@ -278,8 +295,8 @@ function buildPane(state) {
   };
   P.targetSel.onchange = () => { state.target = P.targetSel.value;
     scheduleCompile(P); };
-  P.ctorSel.onchange = () => { state.topology = { ctor: P.ctorSel.value,
-    p1: 4 }; refreshPane(P); scheduleCompile(P); };
+  P.ctorSel.onchange = () => { state.topology = ctorDefaults(P.ctorSel.value);
+    refreshPane(P); scheduleCompile(P); };
   P.opSel.onchange = () => { state.op = { kind: P.opSel.value };
     refreshPane(P); scheduleCompile(P); };
   P.autoChk.onchange = () => { state.candAuto = P.autoChk.checked;
