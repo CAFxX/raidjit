@@ -123,8 +123,9 @@ int api_permi2b_duel_eligible(const version_t *winner, const plan_t *wpl,
            plan_any_nontrivial(wpl);
 }
 
-rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
-                   const rj_options *opts, char *err, size_t errlen)
+static rj_jit *rj_compile_impl(const rj_topology *topo, const rj_op *op,
+                                const rj_options *opts, char *err,
+                                size_t errlen, int want_crc)
 {
     if (!topo || !op) {
         if (err && errlen)
@@ -209,6 +210,7 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
             topo_int_free(&ti);
             return NULL;
         }
+        pl.want_crc = want_crc;
 
         /* Candidate buffer. Worst case today: RVV P_HORNER with LMUL:
          * 2 muls x 5 U x 4 LMUL = 40 base; +20 remat twins = 60;
@@ -1554,10 +1556,29 @@ lv_done:
     return rc == 0 ? total : -1;
 }
 
+rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
+                   const rj_options *opts, char *err, size_t errlen)
+{
+    return rj_compile_impl(topo, op, opts, err, errlen, 0);
+}
+
+struct rj_jit *rj_compile_want_crc(const rj_topology *t, const rj_op *op,
+                                   const rj_options *o, char *err,
+                                   size_t errlen)
+{
+    return rj_compile_impl(t, op, o, err, errlen, 1);
+}
+
 /* Phase 2: query in-kernel CRC folding. The version folds iff its
  * candidate has crc_fold=1 (set by plan_candidates when want_crc=1 and
  * the uarch gate is open). */
 int rj_jit_crc_fold(const version_t *v)
 {
     return v && v->cand.crc_fold;
+}
+
+/* Phase 2: query folding on a jit handle. */
+int rj_jit_handle_crc_fold(const struct rj_jit *j)
+{
+    return j && rj_jit_crc_fold(&j->v);
 }

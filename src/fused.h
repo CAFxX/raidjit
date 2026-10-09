@@ -29,6 +29,14 @@ int rj_fused_sub_npar(const rj_fused *f, int idx);  /* -1 unless ENCODE */
 void rj_fused_call(const rj_fused *f, const void *const *in, void *const *out,
                    size_t len, uint32_t *crc);
 
+/* Phase 2 (interleaved CRC fold): 4-argument kernel entry point.
+ * The 4th argument is the fold_state pointer (nstreams*64 bytes,
+ * 64-byte aligned, one zmm per stream). ONLY used when
+ * rj_jit_crc_fold(v) == 1; the fused driver is the sole caller.
+ * Never exposed publicly. */
+typedef void (*rj_fn_crc_fold)(const void *in[], void *out[], size_t len,
+                               void *fold_state);
+
 /* Phase 2 (interleaved CRC fold) microarchitecture gate: 1 if in-kernel
  * CRC folding is allowed on this CPU, 0 for scalar fallback. Conservative:
  * unknown/new µarchs always return 0. See

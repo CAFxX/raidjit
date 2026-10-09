@@ -145,10 +145,11 @@ outputs. The driver calls it as `fn(in, out, len, fold_state)` where:
 - `in`: `n_in` input pointers (as today).
 - `out`: `n_out` output pointers (as today).
 - `len`: byte length (as today).
-- `fold_state`: pointer to `nstreams * 16` bytes, 16-byte aligned,
+- `fold_state`: pointer to `nstreams * 64` bytes, 64-byte aligned,
   `nstreams = n_in + n_out`. Streams `0..n_in-1` = input streams,
-  `n_in..n_in+n_out-1` = output streams. Owned by the driver for the
-  whole fused call (persists across tiles).
+  `n_in..n_in+n_out-1` = output streams. Each stream's 64 bytes hold
+  one zmm (4x 128-bit lanes, every-4th 16B chunk per §4.2). Owned by
+  the driver for the whole fused call (persists across tiles).
 
 CALLING CONVENTION SAFETY (blocker fix): A crc_fold kernel uses a 4-argument
 calling convention, DIFFERENT from the standard 3-argument `rj_fn`
