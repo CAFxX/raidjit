@@ -402,6 +402,14 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         snprintf(err, errlen, "ternlog/maskedtail need AVX-512");
         return -1;
     }
+    if (cand->maskedtail && cand->isa != ISA_AVX512) {
+        snprintf(err, errlen, "maskedtail needs the avx512 ISA");
+        return -1;
+    }
+    if (cand->maskedtail && cand->notail) {
+        snprintf(err, errlen, "maskedtail and notail are disjoint");
+        return -1;
+    }
     if (cand->predtail) {
         snprintf(err, errlen, "predtail is SVE only");
         return -1;
@@ -417,6 +425,10 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
     }
     if (cand->predtail && !(cand->isa == ISA_SVE && cpu->sve)) {
         snprintf(err, errlen, "predtail needs SVE");
+        return -1;
+    }
+    if (cand->notail && cand->predtail) {
+        snprintf(err, errlen, "notail and predtail are disjoint");
         return -1;
     }
     if (cand->mul != MUL_NIBBLE || cand->ternlog || cand->maskedtail ||
