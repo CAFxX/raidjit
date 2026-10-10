@@ -1243,6 +1243,47 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             n++;
         }
     }
+    /* Recovery closed-form emitter twin (algos #4): for e=1/e=2 recovery
+     * plans where plan_recover_closed_form applies, emit the syndrome+
+     * combine form instead of the generic MULACC over the baked R matrix.
+     * e=1: x_f = c_f^-1 * syndrome (syndrome uses original row
+     * coefficients); e=2: p,q syndromes then 2x2 combine via
+     * adjugate/determinant. Enumerated per fitting P_MULACC base
+     * candidate only when the win conditions hold:
+     *  - e=1: c_f^-1 admits strength reduction (power of 2 → xtime chain
+     *    instead of nibble-split). Else the multiply count is identical
+     *    and the twin is vacuous.
+     *  - e=2: at least one equation row is all-0/1 (pure XOR syndrome,
+     *    e.g. P+Q). Else the syndrome multiplies match the generic path
+     *    and the combine adds 6 multiplies.
+     * Never combined with xorbit/xorsched/permi2b/remat/mshift/pipe
+     * (different bodies). Benchmark-gated per ISA; the twin is only
+     * enumerated when the static model predicts a win, so the generic
+     * path can never be dominated. The NT/prefetch twin loops below see
+     * these and twin them automatically. Pinned in prune.c's
+     * twin_dominates like every other axis. */
+    if (pl->rec_cf && pl->kind == P_MULACC) {
+        struct rec_cf_data *cfd = pl->rec_cf;
+        int win = 0;
+        if (cfd->nf == 1 && cfd->cinv_cheap)
+            win = 1;
+        else if (cfd->nf == 2 && (cfd->row1_is_01 || cfd->row2_is_01))
+            win = 1;
+        if (win) {
+            int ntemp = n;
+            for (int i = 0; i < ntemp && n < maxout; i++) {
+                if (out[i].xorbit || out[i].xorsched || out[i].permi2b ||
+                    out[i].remat || out[i].mshift || out[i].pipe ||
+                    out[i].rec_cf)
+                    continue;
+                /* rec_cf is a recovery-only twin; the plan must be a
+                 * recovery plan (rec_cf_data only exists for those). */
+                out[n] = out[i];
+                out[n].rec_cf = 1;
+                n++;
+            }
+        }
+    }
     if (allow_nt) {
         /* NT twins after the temporal originals (see plan.h). NT stores
          * only make sense for streaming output; the benchmark decides

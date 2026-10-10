@@ -1549,6 +1549,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "nibble, non-remat");
         return -1;
     }
+    /* Recovery closed-form emitter twin (algos #4): not yet implemented
+     * in the backend emitter; the planner enumerates it but the build
+     * fails cleanly until the emitter lands. */
+    if (cand->rec_cf) {
+        snprintf(err, errlen,
+                 "aarch64 backend: rec_cf twin not yet implemented");
+        return -1;
+    }
     cg.opts = opts;
     cg.cpu = cpu;
     cg.is_sve = (cand->isa == ISA_SVE);

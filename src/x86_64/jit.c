@@ -2169,6 +2169,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "nibble, non-remat, no other twins");
         return -1;
     }
+    /* Recovery closed-form emitter twin (algos #4): not yet implemented
+     * in the backend emitter; the planner enumerates it but the build
+     * fails cleanly until the emitter lands. */
+    if (cand->rec_cf) {
+        snprintf(err, errlen,
+                 "x86_64 backend: rec_cf twin not yet implemented");
+        return -1;
+    }
     /* Length-dispatch tail twins are disjoint: a version is never both.
      * The masked tail needs AVX-512 (opmask registers); the vpermi2b
      * twin needs the AVX-512 MULACC/DELTA nibble path. User-reachable
