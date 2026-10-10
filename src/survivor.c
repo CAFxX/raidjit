@@ -771,6 +771,7 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
     int lrc_group_of[RJ_MAX_DISKS], lrc_local_row[RJ_MAX_DISKS];
     int lrc_ngroups = 0, lrc_cover[RJ_MAX_DISKS];
     int use_lrc = 0;
+    int lrc_candidate = 0; /* 1 if cover exists (before dominance check) */
     if (survivor_lrc_detect(ti, lrc_group_of, lrc_local_row,
                             &lrc_ngroups)
         && survivor_lrc_local_cover(ti, F, nf, lrc_group_of,
@@ -779,34 +780,54 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         /* On success lrc_cover holds exactly nf sorted row indices
          * (one distinct covering local row per failure, by the
          * duplicate check in survivor_lrc_local_cover). */
-        for (int i = 0; i < nsub; i++)
-            keep[i] = subset_rows_in(subs[i].rows, subs[i].nrows,
-                                     lrc_cover, nf);
-        int any = 0;
-        for (int i = 0; i < nsub; i++)
-            any |= keep[i];
-        use_lrc = any;
+        lrc_candidate = 1;
+    }
+    /* Always run the L2 signal first: we need the static costs to
+     * verify the local subset is not strictly dominated (adversarial
+     * review found degenerate custom matrices where a sparse global
+     * row dominates the local row 26x on uops). */
+    survivor_l2_signal(subs, nsub, cpu, o);
+    if (lrc_candidate) {
+        /* Find the local subset (rows == cover exactly). */
+        int ilocal = -1;
+        for (int i = 0; i < nsub; i++) {
+            if (subs[i].nrows == nf &&
+                subset_rows_in(subs[i].rows, subs[i].nrows,
+                               lrc_cover, nf)) {
+                /* Verify exact equality (subset_rows_in is subset check;
+                 * with equal sizes it's equality). */
+                ilocal = i;
+                break;
+            }
+        }
+        if (ilocal >= 0 && subs[ilocal].l2_valid) {
+            /* Check for strict domination by any valid non-local subset.
+             * If dominated, fall back to generic (the "structurally
+             * cheaper" claim doesn't hold for this matrix). */
+            int dominated = 0;
+            for (int i = 0; i < nsub && !dominated; i++) {
+                if (i == ilocal || !subs[i].l2_valid)
+                    continue;
+                /* Strict domination: both axes strictly better. */
+                if (subs[i].l2_uops < subs[ilocal].l2_uops &&
+                    subs[i].l2_mem < subs[ilocal].l2_mem)
+                    dominated = 1;
+            }
+            if (!dominated) {
+                for (int i = 0; i < nsub; i++)
+                    keep[i] = (i == ilocal);
+                use_lrc = 1;
+            }
+        }
     }
     if (use_lrc) {
-        /* Still run the L2 signal to verify buildability; drop local
-         * subsets that fail to build. If none remain, fall back to
-         * the generic shortlist. */
-        survivor_l2_signal(subs, nsub, cpu, o);
-        int any_valid = 0;
-        for (int i = 0; i < nsub; i++) {
-            if (keep[i] && !subs[i].l2_valid)
-                keep[i] = 0;
-            any_valid |= keep[i];
-        }
-        if (!any_valid) {
-            survivor_shortlist(subs, nsub, keep);
-            use_lrc = 0;
-        }
+        /* LRC rule applies and local subset is not dominated.
+         * keep[] already restricted; nothing more to do (L2 signal
+         * already ran, l2_valid already checked via ilocal). */
     } else {
-        /* L2 static signal (exactly one canonical version per subset),
-         * then the shortlist. Only shortlisted subsets pay the full
-         * candidate build + pooled bench below. */
-        survivor_l2_signal(subs, nsub, cpu, o);
+        /* L2 signal already ran above; just run the shortlist.
+         * Only shortlisted subsets pay the full candidate build +
+         * pooled bench below. */
         survivor_shortlist(subs, nsub, keep);
     }
     int nkeep = 0;
