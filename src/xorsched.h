@@ -205,3 +205,13 @@ int xorbit_need_regs(isa_t isa, const plan_t *pl, int U);
 #ifdef __cplusplus
 }
 #endif
+
+/* Temp-stack liveness for nested temps (emitter redesign, track A3).
+ * Computes def[m] (== m) and lastuse[m] for each temp. For flat temps,
+ * lastuse[m] == -1 for all m. Caller owns the arrays (free with free()).
+ * Returns 0 on success, -1 on allocation failure. */
+int xorbit_temp_liveness(const xorbit_t *s, int **def_out, int **lastuse_out);
+
+/* Max simultaneously-live temps (for register pressure formula).
+ * Returns 0 for flat temps. */
+int xorbit_maxlive(const xorbit_t *s, const int *def, const int *lastuse);

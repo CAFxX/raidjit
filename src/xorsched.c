@@ -986,8 +986,20 @@ int xorbit_need_regs(isa_t isa, const plan_t *pl, int U)
 {
     (void)isa;
     /* n_out*U accumulators + inreg + r1 + r2 + mask1. The nibble
-     * tables are dead on this path. */
-    return pl->n_out * U + 4;
+     * tables are dead on this path.
+     * Emitter redesign (track A3): + maxlive for temp-stack storage.
+     * For flat temps (current scheduler), maxlive == 0, so the formula
+     * reduces to the original n_out*U + 4. */
+    int maxlive = 0;
+    if (pl && pl->bit_sched) {
+        int *def = NULL, *lastuse = NULL;
+        if (xorbit_temp_liveness(pl->bit_sched, &def, &lastuse) == 0) {
+            maxlive = xorbit_maxlive(pl->bit_sched, def, lastuse);
+        }
+        free(def);
+        free(lastuse);
+    }
+    return pl->n_out * U + 4 + maxlive;
 }
 
 /* ---- static cost model for the bit-program twin ----
@@ -1255,4 +1267,87 @@ long xorbit_version_uops(const xorbit_t *s, const plan_t *pl,
     long body = sched ? xb_body_sched(s, isa == ISA_SSE, U, nhoist)
                       : xb_body_naive(pl, isa, U, nhoist);
     return body + stU;
+}
+
+/* ---- Temp-stack liveness for nested temps (emitter redesign, track A3) ----
+ *
+ * For each temp m in an xorbit_t schedule, compute:
+ *   def[m]: formation index (== m, temps are in formation order)
+ *   lastuse[m]: last temp index that uses m as an operand, or -1 if m is
+ *               never used by another temp (only in fanout/output bits).
+ *
+ * IMPORTANT: In the current flat-only scheduler, temps[m].a/b are
+ * input-bit ids (0 <= q < 8*n_in_sched), NEVER temp ids. The data
+ * structure does not currently encode temp operands. Therefore,
+ * lastuse[m] == -1 for all m (no temp is used by another temp).
+ *
+ * For FUTURE nested-temp support, the temps[m].a/b encoding would need
+ * to distinguish temp ids from input-bit ids (e.g., via the atom-id
+ * encoding: temp m -> m, input q -> ntemps+q). This function is written
+ * to handle that future encoding: if a/b < ntemps, it's a temp id.
+ *
+ * The caller owns the returned arrays (free with free()).
+ * Returns 0 on success, -1 on allocation failure. */
+int xorbit_temp_liveness(const xorbit_t *s, int **def_out, int **lastuse_out)
+{
+    if (!s || s->ntemps <= 0)
+        return -1;
+    int n = s->ntemps;
+    int *def = (int *)calloc((size_t)n, sizeof(int));
+    int *lastuse = (int *)calloc((size_t)n, sizeof(int));
+    if (!def || !lastuse) {
+        free(def);
+        free(lastuse);
+        return -1;
+    }
+    for (int m = 0; m < n; m++) {
+        def[m] = m;
+        lastuse[m] = -1;
+    }
+    /* Find last use of each temp as an operand of a later temp.
+     * In the current flat-only scheduler, temps[m].a/b are input-bit
+     * ids, which are >= n (ntemps) when interpreted as atom ids, OR
+     * they are small values that could be confused with temp ids.
+     * To avoid false positives, we ONLY treat a/b as temp ids if the
+     * scheduler explicitly marks them as such. Currently, it never does,
+     * so this loop is a no-op. Future nested-temp scheduler must use
+     * a distinct encoding (e.g., negative values or a flag) for temp
+     * operands. */
+    /* NOTE: Disabled until the data structure supports temp operands.
+     * The current encoding cannot distinguish temp ids from input-bit
+     * ids in temps[m].a/b. */
+#if 0
+    for (int m = 0; m < n; m++) {
+        int a = s->temps[m].a, b = s->temps[m].b;
+        if (a >= 0 && a < n)
+            lastuse[a] = m;
+        if (b >= 0 && b < n)
+            lastuse[b] = m;
+    }
+#endif
+    *def_out = def;
+    *lastuse_out = lastuse;
+    return 0;
+}
+
+/* Compute max simultaneously-live temps (for register pressure).
+ * A temp m is live at point p if def[m] <= p <= lastuse[m].
+ * For flat temps, maxlive == 0 (each temp dies immediately).
+ * Returns the maxlive count. */
+int xorbit_maxlive(const xorbit_t *s, const int *def, const int *lastuse)
+{
+    if (!s || s->ntemps <= 0)
+        return 0;
+    int n = s->ntemps;
+    int maxlive = 0;
+    for (int p = 0; p < n; p++) {
+        int live = 0;
+        for (int m = 0; m < n; m++) {
+            if (def[m] <= p && p <= lastuse[m])
+                live++;
+        }
+        if (live > maxlive)
+            maxlive = live;
+    }
+    return maxlive;
 }

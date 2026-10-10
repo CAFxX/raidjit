@@ -1024,6 +1024,23 @@ static void gen_body_xorbit(cg_t *cg)
     int inreg = cg->xbt_in, r1 = cg->xbt_r1, r2 = cg->xbt_r2;
     int mask1 = cg->xbt_mask;
 
+    /* Temp-stack liveness (emitter redesign, track A3). Compute def/lastuse
+     * for the temp DAG. For flat temps (current scheduler), all lastuse
+     * are -1 (no temp is used by another temp). The liveness info is
+     * available for future nested-temp support; the flat emission path
+     * below is unchanged and byte-identical to the original. */
+    int *t_def = NULL, *t_lastuse = NULL;
+    int maxlive = 0;
+    if (xorbit_temp_liveness(s, &t_def, &t_lastuse) == 0) {
+        maxlive = xorbit_maxlive(s, t_def, t_lastuse);
+        /* For flat temps, maxlive must be 0. If not, the scheduler
+         * emitted nested temps (future), which the current emission
+         * code does not handle. This is a plan-time invariant check. */
+        assert(maxlive == 0);
+    }
+    free(t_def);
+    free(t_lastuse);
+
     if (!is_delta) {
         /* zero dead output bytes (no atoms in any of their 8 bits) */
         for (int j = 0; j < n_out; j++) {
