@@ -397,13 +397,17 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         snprintf(err, errlen, "permi2b/mshift need the vbmi CPU flag");
         return -1;
     }
-    if ((cand->ternlog || cand->maskedtail) &&
-        !(cpu->avx512f && cpu->avx512bw)) {
-        snprintf(err, errlen, "ternlog/maskedtail need AVX-512");
+    if (cand->ternlog && !(cpu->avx512f && cpu->avx512bw)) {
+        snprintf(err, errlen, "ternlog needs AVX-512");
         return -1;
     }
-    if (cand->maskedtail && cand->isa != ISA_AVX512) {
-        snprintf(err, errlen, "maskedtail needs the avx512 ISA");
+    if (cand->maskedtail && cand->isa == ISA_AVX512 &&
+        !(cpu->avx512f && cpu->avx512bw)) {
+        snprintf(err, errlen, "maskedtail needs AVX-512");
+        return -1;
+    }
+    if (cand->maskedtail && cand->isa != ISA_AVX512 && cand->isa != ISA_RVV) {
+        snprintf(err, errlen, "maskedtail needs the avx512 or rvv ISA");
         return -1;
     }
     if (cand->maskedtail && cand->notail) {
@@ -453,11 +457,13 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         snprintf(err, errlen, "MUL_GFNI is x86 only");
         return -1;
     }
-    if (cand->ternlog || cand->maskedtail || cand->permi2b ||
+    if (cand->ternlog || cand->permi2b ||
         cand->mshift || cand->xorbit || cand->predtail) {
         snprintf(err, errlen, "x86/SVE-only twin axis on riscv");
         return -1;
     }
+    /* maskedtail is valid on RVV (RVV masked-tail twin) and x86-64 (AVX-512);
+     * the ISA check above already gates it. */
     if (cand->lmul != 0 && cand->lmul != 1 && cand->lmul != 2 &&
         cand->lmul != 4 && cand->lmul != 8) {
         snprintf(err, errlen, "lmul must be 1, 2, 4 or 8");
@@ -677,6 +683,9 @@ static int build_pinned_cand(cJSON *cj, const plan_t *pl,
     if (err[0])
         return -1;
     cand->xorbit = opt_bool(cj, "xorbit", 0, err, errlen);
+    if (err[0])
+        return -1;
+    cand->rec_cf = opt_bool(cj, "rec_cf", 0, err, errlen);
     if (err[0])
         return -1;
     cand->mshift = opt_bool(cj, "mshift", 0, err, errlen);

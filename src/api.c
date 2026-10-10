@@ -27,7 +27,7 @@ void rj_batch_destroy(struct rj_batch *b);
 struct rj_jit {
     version_t v;        /* general version: always present */
     version_t twins[2]; /* tail twins (notail + predtail on SVE,
-                         * notail + maskedtail on AVX-512): valid iff
+                         * notail + maskedtail on AVX-512/RVV): valid iff
                          * has_dispatch. At most 2: the ISA-specific
                          * twins are mutually exclusive. */
     int ntwins;
@@ -72,9 +72,9 @@ void rj_init(void)
 /* ---------------- compile ---------------- */
 
 /* One tail twin's install gate (SVE predtail, track B1sve; AVX-512
- * maskedtail, track B1x86); see src/api.h. The twin is built by the
- * caller from the shootout winner; the duel pits it against the general
- * (scalar-tail) version at tail-heavy lengths. */
+ * maskedtail, track B1x86; RVV maskedtail); see src/api.h. The twin is
+ * built by the caller from the shootout winner; the duel pits it
+ * against the general (scalar-tail) version at tail-heavy lengths. */
 int api_tail_duel_gate(version_t *tw, version_t *general, const plan_t *wpl,
                        const rj_options *o, int verbose, version_t *twins,
                        int *ntwins, tail_duel_fn duel, const char *name,
@@ -433,15 +433,21 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
          *   scope, track Bx86 DESIGN.md §1.4), CPU has AVX-512F+BW.
          *   Disjoint from notail; never combined with predtail
          *   (different ISA).
+         * - Masked-tail twin: RVV winners (any plan kind / multiply
+         *   method). The unrolled full-VL v0-masked tail
+         *   (src/riscv/jit.c gen_tail_masked) replaces the strip-mining
+         *   remainder loop. No extension gate beyond ISA_RVV (vid.v,
+         *   vmsltu.vx and masked vle8.v/vse8.v are base V). Disjoint
+         *   from notail/predtail (different ISA from both).
          *
          * Each twin is built from the winner and gated by
          * api_tail_duel_gate (bench_tail_duel, ISA-agnostic): install
          * only on a strict tail win outside the noise window plus a
          * large-size no-regression gate. A duel loss drops the twin
          * (tail traffic falls back to the scalar tail); a duel error
-         * fails compilation. The two twins are mutually exclusive by
-         * ISA (ISA_SVE vs ISA_AVX512 on the same winner), so at most
-         * one duel_idx is ever set. */
+         * fails compilation. The three tail twins are mutually exclusive
+         * by ISA (ISA_SVE vs ISA_AVX512 vs ISA_RVV on the same winner),
+         * so at most one duel_idx is ever set. */
         int duel_idx = -1; /* index into twins[] of the duel-installed tail
                             * twin, or -1 when no duel was won */
         /* The predtail twin is not implemented for the pipe
@@ -508,6 +514,39 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
                         e3);
             }
         }
+        /* Masked-tail twin (RVV): the winner's strip-mining remainder
+         * loop is replaced by an unrolled full-VL masked tail (v0 mask,
+         * one chunk per U; src/riscv/jit.c gen_tail_masked). Eligible
+         * for every plan kind and multiply method: only data
+         * loads/stores are masked, compute on masked-off lanes is
+         * don't-care, and table loads stay unmasked. vid.v/vmsltu.vx and
+         * masked vle8.v/vse8.v are base-V instructions, so no extension
+         * gate beyond ISA_RVV is needed. The tail duel
+         * (bench_tail_duel) validates correctness and requires a
+         * measured win before installing, same as the x86 twin. */
+        if (vs[winner].cand.isa == ISA_RVV) {
+            cand_t mtwinc = vs[winner].cand;
+            mtwinc.maskedtail = 1; /* twin of the winner, masked tail */
+            version_t mtwin;
+            memset(&mtwin, 0, sizeof(mtwin));
+            if (jit_build_version(wpl, &mtwinc, &cpu, &o, &mtwin, e3,
+                                  sizeof(e3)) == 0) {
+                int g = api_tail_duel_gate(&mtwin, &vs[winner], wpl, &o,
+                                           o.verbose, twins, &ntwins,
+                                           bench_tail_duel, "maskedtail",
+                                           err, errlen);
+                if (g == -2) {
+                    for (int t = 0; t < ntwins; t++)
+                        jit_free_version(&twins[t]);
+                    goto fail;
+                }
+                if (g >= 0)
+                    duel_idx = g;
+            } else if (o.verbose) {
+                fprintf(stderr, "raidjit: maskedtail twin build failed: %s\n",
+                        e3);
+            }
+        }
         if (ntwins > 0) {
             /* The large-size shootout covers {general, ...twins} EXCEPT
              * the duel-gated tail twin (predtail/maskedtail): it has its
@@ -550,9 +589,9 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
                     /* Twin kind -> tail policy. twins[] only ever holds
                      * the three kinds built above: notail twins
                      * physically have no tail code (TAIL_NONE: multiples
-                     * only); predtail (B1sve) and maskedtail (B1x86) twins
-                     * own tail lengths (TAIL_MASKED). The mapping is
-                     * explicit per kind: a future twin kind that sets
+                     * only); predtail (B1sve) and maskedtail (B1x86, RVV)
+                     * twins own tail lengths (TAIL_MASKED). The mapping
+                     * is explicit per kind: a future twin kind that sets
                      * none of the three flags trips the assert below
                      * instead of silently inheriting TAIL_MASKED (which
                      * would hand it all tail traffic unmeasured). */
@@ -1071,15 +1110,18 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
         eff_pred = 1;
     }
     if (spec.tail.maskedtail) {
-        /* Same eligibility as rj_compile's install gate. */
+        /* Same eligibility as rj_compile's install gate: x86-64 AVX-512
+         * (P_XOR plain or GFNI) or RVV (base V; the backend enforces
+         * VLMAX <= 255). */
         int mt_ok =
-            build_cand.isa == ISA_AVX512 && !build_cand.nt &&
-            cpu.avx512f && cpu.avx512bw &&
-            ((pl.kind == P_XOR && !build_cand.ternlog &&
-              !build_cand.xorsched) ||
-             (build_cand.mul == MUL_GFNI && cpu.gfni &&
-              (pl.kind == P_MULACC || pl.kind == P_DELTA ||
-               pl.kind == P_HORNER)));
+            (build_cand.isa == ISA_AVX512 && !build_cand.nt &&
+             cpu.avx512f && cpu.avx512bw &&
+             ((pl.kind == P_XOR && !build_cand.ternlog &&
+               !build_cand.xorsched) ||
+              (build_cand.mul == MUL_GFNI && cpu.gfni &&
+               (pl.kind == P_MULACC || pl.kind == P_DELTA ||
+                pl.kind == P_HORNER)))) ||
+            (build_cand.isa == ISA_RVV);
         if (!mt_ok) {
             if (err && errlen)
                 snprintf(err, errlen,

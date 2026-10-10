@@ -82,15 +82,17 @@ typedef struct {
                    * compile-time benchmark decides between tail variants
                    * empirically. */
     int maskedtail; /* 1 = length-dispatch twin: replace the scalar tail
-                   * with a masked AVX-512 vector tail (x86-64 only, via
-                   * opmask k1; track B1x86, SOTA item 14). Serves tail
-                   * lengths only (TAIL_MASKED, dispatch.h); the scalar
-                   * general variant defers to it when it is installed.
-                   * Disjoint from notail/predtail: a version is never
-                   * both. Never set by plan_candidates: api.c builds the
-                   * twin from the winning AVX-512 candidate after
-                   * selection, gated by its own tail-duel benchmark
-                   * (bench_tail_duel, src/bench.c). */
+                   * with a masked vector tail -- x86-64 via opmask k1
+                   * (track B1x86, SOTA item 14), RISC-V via v0-masked
+                   * loads/stores (unrolled full-VL tail; the backend
+                   * reserves v0 by shifting the vector map up one
+                   * LMUL-group). Serves tail lengths only (TAIL_MASKED,
+                   * dispatch.h); the scalar general variant defers to it
+                   * when it is installed. Disjoint from notail/predtail:
+                   * a version is never both. Never set by
+                   * plan_candidates: api.c builds the twin from the
+                   * winning candidate after selection, gated by its own
+                   * tail-duel benchmark (bench_tail_duel, src/bench.c). */
     int permi2b; /* 1 = P_MULACC/P_DELTA nibble twin: look the nibbles up
                    * with VPERMI2B (AVX512_VBMI) instead of the two-load
                    * VPSHUFB ping-pong (track B2, SOTA item 15). The two
@@ -155,7 +157,39 @@ typedef struct {
                   * combined with ternlog/permi2b/remat/xorsched/xorbit/
                   * mshift (different bodies). Pinned in prune.c's
                   * twin_dominates like every other axis. */
+    int rec_cf;  /* 1 = recovery closed-form emitter twin (algos #4):
+                  * for e=1/e=2 recovery plans where plan_recover_closed_form
+                  * applies, emit the syndrome+combine form instead of the
+                  * generic MULACC over the baked R matrix. e=1:
+                  * x_f = c_f^-1 * syndrome (syndrome uses original row
+                  * coefficients); e=2: p,q syndromes then 2x2 combine.
+                  * Enumerated only when the static model predicts a win
+                  * (e=1: c_f^-1 strength-reducible; e=2: a row is all-0/1).
+                  * Benchmark-gated per ISA; never regresses the generic
+                  * path. Pinned in prune.c's twin_dominates like every
+                  * other axis. */
 } cand_t;
+
+/* Closed-form recovery emitter data (algos #4, phase 2). Built at plan
+ * time by plan_build_recover_rows when plan_recover_closed_form succeeds
+ * AND the emitter win conditions hold (see hidden_files/single_erasure_SPEC.md).
+ * The rec_cf candidate twin's emitters read this; the generic path
+ * ignores it. */
+struct rec_cf_data {
+    int nf;              /* 1 or 2 (closed-form erasure count) */
+    int ns;              /* number of survivors */
+    /* e=1: */
+    uint8_t *ecoef;      /* ns original equation-row coefficients E[r][s] */
+    uint8_t cinv;        /* c_f^-1 (plan-time constant) */
+    int cinv_cheap;      /* 1 if cinv admits strength reduction (power of 2) */
+    /* e=2: */
+    uint8_t *ecoef1;     /* ns coefficients for row r1 */
+    uint8_t *ecoef2;     /* ns coefficients for row r2 */
+    uint8_t a, b, c, d;  /* 2x2 system coefficients */
+    uint8_t detinv;      /* det^-1 (shared, plan-time) */
+    int row1_is_01;      /* 1 if ecoef1 is all 0/1 (pure XOR syndrome) */
+    int row2_is_01;      /* 1 if ecoef2 is all 0/1 */
+};
 
 typedef struct {
     plan_kind_t kind;
@@ -181,6 +215,13 @@ typedef struct {
                                * nothing to share); built by plan_build,
                                * freed by plan_free. The xorbit candidate
                                * twin reads it. */
+    struct rec_cf_data *rec_cf; /* Recovery closed-form emitter data (algos
+                                 * #4; NULL when the closed form does not
+                                 * apply or the plan is not recovery).
+                                 * Built by plan_build_recover_rows when
+                                 * plan_recover_closed_form succeeds; freed
+                                 * by plan_free. The rec_cf candidate twin
+                                 * reads it. */
 } plan_t;
 
 typedef struct {
@@ -229,10 +270,15 @@ int plan_build_recover_rows(const topo_int_t *topo, const int *F, int nf,
  * singular pivot) -- the caller falls back to solve_recovery_rows. The
  * pivot choice replicates solve_recovery_rows, so an applied closed
  * form is bit-identical to the general solve. All inverses (c_f^-1,
- * det^-1) are plan-time constants baked into R. */
+ * det^-1) are plan-time constants baked into R.
+ *
+ * If cf_out is non-NULL and the closed form applies AND the emitter win
+ * conditions hold (algos #4: e=1 with strength-reducible c_f^-1, e=2 with
+ * an all-0/1 row), *cf_out is set to a freshly allocated struct rec_cf_data
+ * (caller frees via plan_free); otherwise *cf_out is set to NULL. */
 int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
                              const int *S, int ns, const int *rows, int nrows,
-                             uint8_t *R);
+                             uint8_t *R, struct rec_cf_data **cf_out);
 
 /* Enumerate version candidates for a plan on this CPU. Returns count. */
 /* allow_nt: also emit a non-temporal twin of every candidate (the
@@ -271,9 +317,15 @@ int isa_vl(isa_t isa); /* vector length in bytes */
  * input temp, so pipe shapes need more registers than their plain
  * twins; pipe=1 with an unsupported (kind, mul, remat) combination
  * returns INT_MAX (the backend rejects those builds cleanly, and the
- * planner's filter drops them). */
+ * planner's filter drops them). maskedtail adds one logical register
+ * for the RVV masked-tail twin's v0 mask reservation (the backend
+ * shifts the whole vector map up one LMUL-group); it is only
+ * meaningful with isa == ISA_RVV (any other ISA with maskedtail=1 is
+ * a caller bug, caught by assert). The api.c twin builder passes the
+ * winner's maskedtail flag so the backend's exactness asserts
+ * (vneed == plan_need_regs(...)*lmul) hold for the twin. */
 int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
-                   int pipe);
+                   int pipe, int maskedtail);
 
 /* Per-microarchitecture port-pressure weights for the static cost
  * model (I3). Each t_* is cycles per instruction -- the reciprocal

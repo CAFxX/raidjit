@@ -7,7 +7,14 @@
  *   vsew[2:0], vlmul[2:0]}.
  * - vle8.v/vse8.v (unit stride): nf=000, mop=00, vm=1, rs1 in the
  *   vs1 field (bits 19:15), lumop/sumop=00000, width=000, vd/vs3;
- *   major opcode 0000111 for loads, 0100111 for stores.
+ *   major opcode 0000111 for loads, 0100111 for stores. The maskedtail
+ *   twin's _m forms are the same words with the vm bit (bit 25) = 0.
+ * - vid.v: OPMVV (funct3=010), funct6=010100, vs1 field = 10001, vm=1,
+ *   vs2 field = 00000.
+ * - vmsltu.vx: OPIVX (funct3=100), funct6=011010, vm=1; vd is always v0.
+ *   (NOT 011100: that is vmsleu.vx, unsigned <=; NOT 011011: that is
+ *   vmslt.vx, signed <. See emit.h.)
+ * - blt/bge: B-type, funct3=100/101 (for the tail's blez synthesis).
  * - OPIVV (funct3=000): vxor.vv funct6=001011, vand.vv funct6=001001,
  *   vrgather.vv funct6=001100 (table in vs2 field, indices in vs1 field),
  *   vmv.v.v funct6=010111 (source in vs1 field, vs2 field = 0).
@@ -230,6 +237,25 @@ void em_srli(em_t *e, int rd, int rs1, unsigned sh)
                   ((uint32_t)(rd & 31) << 7) | 0x13u);
 }
 
+/* srai: arithmetic right shift; imm[11:5] = 0100000 distinguishes it
+ * from srli. GAS-verified (srai t3,t2,63 -> 0x43f3de13). */
+void em_srai(em_t *e, int rd, int rs1, unsigned sh)
+{
+    assert(sh < 64);
+    emit32(e, (0x20u << 25) | ((sh & 0x3fu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x5u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x13u);
+}
+
+/* and: OP, funct3=111, funct7=0000000.
+ * GAS-verified (and t2,t2,t3 -> 0x01c3f3b3). */
+void em_and(em_t *e, int rd, int rs1, int rs2)
+{
+    emit32(e, (0x00u << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x7u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x33u);
+}
+
 void em_ld(em_t *e, int rd, int rs1, int off12)
 {
     assert(off12 >= -2048 && off12 < 2048);
@@ -263,6 +289,16 @@ void em_beq(em_t *e, int rs1, int rs2, int lab)
 void em_bne(em_t *e, int rs1, int rs2, int lab)
 {
     em_branch(e, 0x1, rs1, rs2, lab);
+}
+
+void em_blt(em_t *e, int rs1, int rs2, int lab)
+{
+    em_branch(e, 0x4, rs1, rs2, lab);
+}
+
+void em_bge(em_t *e, int rs1, int rs2, int lab)
+{
+    em_branch(e, 0x5, rs1, rs2, lab);
 }
 
 void em_jal(em_t *e, int rd, int lab)
@@ -320,21 +356,45 @@ void em_vsetivli(em_t *e, int rd, unsigned uimm, int vsew, int vlmul, int vta,
                   ((uint32_t)(rd & 31) << 7) | 0x57u);
 }
 
-void em_vle8(em_t *e, int vd, int rs1)
+/* Unit-stride byte load/store skeleton with an explicit vm bit, so the
+ * masked (vm=0) forms differ from the unmasked ones in exactly one bit
+ * (reviewable by diff). nf=000, mop=00 (unit stride), rs1 in the vs1
+ * field (bits 19:15), lumop/sumop=00000, width=000. */
+static void em_vle8_v(em_t *e, int vm, int vd, int rs1)
 {
-    /* nf=000, mop=00 (unit stride), vm=1, rs1, lumop=00000, width=000 */
-    emit32(e, (0u << 29) | (1u << 25) | (0u << 20) |
+    emit32(e, (0u << 29) | ((uint32_t)(vm & 1) << 25) | (0u << 20) |
                   ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
                   ((uint32_t)(vd & 31) << 7) | 0x07u);
 }
 
-void em_vse8(em_t *e, int vs3, int rs1)
+static void em_vse8_v(em_t *e, int vm, int vs3, int rs1)
 {
-    /* nf=000, mop=00 (unit stride), vm=1, rs1, sumop=00000, width=000;
-     * note the STORE major opcode 0100111 */
-    emit32(e, (0u << 29) | (1u << 25) | (0u << 20) |
+    /* note the STORE major opcode 0100111 */
+    emit32(e, (0u << 29) | ((uint32_t)(vm & 1) << 25) | (0u << 20) |
                   ((uint32_t)(rs1 & 31) << 15) | (0x0u << 12) |
                   ((uint32_t)(vs3 & 31) << 7) | 0x27u);
+}
+
+void em_vle8(em_t *e, int vd, int rs1)
+{
+    em_vle8_v(e, 1, vd, rs1);
+}
+
+void em_vse8(em_t *e, int vs3, int rs1)
+{
+    em_vse8_v(e, 1, vs3, rs1);
+}
+
+void em_vle8_v_m(em_t *e, int vd, int rs1)
+{
+    /* vm=0: masked by v0; inactive lanes do not fault. */
+    em_vle8_v(e, 0, vd, rs1);
+}
+
+void em_vse8_v_m(em_t *e, int vs3, int rs1)
+{
+    /* vm=0: masked by v0; inactive lanes are not stored. */
+    em_vse8_v(e, 0, vs3, rs1);
 }
 
 void em_ntl_all(em_t *e)
@@ -367,6 +427,39 @@ static void em_opv(em_t *e, int funct6, int vs2, int vs1, int funct3, int vd)
                   ((uint32_t)(vs2 & 31) << 20) | ((uint32_t)(vs1 & 31) << 15) |
                   ((uint32_t)(funct3 & 7) << 12) | ((uint32_t)(vd & 31) << 7) |
                   0x57u);
+}
+
+/* vid.v vd: vd[i] = i (element index), zero-extended to SEW. OPMVV
+ * (funct3=010), funct6=010100, vs1 field = 10001 selects vid, vm=1
+ * (unmasked), vs2 field = 00000 (the V spec requires the vs2 field to
+ * be v0, otherwise the encoding is reserved). NOTE: the destination
+ * group must not overlap the mask register (v0) when LMUL > 1 (V spec
+ * §16.9: illegal-insn); the maskedtail twin therefore targets a
+ * body-clobbered temp, never v0. GAS-verified: vid.v v9 -> 0x5208a4d7
+ * (funct3=010, vs1=10001). */
+void em_vid_v(em_t *e, int vd)
+{
+    em_opv(e, 0x14 /*010100*/, 0 /*vs2 field = 0*/, 0x11 /*10001=vid*/,
+           0x2 /*OPMVV*/, vd);
+}
+
+/* vmsltu.vx vd, vs2, rs1: vd[i] = (vs2[i] <u rs1), unsigned -- the
+ * mask producer for the maskedtail twin. OPIVX (funct3=100),
+ * funct6=011010, vm=1 (unmasked: the old mask is dead at each rewrite,
+ * so no masked-off-lane hazard). vd MUST be v0: every masked operation
+ * hardwires v0 as THE mask register, so a mask produced anywhere else
+ * would need a copy through v0 anyway; the assert makes misuse loud.
+ * Unsigned (not vmslt.vx): at SEW=8 the scalar operand truncates to 8
+ * bits (V spec §11.1), so a signed compare would read tmp >= 128 as
+ * negative; vmsltu.vx compares the low 8 bits unsigned instead. Mask
+ * math is exact when VLMAX <= 255 (vid.v indexes mod 256); the
+ * backend rejects wider configs (see jit_build_version).
+ * GAS-verified: vmsltu.vx v0,v9,a3 -> 0x6a96c057 (funct6=011010,
+ * funct3=100). Note 011100 is vmsleu.vx (unsigned <=), not vmsltu.vx. */
+void em_vmsltu_vx(em_t *e, int vd, int vs2, int rs1)
+{
+    assert(vd == 0); /* v0 is the mask register */
+    em_opv(e, 0x1a /*011010*/, vs2, rs1, 0x4 /*OPIVX*/, vd);
 }
 
 void em_vxor_vv(em_t *e, int vd, int vs1, int vs2)

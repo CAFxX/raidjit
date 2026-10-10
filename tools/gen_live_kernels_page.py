@@ -181,9 +181,9 @@ function sanitizeTopology(t) {
   return out;
 }
 const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
-               "permi2b", "xorsched", "xorbit", "mshift", "pipe"];
+               "permi2b", "xorsched", "xorbit", "mshift", "pipe", "rec_cf"];
 /* pairwise-exclusive body twins */
-const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat"];
+const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat", "rec_cf"];
 /* pairwise-exclusive tail twins (backend: "maskedtail and notail are disjoint",
  * predtail disjoint from notail) */
 const TAIL_TWINS = ["notail", "predtail", "maskedtail"];
@@ -203,6 +203,10 @@ const TWIN_PLAN_OK = {
   pipe:     (p) => p.strategy === "mulacc" || p.strategy === "horner",
   ternlog:  (p) => (p.strategy === "xor" && p.n_out >= 2) ||
     p.strategy === "mulacc" || p.strategy === "delta",
+  /* rec_cf: recovery-only twin (e=1/e=2 closed forms). The backend validates
+   * the win conditions (cinv_cheap/cinv!=1 for e=1, row_is_01 for e=2);
+   * here we gate on recovery op + mulacc strategy. */
+  rec_cf:   (p) => p.strategy === "mulacc" && p.isRecover,
 };
 const strategyCache = {};
 function strategyKey(s) {
@@ -220,7 +224,8 @@ async function probeStrategy(P) {
   const r = compileKernel(mod, doc);
   if (r.ok && r.strategy) {
     const plan = { strategy: r.strategy, xor_sched: r.plan_xor_sched | 0,
-      n_out: r.plan_n_out | 0 };
+      n_out: r.plan_n_out | 0,
+      isRecover: s.op && s.op.kind === "recover" };
     strategyCache[key] = plan;
     return plan;
   }
@@ -246,7 +251,7 @@ const TWIN_ISA_OK = {
   ternlog:    (isa) => isa === "avx512",
   permi2b:    (isa) => isa === "avx512",
   mshift:     (isa) => isa === "avx512",
-  maskedtail: (isa) => isa === "avx512",
+  maskedtail: (isa) => isa === "avx512" || isa === "rvv",
   pipe:       (isa) => isa === "neon" || isa === "sve" || isa === "rvv",
   predtail:   (isa) => isa === "sve",
 };
@@ -750,7 +755,7 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">page build <code>2026-10-09i</code> (per-ctor topology defaults;
+<p class="note">page build <code>2026-10-10a</code> (rec_cf + rvv-maskedtail twins; per-ctor topology defaults;
 stale deep links self-heal). Compiles kernels live in your browser via WebAssembly
 (planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
 disassembler). Nothing is executed: the modules are compile-only, and

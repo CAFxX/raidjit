@@ -221,7 +221,6 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
         cg->pool_cap = (off + len + 4095) & ~(size_t)4095;
         cg->pool = realloc(cg->pool, cg->pool_cap);
         assert(cg->pool);
-    }
     /* The alignment gap [pool_len, off) is padding: zero it so the
      * emitted const blob is deterministic (malloc/realloc leave it
      * uninitialized). WASM-only: native output stays byte-identical.
@@ -230,6 +229,7 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     if (off > cg->pool_len)
         memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
 #endif
+    }
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
@@ -1017,6 +1017,254 @@ static void gen_body_xorbit(cg_t *cg)
     }
 }
 
+/* ---------------- recovery closed-form body (algos #4, rec_cf twin) ---------------- */
+
+/* r1 = NIBLO(c)[tlo], r2 = NIBHI(c)[thi]: one nibble multiply's two
+ * table lookups, with the tables loaded straight into the lookup
+ * registers (no tbl intermediary -- c_shuf's vd==s1 form needs no mov,
+ * so this is also one uop cheaper than the ping-pong on SSE). tbl
+ * stays free as a value temp, which the e=2 combine needs: it has four
+ * live vectors (p, q, both inners) but only t is non-scratch otherwise.
+ * tlo/thi must hold the nibble split of the multiplicand (done once by
+ * the caller when the input is shared). c != 0,1. */
+static void rec_cf_nib_parts(cg_t *cg, uint8_t c)
+{
+    assert(c != 0 && c != 1);
+    c_ldpool(cg, cg->r1, pool_get(cg, CK_NIBLO, c));
+    c_shuf(cg, cg->r1, cg->r1, cg->tlo);
+    c_ldpool(cg, cg->r2, pool_get(cg, CK_NIBHI, c));
+    c_shuf(cg, cg->r2, cg->r2, cg->thi);
+}
+
+/* vd = c * vs (c != 0,1) via the GFNI affine, sharing mulacc_column's
+ * last-value table dedup (the affine table depends only on c). Unlike
+ * the nibble path's fixed r1/r2 outputs, the affine writes straight to
+ * vd, so it never disturbs the combine's live temps. */
+static void rec_cf_aff(cg_t *cg, int vd, int vs, uint8_t c)
+{
+    assert(c != 0 && c != 1);
+    size_t poff = pool_get(cg, CK_AFF, c);
+    if (!cg->mulacc_pool_valid || cg->mulacc_pool_off != poff) {
+        c_ldpool(cg, cg->tbl, poff);
+        cg->mulacc_pool_off = poff;
+        cg->mulacc_pool_valid = 1;
+    }
+    c_aff(cg, vd, vs, cg->tbl);
+}
+
+/* vd = c * vs. 0 → zero, 1 → move, else the nibble or GFNI multiply.
+ * Clobbers: nibble → tlo, thi, r1, r2; GFNI → tbl. vd/vs must not
+ * alias those temps (vd == vs is fine). */
+static void rec_cf_scale(cg_t *cg, int vd, int vs, uint8_t c)
+{
+    if (c == 0) {
+        c_vzero(cg, vd);
+        return;
+    }
+    if (c == 1) {
+        c_vmov(cg, vd, vs);
+        return;
+    }
+    if (cg->cand.mul == MUL_GFNI) {
+        rec_cf_aff(cg, vd, vs, c);
+    } else {
+        nibble_split(cg, cg->tlo, cg->thi, vs);
+        rec_cf_nib_parts(cg, c);
+        c_vpxor(cg, vd, cg->r1, cg->r2);
+    }
+}
+
+/* acc ^= c * t, where t holds the loaded survivor input and tlo/thi its
+ * nibble split (split by the caller iff neednib -- the split is shared
+ * by both e=2 syndromes). first = 1 when acc is provably zero (first
+ * contributing column): the update is a move, not an xor-with-zero.
+ * The per-coefficient shapes mirror mulacc_column (nibble lookups,
+ * GFNI affine with table dedup, ternlog fold), so the syndrome phase
+ * emits the same operations the generic path performs on the baked R
+ * matrix, just factored per equation row. */
+static void rec_cf_synd_accum(cg_t *cg, uint8_t c, int acc, int first,
+                              int neednib)
+{
+    int gfni = cg->cand.mul == MUL_GFNI;
+    if (!c)
+        return;
+    if (c == 1) {
+        if (first)
+            c_vmov(cg, acc, cg->t);
+        else
+            c_vpxor(cg, acc, acc, cg->t);
+        return;
+    }
+    if (gfni) {
+        rec_cf_aff(cg, cg->t2, cg->t, c);
+        if (first)
+            c_vmov(cg, acc, cg->t2);
+        else
+            c_vpxor(cg, acc, acc, cg->t2);
+        return;
+    }
+    assert(neednib);
+    rec_cf_nib_parts(cg, c);
+    if (first) {
+        c_vpxor(cg, acc, cg->r1, cg->r2);
+    } else if (cg->cand.ternlog) {
+        c_vpternlog(cg, acc, cg->r1, cg->r2);
+    } else {
+        c_vpxor(cg, acc, acc, cg->r1);
+        c_vpxor(cg, acc, acc, cg->r2);
+    }
+}
+
+/* Recovery closed-form vector body (algos #4, rec_cf twin).
+ *
+ * e=1: x_f = cinv * syndrome, syndrome = XOR_s ecoef[s]*x_s.
+ * e=2: p = XOR_s ecoef1[s]*x_s, q = XOR_s ecoef2[s]*x_s, then
+ *      x1 = detinv*(d*p ^ b*q), x2 = detinv*(c*p ^ a*q).
+ *
+ * The syndrome phase mirrors the generic P_MULACC column loop, so the
+ * emitted per-coefficient operations are the same ones the generic path
+ * performs on the baked R matrix, factored per equation row. The win:
+ * e=1 replaces folding cinv into every coefficient with one
+ * strength-reduced final multiply; e=2 evaluates the shared p/q
+ * syndromes once (pure XOR when a row is all-0/1) instead of emitting
+ * 2*ns baked multiplies plus the 2x2 combine.
+ *
+ * Register use is exactly the generic P_MULACC assignment (accs, t,
+ * tlo/thi/r1/r2/tbl/mask or t2/tbl), so plan_need_regs is unchanged.
+ * The scalar tail is the shared generic P_MULACC tail over the baked R
+ * matrix (bit-identical to the closed form by the phase-1 guarantee);
+ * the stores below are shared with the generic body. */
+static void gen_body_rec_cf(cg_t *cg)
+{
+    const plan_t *pl = cg->pl;
+    const struct rec_cf_data *cfd = pl->rec_cf;
+    assert(pl->kind == P_MULACC);
+    assert(cfd && (cfd->nf == 1 || cfd->nf == 2));
+    assert(cfd->ns == pl->n_in && cfd->nf == pl->n_out);
+    /* The planner excludes the other body twins from rec_cf bases;
+     * jit_build_version rejects them outright. */
+    assert(!cg->cand.xorbit && !cg->cand.xorsched && !cg->cand.permi2b &&
+           !cg->cand.remat && !cg->cand.mshift && !cg->cand.pipe);
+    /* P_MULACC kind guarantees a nontrivial baked R, hence need_mask:
+     * the nibble temps (tlo/thi/r1/r2/tbl/mask) or GFNI temps (t2/tbl)
+     * are allocated. */
+    assert(cg->need_mask);
+    int ns = cfd->ns, nf = cfd->nf, U = cg->U, vl = cg->vl;
+    int gfni = cg->cand.mul == MUL_GFNI;
+
+    /* First contributing survivor per syndrome (-1: none → the
+     * accumulator is zeroed up front). */
+    int first1 = -1, first2 = -1;
+    for (int s = 0; s < ns; s++) {
+        uint8_t c1 = (nf == 1) ? cfd->ecoef[s] : cfd->ecoef1[s];
+        if (first1 < 0 && c1)
+            first1 = s;
+        if (nf == 2 && first2 < 0 && cfd->ecoef2[s])
+            first2 = s;
+    }
+    for (int u = 0; u < U; u++) {
+        if (first1 < 0)
+            c_vzero(cg, u);
+        if (nf == 2 && first2 < 0)
+            c_vzero(cg, U + u);
+    }
+
+    /* Syndrome phase: column-major over survivors like the generic
+     * body (load + optional nibble split shared by both e=2 syndromes,
+     * then per-syndrome accumulate). */
+    for (int s = 0; s < ns; s++) {
+        uint8_t c1 = (nf == 1) ? cfd->ecoef[s] : cfd->ecoef1[s];
+        uint8_t c2 = (nf == 2) ? cfd->ecoef2[s] : 0;
+        if (!c1 && !c2)
+            continue;
+        int neednib =
+            !gfni && ((c1 != 0 && c1 != 1) || (c2 != 0 && c2 != 1));
+        int pr = body_inptr(cg, s, R10);
+        c_prefetch_in(cg, pr);
+        for (int u = 0; u < U; u++) {
+            c_ld(cg, cg->t, pr, R11, 0, u * vl);
+            if (neednib)
+                nibble_split(cg, cg->tlo, cg->thi, cg->t);
+            rec_cf_synd_accum(cg, c1, u, s == first1, neednib);
+            if (nf == 2)
+                rec_cf_synd_accum(cg, c2, U + u, s == first2, neednib);
+        }
+    }
+
+    if (nf == 1) {
+        /* x_f = cinv * syndrome. cinv == 1: nothing to do. */
+        uint8_t cinv = cfd->cinv;
+        if (cinv != 1 && first1 >= 0) {
+            if (!gfni) {
+                /* Strength reduction via loop-invariant hoisting: the
+                 * NIBLO/NIBHI tables for the loop-invariant cinv live
+                 * in r1/r2 across the u-loop, 2+6U uops/group vs 8U for
+                 * the naive per-u ping-pong. (An xtime chain would cost
+                 * 3+6U for cinv=2 and 3+6kU for cinv=2^k generally --
+                 * the hoisted nibble dominates it for every cheap cinv,
+                 * with no new constants or code paths.) */
+                c_ldpool(cg, cg->r1, pool_get(cg, CK_NIBLO, cinv));
+                c_ldpool(cg, cg->r2, pool_get(cg, CK_NIBHI, cinv));
+            }
+            for (int u = 0; u < U; u++) {
+                if (gfni) {
+                    rec_cf_scale(cg, u, u, cinv);
+                } else {
+                    nibble_split(cg, cg->tlo, cg->thi, u);
+                    c_shuf(cg, cg->t, cg->r1, cg->tlo);
+                    c_shuf(cg, cg->tbl, cg->r2, cg->thi);
+                    c_vpxor(cg, u, cg->t, cg->tbl);
+                }
+            }
+        }
+    } else {
+        /* e=2 combine: x1 = detinv*(d*p ^ b*q) → acc set 0,
+         * x2 = detinv*(c*p ^ a*q) → acc set 1.
+         * K-trick (exact by GF(2^8) distributivity): with k1 = b^-1*d
+         * (b != 0), d*p ^ b*q = b*(k1*p ^ q); with k2 = a^-1*c,
+         * c*p ^ a*q = a*(k2*p ^ q) (a != 0 always: pivot). The direct
+         * form would need p, q, both inners, and multiply scratch live
+         * at once -- five values, but GFNI only has t, t2, tbl beyond
+         * the accs. The k-trick needs just two live temps (t and tt),
+         * so one shape serves both multiply methods. tt must not alias
+         * the multiply scratch: the nibble multiply is tbl-free (tables
+         * go straight to r1/r2), so tt is tbl there; the GFNI affine
+         * writes straight to its destination, so tt is t2 there. */
+        uint8_t a = cfd->a, b = cfd->b, c = cfd->c, d = cfd->d;
+        uint8_t detinv = cfd->detinv;
+        assert(a != 0 && detinv != 0);
+        uint8_t k1 = b ? gf_mul(gf_inv(b), d) : 0;
+        uint8_t k2 = gf_mul(gf_inv(a), c);
+        int tt = gfni ? cg->t2 : cg->tbl;
+        for (int u = 0; u < U; u++) {
+            int p_acc = u, q_acc = U + u;
+            /* inner2 = a*(k2*p ^ q) → tt (c == 0: inner2 = a*q) */
+            if (c) {
+                rec_cf_scale(cg, tt, p_acc, k2);
+                c_vpxor(cg, tt, tt, q_acc);
+            } else {
+                c_vmov(cg, tt, q_acc);
+            }
+            rec_cf_scale(cg, tt, tt, a);
+            /* inner1 = b*(k1*p ^ q) → t (b == 0: inner1 = d*p, d != 0:
+             * det = a*d ^ b*c = a*d != 0 with a != 0) */
+            if (b) {
+                rec_cf_scale(cg, cg->t, p_acc, k1);
+                c_vpxor(cg, cg->t, cg->t, q_acc);
+                rec_cf_scale(cg, cg->t, cg->t, b);
+            } else {
+                assert(d != 0);
+                rec_cf_scale(cg, cg->t, p_acc, d);
+            }
+            /* x2 = detinv*inner2 → acc set 1; x1 = detinv*inner1 → acc
+             * set 0. Both inners are done before either accumulator is
+             * written: p/q stay live in the accs until here. */
+            rec_cf_scale(cg, q_acc, tt, detinv);
+            rec_cf_scale(cg, p_acc, cg->t, detinv);
+        }
+    }
+}
+
 static void gen_body(cg_t *cg)
 {
     em_t *e = &cg->em;
@@ -1039,12 +1287,13 @@ static void gen_body(cg_t *cg)
                 c_vzero(cg, j * U + u);
     } else if (((pl->kind == P_XOR && !cg->cand.ternlog) ||
                 pl->kind == P_MULACC) &&
-               !cg->cand.xorbit) {
+               !cg->cand.xorbit && !cg->cand.rec_cf) {
         /* P_XOR's ternlog twin zeroes every accumulator up front in its
          * own prologue below (no first-input move logic), so the
          * dead-row-only zeroing here is skipped for it. The xorbit
          * twin zeroes its own dead bytes (bit-program-based) inside
-         * gen_body_xorbit. */
+         * gen_body_xorbit. The rec_cf twin does its own
+         * syndrome-based seeding inside gen_body_rec_cf. */
         for (int j = 0; j < n_out; j++) {
             int live = 0;
             for (int i = 0; i < n_in; i++)
@@ -1263,6 +1512,12 @@ static void gen_body(cg_t *cg)
         }
         } /* end non-ternlog P_XOR */
     } else if (pl->kind == P_MULACC) {
+        if (cg->cand.rec_cf) {
+            /* Recovery closed-form twin (algos #4): the syndrome +
+             * combine form instead of the generic MULACC over the baked
+             * R matrix. Stores below are shared. */
+            gen_body_rec_cf(cg);
+        } else {
         /* first_col[j]: first column with a nonzero entry in row j. */
         int first_col[RJ_MAX_DISKS];
         for (int j = 0; j < n_out; j++) {
@@ -1287,6 +1542,7 @@ static void gen_body(cg_t *cg)
                 mulacc_column(cg, i, n_in, u, first_col);
             }
         }
+        } /* end generic P_MULACC (non-rec_cf) */
     } else if (pl->kind == P_DELTA) {
         /* new_p[j] = old_p[j] ^ Σ_i ((old[i] ^ new[i]) * M[j][changed[i]]).
          * in[] = [old_0..old_{nc-1}, new_0..new_{nc-1},
@@ -2154,10 +2410,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                       version_t *v, char *err, size_t errlen)
 {
     (void)cpu;
-    /* Rematerialization is implemented only for P_HORNER; the planner
-     * never generates remat twins for other plan kinds, and the backend
-     * would silently ignore the flag elsewhere. */
-    assert(!(cand->remat && pl->kind != P_HORNER));
+    /* Rematerialization is implemented only for P_HORNER. User-reachable
+     * via pinned candidates (WASM API): fail cleanly, never abort. */
+    if (cand->remat && pl->kind != P_HORNER) {
+        snprintf(err, errlen,
+                 "x86_64 backend: remat twin needs P_HORNER");
+        return -1;
+    }
     /* Software-pipelined loop twin (track I8): implemented for the
      * P_MULACC/P_HORNER nibble bodies only (non-remat, no other twins).
      * Anything else fails the build cleanly -- never wrong code. The
@@ -2174,36 +2433,118 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "nibble, non-remat, no other twins");
         return -1;
     }
+    /* Recovery closed-form emitter twin (algos #4): implemented for
+     * P_MULACC recovery plans; never combined with the other body
+     * twins (xorbit/xorsched/permi2b/remat/mshift/pipe -- the planner
+     * excludes those bases at enumeration). Anything else fails the
+     * build cleanly -- never wrong code. */
+    if (cand->rec_cf &&
+        (pl->kind != P_MULACC || pl->rec_cf == NULL || cand->xorbit ||
+         cand->xorsched || cand->permi2b || cand->remat || cand->mshift ||
+         cand->pipe)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: rec_cf twin needs P_MULACC without "
+                 "other body twins");
+        return -1;
+    }
     /* Length-dispatch tail twins are disjoint: a version is never both.
      * The masked tail needs AVX-512 (opmask registers); the vpermi2b
-     * twin needs the AVX-512 MULACC/DELTA nibble path. */
-    assert(!(cand->maskedtail && cand->notail));
-    assert(!(cand->maskedtail && cand->isa != ISA_AVX512));
-    assert(!(cand->permi2b && (cand->isa != ISA_AVX512 ||
-                               cand->mul != MUL_NIBBLE ||
-                               (pl->kind != P_MULACC && pl->kind != P_DELTA))));
+     * twin needs the AVX-512 MULACC/DELTA nibble path. User-reachable
+     * via pinned candidates: fail cleanly, never abort. */
+    if (cand->maskedtail && cand->notail) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail and notail are disjoint");
+        return -1;
+    }
+    if (cand->maskedtail && cand->isa != ISA_AVX512) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail needs AVX-512");
+        return -1;
+    }
+    /* Masked tail plan-kind gate (mirrors api.c's twin gate and
+     * gen_tail_masked's assertion): P_XOR plain body, or GFNI multiply.
+     * Nibble masked tails are not implemented. */
+    if (cand->maskedtail) {
+        int gfni = cand->mul == MUL_GFNI;
+        int ok = (pl->kind == P_XOR && !cand->xorsched && !cand->ternlog) ||
+                 (gfni && !cand->permi2b &&
+                  (pl->kind == P_MULACC || pl->kind == P_DELTA ||
+                   pl->kind == P_HORNER));
+        if (!ok) {
+            snprintf(err, errlen,
+                     "x86_64 backend: maskedtail needs P_XOR plain or GFNI multiply");
+            return -1;
+        }
+    }
+    if (cand->permi2b && (cand->isa != ISA_AVX512 ||
+                          cand->mul != MUL_NIBBLE ||
+                          (pl->kind != P_MULACC && pl->kind != P_DELTA))) {
+        snprintf(err, errlen,
+                 "x86_64 backend: permi2b needs AVX-512 MULACC/DELTA nibble");
+        return -1;
+    }
     /* Bit-program twin (track A1): only for GF-multiply rows, only from
-     * a MUL_NIBBLE base, never combined with the other body twins. */
-    assert(!(cand->xorbit &&
-             (pl->kind != P_MULACC && pl->kind != P_DELTA &&
-              pl->kind != P_HORNER)));
-    assert(!(cand->xorbit && cand->mul != MUL_NIBBLE));
-    assert(!(cand->xorbit &&
-             (cand->ternlog || cand->permi2b || cand->remat ||
-              cand->xorsched)));
+     * a MUL_NIBBLE base, never combined with the other body twins.
+     * User-reachable via pinned candidates: fail cleanly. */
+    if (cand->xorbit &&
+        (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+         pl->kind != P_HORNER)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit needs GF-multiply rows");
+        return -1;
+    }
+    if (cand->xorbit && cand->mul != MUL_NIBBLE) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit needs MUL_NIBBLE");
+        return -1;
+    }
+    if (cand->xorbit &&
+        (cand->ternlog || cand->permi2b || cand->remat ||
+         cand->xorsched)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit excludes other body twins");
+        return -1;
+    }
+    /* The xorbit body follows pl->bit_sched; xorbit_build() returns NULL
+     * when there is nothing to share. A NULL schedule would abort in
+     * gen_body_xorbit's assertion. User-reachable via pinned candidates:
+     * fail cleanly, never abort. */
+    if (cand->xorbit && !pl->bit_sched) {
+        snprintf(err, errlen,
+                 "x86_64 backend: xorbit needs a plan with bit-level sharing");
+        return -1;
+    }
     /* VPMULTISHIFTQB nibble twin (track I2): AVX-512 MUL_NIBBLE
      * GF-multiply rows only (P_MULACC/P_DELTA/P_HORNER), never combined
      * with the other body twins (xorbit/permi2b/remat/xorsched are
      * different bodies/splits). Independent of ternlog (split vs fold).
      * The instruction is AVX512_VBMI; the api/planner gate additionally
-     * requires cpu->vbmi before the twin can be selected. */
-    assert(!(cand->mshift &&
-             (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE ||
-              (pl->kind != P_MULACC && pl->kind != P_DELTA &&
-               pl->kind != P_HORNER))));
-    assert(!(cand->mshift &&
-             (cand->xorbit || cand->permi2b || cand->remat ||
-              cand->xorsched)));
+     * requires cpu->vbmi before the twin can be selected.
+     * User-reachable via pinned candidates: fail cleanly. */
+    if (cand->mshift &&
+        (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE ||
+         (pl->kind != P_MULACC && pl->kind != P_DELTA &&
+          pl->kind != P_HORNER))) {
+        snprintf(err, errlen,
+                 "x86_64 backend: mshift needs AVX-512 MULACC/DELTA/HORNER nibble");
+        return -1;
+    }
+    if (cand->mshift &&
+        (cand->xorbit || cand->permi2b || cand->remat ||
+         cand->xorsched)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: mshift excludes other body twins");
+        return -1;
+    }
+    /* VPTERNLOGD twin: AVX-512 only (emits vpternlogd). The P_XOR
+     * ternlog fold is selected by the planner; a pinned candidate can
+     * request it on any ISA, so gate here. User-reachable via pinned
+     * candidates: fail cleanly, never abort. */
+    if (cand->ternlog && cand->isa != ISA_AVX512) {
+        snprintf(err, errlen,
+                 "x86_64 backend: ternlog needs AVX-512");
+        return -1;
+    }
     memset(v, 0, sizeof(*v));
     v->cand = *cand;
     v->kind = pl->kind;
@@ -2276,7 +2617,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     if (cand->pipe) {
         /* Software-pipelined shape (track I8): the D/Dn datasets (U
          * regs each) replace the single input temp t (dead: -1).
-         * Validation below rejects unsupported combos, so only
+         * Validation above rejects unsupported combos, so only
          * P_MULACC/P_HORNER x MUL_NIBBLE, non-remat, reach here. Must
          * stay in lockstep with plan_need_regs' pipe formulas
          * (asserted below). */
@@ -2450,7 +2791,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     int want_regs = cand->xorbit ? xorbit_need_regs(cand->isa, pl, U)
                     : cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
                                      : plan_need_regs(cand->isa, cand->mul, pl,
-                                                     U, cand->remat, cand->pipe) +
+                                                     U, cand->remat, cand->pipe,
+                                                     0) +
                                        (cg.msh != 0 ? 1 : 0);
     assert(vmax + 1 == want_regs);
     /* Over-pressure must fail cleanly (return -1), not abort or emit
@@ -2538,11 +2880,11 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                                                : "mulacc";
     if (pl->kind == P_XOR)
     /* %.65s on the plan name: the provable -Wformat-truncation bound
-     * for the 192B desc (fixed suffix <= 91B: " mulacc avx512+nibble"
+     * for the 192B desc (fixed suffix <= 97B: " mulacc avx512+nibble"
      * + " U=8" + "+ternlog+nt+pf+remat" + " notail" + " maskedtail" +
-     * "+permi2b" + "+xorbit" + "+mshift" + "+pipe"; plan names can reach
+     * "+permi2b" + "+xorbit" + "+mshift" + "+pipe" + "+reccf"; plan names can reach
      * 127B since the A5 "[rows ...]" suffix, capped at 65 by %.65s).
-     * 65 + 91 = 156 < 192, so the bound holds with margin. */
+     * 65 + 97 = 162 < 192, so the bound holds with margin. */
         snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa), cand->U, cand->ternlog ? "+ternlog" : "",
                  cand->xorsched ? "+xsched" : "",
@@ -2556,7 +2898,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->mshift ? "+mshift" : "",
                  cand->pipe ? "+pipe" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s%s U=%d%s%s%s%s%s%s%s%s%s%s%s", pl->name, strat,
                  isa_name(cand->isa),
                  cand->mul == MUL_GFNI ? "+gfni" : "+nibble", cand->U,
                  cand->ternlog ? "+ternlog" : "",
@@ -2568,7 +2910,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->maskedtail ? " maskedtail" : "",
                  cand->permi2b ? "+permi2b" : "",
                  cand->mshift ? "+mshift" : "",
-                 cand->pipe ? "+pipe" : "");
+                 cand->pipe ? "+pipe" : "",
+                 cand->rec_cf ? "+reccf" : "");
 
     free(buf);
     free(cg.pool);

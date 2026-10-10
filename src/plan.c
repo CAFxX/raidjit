@@ -1,5 +1,6 @@
 #include "plan.h"
 #include "gf.h"
+#include "ports.h"
 #include "prefetch_calib.h"
 #include "xorsched.h"
 #include <assert.h>
@@ -80,8 +81,8 @@ int plan_any_nontrivial(const plan_t *pl)
     return 0; /* P_XOR: all-{0,1} by construction */
 }
 
-int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
-                   int pipe)
+static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
+                                int U, int remat, int pipe)
 {
     int n_out = pl->n_out;
     if (isa == ISA_PEXT) {
@@ -250,6 +251,23 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
     return (n_out + 1) * U;
 }
 
+int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
+                   int pipe, int maskedtail)
+{
+    int n = plan_need_regs_inner(isa, mul, pl, U, remat, pipe);
+    if (maskedtail) {
+        /* RVV masked-tail twin (built by api.c from the winning
+         * candidate, never enumerated by plan_candidates): v0 is
+         * reserved as the dedicated mask register, shifting the whole
+         * vector map up by one LMUL-group. Only ISA_RVV builds
+         * maskedtail twins on this map; any other ISA here is a caller
+         * bug. */
+        assert(isa == ISA_RVV);
+        n += 1;
+    }
+    return n;
+}
+
 int isa_vl(isa_t isa)
 {
     switch (isa) {
@@ -268,6 +286,12 @@ void plan_free(plan_t *pl)
 {
     xorsched_free(pl->xor_sched);
     xorbit_free(pl->bit_sched);
+    if (pl->rec_cf) {
+        free(pl->rec_cf->ecoef);
+        free(pl->rec_cf->ecoef1);
+        free(pl->rec_cf->ecoef2);
+        free(pl->rec_cf);
+    }
     free(pl->mat);
     free(pl->horner_c);
     memset(pl, 0, sizeof(*pl));
@@ -434,8 +458,10 @@ static uint8_t recover_eqn_coef(const topo_int_t *topo, int row, int d)
  * solve_recovery_rows. */
 int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
                              const int *S, int ns, const int *rows, int nrows,
-                             uint8_t *R)
+                             uint8_t *R, struct rec_cf_data **cf_out)
 {
+    if (cf_out)
+        *cf_out = NULL;
     int np = topo->npar;
     if (nf < 1 || nf > 2 || nrows < nf || ns < 0)
         return 0;
@@ -461,6 +487,27 @@ int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
         uint8_t kinv = gf_inv(cf); /* plan-time constant */
         for (int s = 0; s < ns; s++)
             R[s] = gf_mul(recover_eqn_coef(topo, pr, S[s]), kinv);
+        /* Build rec_cf_data for the emitter twin (algos #4). */
+        if (cf_out) {
+            struct rec_cf_data *cfd = calloc(1, sizeof(*cfd));
+            if (!cfd)
+                return 1; /* closed form applied; cf_data optional */
+            cfd->nf = 1;
+            cfd->ns = ns;
+            cfd->ecoef = malloc((size_t)ns);
+            if (!cfd->ecoef) {
+                free(cfd);
+                return 1;
+            }
+            for (int s = 0; s < ns; s++)
+                cfd->ecoef[s] = recover_eqn_coef(topo, pr, S[s]);
+            cfd->cinv = kinv;
+            /* Strength-reducible if power of 2 (xtime chain). */
+            cfd->cinv_cheap = (kinv == 1 || kinv == 2 || kinv == 4 ||
+                               kinv == 8 || kinv == 16 || kinv == 32 ||
+                               kinv == 64 || kinv == 128);
+            *cf_out = cfd;
+        }
         return 1;
     }
     /* nf == 2: replicate the solver's pivot pair. p0 = first row with
@@ -512,6 +559,40 @@ int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
         R[(size_t)ns + (size_t)s] =
             gf_mul(gf_mul(c2, e1) ^ gf_mul(a, e2), dinv);
     }
+    /* Build rec_cf_data for the emitter twin (algos #4). */
+    if (cf_out) {
+        struct rec_cf_data *cfd = calloc(1, sizeof(*cfd));
+        if (!cfd)
+            return 1; /* closed form applied; cf_data optional */
+        cfd->nf = 2;
+        cfd->ns = ns;
+        cfd->ecoef1 = malloc((size_t)ns);
+        cfd->ecoef2 = malloc((size_t)ns);
+        if (!cfd->ecoef1 || !cfd->ecoef2) {
+            free(cfd->ecoef1);
+            free(cfd->ecoef2);
+            free(cfd);
+            return 1;
+        }
+        cfd->row1_is_01 = 1;
+        cfd->row2_is_01 = 1;
+        for (int s = 0; s < ns; s++) {
+            uint8_t e1 = recover_eqn_coef(topo, p0, S[s]);
+            uint8_t e2 = recover_eqn_coef(topo, p1, S[s]);
+            cfd->ecoef1[s] = e1;
+            cfd->ecoef2[s] = e2;
+            if (e1 != 0 && e1 != 1)
+                cfd->row1_is_01 = 0;
+            if (e2 != 0 && e2 != 1)
+                cfd->row2_is_01 = 0;
+        }
+        cfd->a = a;
+        cfd->b = b;
+        cfd->c = c2;
+        cfd->d = d2;
+        cfd->detinv = dinv;
+        *cf_out = cfd;
+    }
     return 1;
 }
 
@@ -560,7 +641,8 @@ int plan_build_recover_rows(const topo_int_t *topo, const int *F, int nf,
     if (no_cf && no_cf[0] != '\0' && strcmp(no_cf, "0") != 0)
         use_cf = 0;
     int closed = use_cf ? plan_recover_closed_form(topo, F, nf, S, ns, rows,
-                                                   nrows, pl->mat)
+                                                   nrows, pl->mat,
+                                                   &pl->rec_cf)
                         : 0;
     if (!closed &&
         solve_recovery_rows(topo->mat, nd, np, F, nf, S, ns, rows, nrows,
@@ -753,7 +835,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int nU = 8;
             for (int ui = 0; ui < nU && n < maxout; ui++) {
                 int U = Us[ui];
-                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0);
+                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
                 if (need > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
@@ -767,9 +849,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int ui = 0; ui < nU && n < maxout; ui++) {
                     int U = Us[ui];
                     int need_normal =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
                     int need_remat =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0, 0);
                     if (need_normal <= nregs)
                         continue;
                     if (need_remat > nregs)
@@ -820,7 +902,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int li = 0; li < 4 && n < maxout; li++) {
                     int U = Us[ui];
                     int lmul = lmuls[li];
-                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0) *
+                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0, 0) *
                                lmul;
                     if (need > nregs)
                         continue;
@@ -843,10 +925,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                         int U = Us[ui];
                         int lmul = lmuls[li];
                         int need_normal =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0, 0) *
                             lmul;
                         int need_remat =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0, 0) *
                             lmul;
                         if (need_normal <= nregs)
                             continue;
@@ -885,7 +967,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         if (pl->kind == P_XOR) {
             for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                 int U = Us[ui];
-                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0) > nregs)
+                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0) > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
             }
@@ -909,7 +991,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     /* Exact backend register need (accumulators n_out*U
                      * plus the backend's temp/table registers); see
                      * plan_need_regs. */
-                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0);
+                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0);
                     if (need > nregs)
                         continue;
                     out[n++] = (cand_t){.isa = isa, .mul = muls[mi], .U = U};
@@ -931,9 +1013,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                         int U = Us[ui];
                         int need_normal =
-                            plan_need_regs(isa, muls[mi], pl, U, 0, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0);
                         int need_remat =
-                            plan_need_regs(isa, muls[mi], pl, U, 1, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 1, 0, 0);
                         if (need_normal <= nregs)
                             continue; /* normal already fits; remat pointless */
                         if (need_remat > nregs)
@@ -1100,7 +1182,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             /* Pressure filter: the twin needs one more live register
              * (the multishift control) than plan_need_regs models; keep
              * the +1 in lockstep with jit_build_version's want_regs. */
-            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0) + 1 >
+            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0, 0) + 1 >
                 isa_nregs(ISA_AVX512))
                 continue;
             /* Static uop gate (per (i,u) split): the multishift split
@@ -1169,13 +1251,55 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int lmul = 1;
             if (isa == ISA_RVV && out[i].lmul)
                 lmul = out[i].lmul;
-            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1) *
+            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1, 0) *
                     lmul >
                 isa_nregs(isa))
                 continue;
             out[n] = out[i];
             out[n].pipe = 1;
             n++;
+        }
+    }
+    /* Recovery closed-form emitter twin (algos #4): for e=1/e=2 recovery
+     * plans where plan_recover_closed_form applies, emit the syndrome+
+     * combine form instead of the generic MULACC over the baked R matrix.
+     * e=1: x_f = c_f^-1 * syndrome (syndrome uses original row
+     * coefficients); e=2: p,q syndromes then 2x2 combine via
+     * adjugate/determinant. Enumerated per fitting P_MULACC base
+     * candidate only when the win conditions hold:
+     *  - e=1: c_f^-1 admits strength reduction (power of 2 → xtime chain
+     *    instead of nibble-split). Else the multiply count is identical
+     *    and the twin is vacuous.
+     *  - e=2: at least one equation row is all-0/1 (pure XOR syndrome,
+     *    e.g. P+Q). Else the syndrome multiplies match the generic path
+     *    and the combine adds 6 multiplies.
+     * Never combined with xorbit/xorsched/permi2b/remat/mshift/pipe
+     * (different bodies). Benchmark-gated per ISA; the twin is only
+     * enumerated when the win-condition flags hold (cinv_cheap for e=1,
+     * row_is_01 for e=2), and the prune pin prevents generic-domination.
+     * The NT/prefetch twin loops below see
+     * these and twin them automatically. Pinned in prune.c's
+     * twin_dominates like every other axis. */
+    if (pl->rec_cf && pl->kind == P_MULACC) {
+        struct rec_cf_data *cfd = pl->rec_cf;
+        int win = 0;
+        if (cfd->nf == 1 && cfd->cinv_cheap && cfd->cinv != 1)
+            win = 1;
+        else if (cfd->nf == 2 && (cfd->row1_is_01 || cfd->row2_is_01))
+            win = 1;
+        if (win) {
+            int ntemp = n;
+            for (int i = 0; i < ntemp && n < maxout; i++) {
+                if (out[i].xorbit || out[i].xorsched || out[i].permi2b ||
+                    out[i].remat || out[i].mshift || out[i].pipe ||
+                    out[i].rec_cf)
+                    continue;
+                /* rec_cf is a recovery-only twin; the plan must be a
+                 * recovery plan (rec_cf_data only exists for those). */
+                out[n] = out[i];
+                out[n].rec_cf = 1;
+                n++;
+            }
         }
     }
     if (allow_nt) {
@@ -1343,10 +1467,11 @@ rj_uarch_t rj_uarch_current(void)
  *     Intel: 0.50, 1 uop, ports p0/p5. Zen4: measured 0.50 (AMD doc
  *     0.50). Zen5: 0.25 (AMD doc; measured 0.25/0.37).
  * - VGF2P8MULB zmm: https://uops.info/html-instr/VGF2P8MULB_ZMM_ZMM_ZMM.html
- *     Intel: 1.00, 1 uop, port p0. Zen4: measured 1.00 (AMD doc 1.00).
- *     Zen5: measured 0.50.
+ *     Intel: 1.00, 1 uop, port p5 (see data/uarch/intel_icelake.ports).
+ *     Zen4: measured 1.00 (AMD doc 1.00). Zen5: measured 0.50.
  * - VGF2P8AFFINEQB zmm: https://uops.info/html-instr/VGF2P8AFFINEQB_ZMM_ZMM_ZMM_I8.html
- *     Intel: 1.00, 1 uop, port p0. Zen4: measured 1.00. Zen5: 0.50.
+ *     Intel: 1.00, 1 uop, port p5 (see data/uarch/intel_icelake.ports).
+ *     Zen4: measured 1.00. Zen5: 0.50.
  * - 64-byte vector load: Intel 0.50 (two 32B/cycle load ports); Zen4
  *   1.00 (double-pumped 32B pipes -> one 64B load/cycle; AMD SOG);
  *   Zen5 0.50 (est.: native 512-bit datapath, two loads/cycle).
@@ -1437,11 +1562,24 @@ const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u)
  * uarch-neutral to first order and folded into the same per-uop
  * rate. This is a HEURISTIC for static ordering (est.), not a
  * cycle-accurate model: the benchmark is the final arbiter. */
-static double kernel_w_uop(plan_kind_t kind, const cand_t *cand,
-                           const rj_uarch_weights_t *w)
+/* Instruction mix for the port-pressure model.
+ * Fills names[]/counts[] with the characteristic op mix for the
+ * candidate class (up to *n entries). Returns the number of entries,
+ * or 0 if the class has no kernel model (caller falls back to the
+ * generic dispatch-width rate).
+ *
+ * Counts are per GF multiply (nibble/GFNI) or per folded xor pair
+ * (P_XOR), read off the emitter sequences in src/x86_64/jit.c — the
+ * same structural mix the old kernel_w_uop used, but now as a
+ * per-class breakdown for port-pressure (not a weighted average).
+ */
+static int kernel_mix(plan_kind_t kind, const cand_t *cand,
+                      const char **names, double *counts, int n)
 {
     double n_tl = 0.0, n_shuf = 0.0, n_xor = 0.0, n_gfni = 0.0, n_ld = 0.0;
     int modeled = 0;
+    int i = 0;
+
     if (cand->isa == ISA_AVX512) {
         if (kind == P_MULACC || kind == P_DELTA || kind == P_HORNER) {
             if (cand->mul == MUL_GFNI) {
@@ -1466,54 +1604,127 @@ static double kernel_w_uop(plan_kind_t kind, const cand_t *cand,
             modeled = 1;
         }
     }
-    if (modeled) {
-        double ntot = n_tl + n_shuf + n_xor + n_gfni + n_ld;
-        return (n_tl * w->t_ternlog + n_shuf * w->t_shuffle +
-                n_xor * w->t_xor + n_gfni * w->t_gfni +
-                n_ld * w->t_ld64) / ntot;
+    if (!modeled)
+        return 0;
+    /* Emit non-zero entries. Order is fixed for determinism. */
+    if (n_tl > 0.0 && i < n) {
+        names[i] = "ternlog";
+        counts[i] = n_tl;
+        i++;
     }
-    /* No kernel model for this class (non-AVX512 ISA or exotic
-     * mul): generic dispatch-width rate. */
-    return 1.0 / w->vec_bw;
+    if (n_shuf > 0.0 && i < n) {
+        names[i] = "shuffle";
+        counts[i] = n_shuf;
+        i++;
+    }
+    if (n_xor > 0.0 && i < n) {
+        names[i] = "xor";
+        counts[i] = n_xor;
+        i++;
+    }
+    if (n_gfni > 0.0 && i < n) {
+        names[i] = "gfni";
+        counts[i] = n_gfni;
+        i++;
+    }
+    if (n_ld > 0.0 && i < n) {
+        names[i] = "load";
+        counts[i] = n_ld;
+        i++;
+    }
+    return i;
+}
+
+/* Port-pressure bottleneck for the candidate's kernel mix.
+ * Returns cycles/byte at the bottleneck port, or -1.0 if the class
+ * has no kernel model (caller uses the generic rate).
+ *
+ * This replaces the I3 weighted average (sum n_i*t_i / sum n_i) with
+ * the principled max-over-ports: cycles = max_p pressure[p]/tput[p].
+ * Ops on different ports execute in parallel; ops on the same port
+ * contend. The weighted average was wrong in both directions.
+ */
+static double kernel_port_bottleneck(plan_kind_t kind, const cand_t *cand,
+                                     const rj_port_model_t *pm,
+                                     double uops_per_byte)
+{
+    const char *names[8];
+    double counts[8];
+    const rj_pm_class_t *classes[8];
+    double mix[8];
+    double ntot = 0.0;
+    int n, i;
+
+    n = kernel_mix(kind, cand, names, counts, 8);
+    if (n == 0)
+        return -1.0;
+    for (i = 0; i < n; i++) {
+        classes[i] = rj_ports_find_class(pm, names[i]);
+        if (!classes[i])
+            return -1.0; /* class not in model; fallback */
+        ntot += counts[i];
+    }
+    if (ntot <= 0.0)
+        return -1.0;
+    /* Convert counts to uops/byte: the mix is per "unit" (multiply or
+     * xor pair); scale by uops_per_byte / ntot to get per-byte rates. */
+    for (i = 0; i < n; i++)
+        mix[i] = counts[i] * uops_per_byte / ntot;
+    return rj_ports_bottleneck(pm, classes, mix, n);
 }
 
 double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
                        plan_kind_t kind, const cand_t *cand, rj_uarch_t u)
 {
-    const rj_uarch_weights_t *w = rj_uarch_weights(u);
-    /* Effective cycles per uop: the I3 kernel-mix rate, or the generic
-     * dispatch-width rate when there are no candidate axes. */
-    double w_uop = cand ? kernel_w_uop(kind, cand, w) : 1.0 / w->vec_bw;
+    const rj_port_model_t *pm = rj_ports_for_uarch(u);
+    /* Scalars come from the port model (data files), not the legacy
+     * C table. The .ports files are the source of truth. */
+    double vec_bw = pm ? pm->vec_bw : 3.5;
+    double bw_bpc = pm ? pm->bw_bpc : 8.0;
+    double freq512 = pm ? pm->freq512 : 1.0;
+    /* Compute leg: port-pressure bottleneck (cycles/byte), or the
+     * generic dispatch-width rate when the class has no kernel model.
+     *
+     * The port model replaces the I3 weighted average with the
+     * principled max-over-ports. For classes without a model (non-x86
+     * ISA, exotic mul), fall back to uops_per_byte / vec_bw. */
+    double t_compute;
+    if (cand && pm) {
+        double bn = kernel_port_bottleneck(kind, cand, pm, uops_per_byte);
+        if (bn >= 0.0)
+            t_compute = bn;
+        else
+            t_compute = uops_per_byte / vec_bw;
+    } else {
+        t_compute = uops_per_byte / vec_bw;
+    }
     /* #31: roofline blend of the compute leg and the bandwidth leg.
      *
-     * Compute leg: t_compute = uops_per_byte * w_uop (cycles/byte at
-     * this uarch's port-weighted rate for the kernel's op mix).
+     * Compute leg: t_compute = port-pressure bottleneck (cycles/byte at
+     * the bottleneck port for the kernel's op mix). For classes without
+     * a port model, t_compute = uops_per_byte / vec_bw (generic rate).
      * Bandwidth leg: t_mem = mem_per_byte / bw_bpc (cycles/byte at the
      * uarch's conservative static single-core streaming bandwidth;
      * est., NOT measured).
      *
-     * Arithmetic intensity AI = uops_per_byte / mem_per_byte (uops per
-     * byte moved); ridge point ridge = (1/w_uop) / bw_bpc (peak
-     * uops/cycle over peak bytes/cycle, both from I3's weights and the
-     * static bandwidth figure). t_compute / t_mem = AI / ridge, so the
-     * blend keys off exactly that comparison: below the ridge
-     * (bandwidth-bound) the cost is ~t_mem (bytes moved); above it
-     * (compute-bound) ~t_compute (uop cost). The blend is the
-     * continuous p-norm (t_compute^4 + t_mem^4)^{1/4} -- at the ridge
-     * both legs contribute equally (cost = 2^{1/4} x either leg), and
-     * there is no hard max() switch. The blend is monotone in both
-     * legs, which the prune gate's roofline leg relies on: a twin with
-     * fewer uops and equal bytes can never cost more than the plain.
-     * A non-positive bw_bpc (only possible in hand-built test
-     * weights) degrades gracefully to the compute leg alone.
-     * HEURISTIC for static ordering (est.): the benchmark is the final
-     * arbiter. */
-    double t_compute = uops_per_byte * w_uop;
-    double t_mem = w->bw_bpc > 0.0 ? mem_per_byte / w->bw_bpc : 0.0;
+     * The blend is the continuous p-norm (t_compute^4 + t_mem^4)^{1/4}:
+     * below the ridge (bandwidth-bound) the cost is ~t_mem; above it
+     * (compute-bound) ~t_compute, with no hard max() switch. The blend
+     * is monotone in both legs, which the prune gate's roofline leg
+     * relies on: a twin with fewer uops and equal bytes can never cost
+     * more than the plain. A non-positive bw_bpc (only possible in
+     * hand-built test weights) degrades gracefully to the compute leg
+     * alone. HEURISTIC for static ordering (est.): the benchmark is the
+     * final arbiter. */
+    double t_mem = bw_bpc > 0.0 ? mem_per_byte / bw_bpc : 0.0;
+    /* freq512 derate applies to the compute leg only. Under AVX-512
+     * downclock, a memory-bound kernel's cycles/byte *decreases*
+     * (fewer cycles/sec at fixed bytes/sec), so the memory leg must
+     * NOT be scaled up. */
+    if (cand && cand->isa == ISA_AVX512)
+        t_compute *= freq512;
     double c2 = t_compute * t_compute;
     double m2 = t_mem * t_mem;
     double cost = sqrt(sqrt(c2 * c2 + m2 * m2));
-    if (cand && cand->isa == ISA_AVX512)
-        cost *= w->freq512;
     return cost;
 }
