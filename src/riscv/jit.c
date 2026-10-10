@@ -1552,7 +1552,7 @@ static void c_bne_long(cg_t *cg, int rs1, int rs2, int lab)
  *   for u in 0..U-1 (unrolled at JIT time):
  *       blez A3 -> next                   # skip chunks fully past the end
  *       vid.v vd0                         # vd0[i] = i
- *       vmslt.vx v0, vd0, A3              # v0[i] = (i < A3)
+ *       vmsltu.vx v0, vd0, A3             # v0[i] = (i <u A3)
  *       <gen_body(cg,1,0), data mem masked by v0>
  *   next:
  *       add T1, T1, T0                    # offset += VLMAX (even if skipped)
@@ -1570,7 +1570,7 @@ static void c_bne_long(cg_t *cg, int rs1, int rs2, int lab)
  * vid.v destination group overlaps the mask register (v0) at LMUL > 1.
  * vd0 is safe as the temp: every body writes it (data staging load)
  * before any read, or leaves it untouched (P_XOR direct-accumulator
- * path) -- it is never live-in to the body. vmslt.vx itself is
+ * path) -- it is never live-in to the body. vmsltu.vx itself is
  * unmasked (vm=1), so reading vd0 there is a pure
  * read-before-body-clobber.
  *
@@ -1594,7 +1594,10 @@ static void gen_tail_masked(cg_t *cg)
         c_blez_long(cg, A3, next_lab); /* A3 <= 0: skip the chunk */
         em_vid_v(e, cg->vd0);          /* vd0[i] = i */
         cg->uops += 1;
-        em_vmslt_vx(e, 0, cg->vd0, A3); /* v0[i] = (i < A3) */
+        /* v0[i] = (i <u A3): unsigned, exact for VLMAX <= 255 (the
+         * backend gate below rejects wider configs). A3 > 0 here
+         * (the blez skip above), so tmp = A3 mod 256 == A3. */
+        em_vmsltu_vx(e, 0, cg->vd0, A3);
         cg->uops += 1;
         cg->masked_mem = 1;
         gen_body(cg, 1, 0);
@@ -1860,6 +1863,19 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 #else
     cg.vlenb = read_vlenb();
 #endif
+    /* maskedtail mask math (vmsltu.vx at SEW=8) is exact only when VLMAX
+     * fits in 8 bits: vid.v indexes mod 256 and the .vx scalar operand
+     * truncates to SEW (V spec §11.1), so lmul*vlenb > 255 would wrap
+     * the index on one side and the bound on the other. The twin is
+     * simply not built on wider configs; the general strip-mining tail
+     * covers all hardware. */
+    if (cg.maskedtail && (size_t)cg.lmul * cg.vlenb > 255) {
+        snprintf(err, errlen,
+                 "riscv backend: maskedtail needs VLMAX <= 255 "
+                 "(lmul=%d vlenb=%zu)",
+                 cg.lmul, cg.vlenb);
+        return -1;
+    }
     v->group_bytes = (size_t)cg.U * cg.vlenb * (size_t)cg.lmul;
 
     /* cand->ternlog: not implemented for RVV; ignored.
@@ -1985,7 +2001,9 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  * with the 0x0F immediate, so no extra register is
                  * needed and the allocation below is unchanged).
                  * Pressure proof: n_out*U accumulators
-                 * (v0..n_out*U-1), U data regs
+                 * (logical v0..n_out*U-1, i.e. physical heads shifted up
+                 * by one LMUL-group under maskedtail's vreg() map), U
+                 * data regs
                  * (vd0..vd0+U-1 = n_out*U..(n_out+1)*U-1), tlo, thi, r1,
                  * r2, mask, tbl: exactly (n_out+1)*U+6 vector regs,
                  * matching the plan_need_regs P_HORNER remat branch

@@ -32,7 +32,10 @@ for u in 0..U-1 (unrolled at JIT time):
     # chunk u covers bytes [u*VLMAX, (u+1)*VLMAX)
     sub  tmp, A2, u*VLMAX             # tmp = remaining bytes for this chunk
     blez tmp -> next_chunk            # skip if chunk fully past the end
-    vmslt.vx v0, vd_tmp, tmp          # v0[i] = (i < tmp)
+    vmsltu.vx v0, vd_tmp, tmp         # v0[i] = (i <u tmp); unsigned:
+                                     # exact for VLMAX <= 255 (SEW=8
+                                     # scalar truncates to 8 bits, V §11.1;
+                                     # backend gate rejects wider configs)
     <body for u=1 with MASKED data loads/stores, v0.t, win=0>
 next_chunk:
 ```
@@ -77,9 +80,16 @@ GAS cross-check across randomized operands (multiple register combos).
 1. `em_vle8_v_m` / `em_vse8_v_m`: masked vector load/store (vm=0).
    Encoding: same as `em_vle8`/`em_vse8` with vm bit = 0.
 2. `em_vid_v`: `vid.v vd` — vector instruction, vd only.
-   Encoding: 0x... (OP-V, funct6=010100, vs1=10111, vm=1).
-3. `em_vmslt_vx`: `vmslt.vx vd, vs2, rs1` — set mask if vs2[i] < rs1 (signed).
-   Encoding: OPMVX, funct6=011100. vd MUST be v0 (mask register); assert this.
+   Encoding: OP-V, funct6=010100, funct3=010 (OPMVV), vs1=10001, vm=1,
+   vs2 field = 00000. GAS-verified: `vid.v v9` -> `0x5208a4d7`.
+3. `em_vmsltu_vx`: `vmsltu.vx vd, vs2, rs1` — set mask if vs2[i] <u rs1
+   (unsigned). Encoding: OP-V, funct6=011010, funct3=100 (OPIVX), vm=1.
+   Unsigned (not `vmslt.vx`=011011 signed): at SEW=8 the scalar operand
+   truncates to 8 bits (V spec §11.1), so tmp >= 128 would read negative
+   under the signed compare. Exact for VLMAX <= 255 (vid.v indexes mod
+   256); `jit_build_version` rejects `lmul * vlenb > 255`. vd MUST be v0
+   (mask register); assert this. GAS-verified: `vmsltu.vx v0,v9,a3` ->
+   `0x6a96c057`. (Note: 011100 is `vmsleu.vx`, unsigned <=.)
 
 Each gets a shape test pinning the encoding bytes.
 
@@ -111,7 +121,7 @@ Each gets a shape test pinning the encoding bytes.
   - Thread a "masked data memory" mode through `c_vle`/`c_vse` (the data
     load/store helpers). `gen_body`'s compute emitters are untouched.
   - `vid.v` needs a temp vector register (not v0, not an accumulator).
-- Static cost model: `cg->uops` increments for `vid.v` (1), `vmslt.vx` per
+- Static cost model: `cg->uops` increments for `vid.v` (1), `vmsltu.vx` per
   chunk (1 each), masked loads/stores (same as unmasked). The model is exact
   by construction (each emitter increments).
 

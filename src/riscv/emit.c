@@ -9,10 +9,11 @@
  *   vs1 field (bits 19:15), lumop/sumop=00000, width=000, vd/vs3;
  *   major opcode 0000111 for loads, 0100111 for stores. The maskedtail
  *   twin's _m forms are the same words with the vm bit (bit 25) = 0.
- * - vid.v: OPIVI (funct3=011), funct6=010100, vs1 field = 10111, vm=1,
+ * - vid.v: OPMVV (funct3=010), funct6=010100, vs1 field = 10001, vm=1,
  *   vs2 field = 00000.
- * - vmslt.vx: OPMVX (funct3=110), funct6=011011, vm=1; vd is always v0.
- *   (NOT 011100: that is vmsleu.vx, unsigned <=; see emit.h.)
+ * - vmsltu.vx: OPIVX (funct3=100), funct6=011010, vm=1; vd is always v0.
+ *   (NOT 011100: that is vmsleu.vx, unsigned <=; NOT 011011: that is
+ *   vmslt.vx, signed <. See emit.h.)
  * - blt/bge: B-type, funct3=100/101 (for the tail's blez synthesis).
  * - OPIVV (funct3=000): vxor.vv funct6=001011, vand.vv funct6=001001,
  *   vrgather.vv funct6=001100 (table in vs2 field, indices in vs1 field),
@@ -409,30 +410,37 @@ static void em_opv(em_t *e, int funct6, int vs2, int vs1, int funct3, int vd)
                   0x57u);
 }
 
-/* vid.v vd: vd[i] = i (element index), zero-extended to SEW. OPIVI
- * (funct3=011), funct6=010100, vs1 field = 10111 selects vid, vm=1
+/* vid.v vd: vd[i] = i (element index), zero-extended to SEW. OPMVV
+ * (funct3=010), funct6=010100, vs1 field = 10001 selects vid, vm=1
  * (unmasked), vs2 field = 00000 (the V spec requires the vs2 field to
  * be v0, otherwise the encoding is reserved). NOTE: the destination
  * group must not overlap the mask register (v0) when LMUL > 1 (V spec
  * §16.9: illegal-insn); the maskedtail twin therefore targets a
- * body-clobbered temp, never v0. */
+ * body-clobbered temp, never v0. GAS-verified: vid.v v9 -> 0x5208a4d7
+ * (funct3=010, vs1=10001). */
 void em_vid_v(em_t *e, int vd)
 {
-    em_opv(e, 0x14 /*010100*/, 0 /*vs2 field = 0*/, 0x17 /*10111=vid*/,
-           0x3 /*OPIVI*/, vd);
+    em_opv(e, 0x14 /*010100*/, 0 /*vs2 field = 0*/, 0x11 /*10001=vid*/,
+           0x2 /*OPMVV*/, vd);
 }
 
-/* vmslt.vx vd, vs2, rs1: vd[i] = (vs2[i] < rs1), signed -- the mask
- * producer for the maskedtail twin. OPMVX (funct3=110), funct6=011011,
- * vm=1 (unmasked: the old mask is dead at each rewrite, so no
- * masked-off-lane hazard). vd MUST be v0: every masked operation
+/* vmsltu.vx vd, vs2, rs1: vd[i] = (vs2[i] <u rs1), unsigned -- the
+ * mask producer for the maskedtail twin. OPIVX (funct3=100),
+ * funct6=011010, vm=1 (unmasked: the old mask is dead at each rewrite,
+ * so no masked-off-lane hazard). vd MUST be v0: every masked operation
  * hardwires v0 as THE mask register, so a mask produced anywhere else
  * would need a copy through v0 anyway; the assert makes misuse loud.
- * (See emit.h for the 011011-vs-011100 spec-typo note.) */
-void em_vmslt_vx(em_t *e, int vd, int vs2, int rs1)
+ * Unsigned (not vmslt.vx): at SEW=8 the scalar operand truncates to 8
+ * bits (V spec §11.1), so a signed compare would read tmp >= 128 as
+ * negative; vmsltu.vx compares the low 8 bits unsigned instead. Mask
+ * math is exact when VLMAX <= 255 (vid.v indexes mod 256); the
+ * backend rejects wider configs (see jit_build_version).
+ * GAS-verified: vmsltu.vx v0,v9,a3 -> 0x6a96c057 (funct6=011010,
+ * funct3=100). Note 011100 is vmsleu.vx (unsigned <=), not vmsltu.vx. */
+void em_vmsltu_vx(em_t *e, int vd, int vs2, int rs1)
 {
     assert(vd == 0); /* v0 is the mask register */
-    em_opv(e, 0x1b /*011011*/, vs2, rs1, 0x6 /*OPMVX*/, vd);
+    em_opv(e, 0x1a /*011010*/, vs2, rs1, 0x4 /*OPIVX*/, vd);
 }
 
 void em_vxor_vv(em_t *e, int vd, int vs1, int vs2)

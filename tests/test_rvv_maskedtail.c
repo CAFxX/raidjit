@@ -6,9 +6,9 @@
  *
  *  1. Shape: for every RVV candidate the planner enumerates, the
  *     maskedtail twin builds; its desc carries " maskedtail"; the code
- *     contains exactly U vid.v and U vmslt.vx words plus masked (vm=0)
+ *     contains exactly U vid.v and U vmsltu.vx words plus masked (vm=0)
  *     data loads/stores -- none of which appear in the general twin;
- *     v0 is written only by vmslt.vx; every other vector register
+ *     v0 is written only by vmsltu.vx; every other vector register
  *     operand is lmul-aligned and nonzero (the v0 reservation).
  *  2. Differential: general vs maskedtail vs the ref_run oracle on ALL
  *     remainders 1..U*VLMAX-1 plus boundary lengths, across
@@ -91,14 +91,15 @@ static void randfill(uint8_t *p, size_t n)
 
 /* ---------------- 1. shape ---------------- */
 
-/* vid.v: OPIVI (f3=011), funct6=010100, vs1=10111, vm=1. Mask keeps the
- * opcode fields, clears vd. */
+/* vid.v: OPMVV (f3=010), funct6=010100, vs1=10001, vm=1. Mask keeps the
+ * opcode fields, clears vd. GAS-verified: vid.v v9 -> 0x5208a4d7. */
 #define VID_MASK 0xfffff07fu
-#define VID_BASE 0x520bb057u
-/* vmslt.vx: OPMVX (f3=110), funct6=011011, vm=1. Mask keeps the opcode
- * fields, clears vs2/rs1 (vd is always v0). */
-#define VMSLT_MASK 0xfe00707fu
-#define VMSLT_BASE 0x6e006057u
+#define VID_BASE 0x5208a057u
+/* vmsltu.vx: OPIVX (f3=100), funct6=011010, vm=1. Mask keeps the opcode
+ * fields, clears vs2/rs1 (vd is always v0). GAS-verified:
+ * vmsltu.vx v0,v9,a3 -> 0x6a96c057. */
+#define VMSLTU_MASK 0xfe00707fu
+#define VMSLTU_BASE 0x6a004057u
 
 static void shape_one(const plan_t *pl, const cand_t *c,
                       const rj_cpu_info *cpu, const char *tag)
@@ -121,6 +122,16 @@ static void shape_one(const plan_t *pl, const cand_t *c,
     /* The twin must build whenever the v0 reservation fits; when it
      * doesn't fit the backend must fail cleanly (never wrong code). */
     int lmul = c->lmul ? c->lmul : 1;
+    size_t vlmax = (size_t)lmul * read_vlenb();
+    if (vlmax > 255) {
+        /* Mask math (vmsltu.vx at SEW=8) is exact only for VLMAX <= 255:
+         * the backend must reject the twin on wider configs, never
+         * build wrong code. */
+        CHECK(!mt_built, "%s: maskedtail built with VLMAX=%zu > 255",
+              tag, vlmax);
+        jit_free_version(&vg);
+        return;
+    }
     int need_mt = plan_need_regs(ISA_RVV, c->mul, pl, c->U, c->remat,
                                  c->pipe, 1) * lmul;
     if (need_mt <= 32) {
@@ -148,7 +159,7 @@ static void shape_one(const plan_t *pl, const cand_t *c,
     for (size_t i = 0; i < ng; i++) {
         if ((wg[i] & VID_MASK) == VID_BASE)
             nvid_g++;
-        if ((wg[i] & VMSLT_MASK) == VMSLT_BASE)
+        if ((wg[i] & VMSLTU_MASK) == VMSLTU_BASE)
             ncmp_g++;
         unsigned op = wg[i] & 0x7fu;
         if ((op == 0x07u || op == 0x27u) && ((wg[i] >> 25) & 1u) == 0)
@@ -157,26 +168,26 @@ static void shape_one(const plan_t *pl, const cand_t *c,
     for (size_t i = 0; i < nm; i++) {
         if ((wm[i] & VID_MASK) == VID_BASE)
             nvid_m++;
-        if ((wm[i] & VMSLT_MASK) == VMSLT_BASE)
+        if ((wm[i] & VMSLTU_MASK) == VMSLTU_BASE)
             ncmp_m++;
         unsigned op = wm[i] & 0x7fu;
         if ((op == 0x07u || op == 0x27u) && ((wm[i] >> 25) & 1u) == 0)
             nmasked_m++;
     }
     CHECK(nvid_g == 0 && ncmp_g == 0,
-          "%s: general twin has vid.v/vmslt.vx (%d/%d)", tag, nvid_g,
+          "%s: general twin has vid.v/vmsltu.vx (%d/%d)", tag, nvid_g,
           ncmp_g);
     CHECK(nmasked_g == 0, "%s: general twin has %d masked mem ops", tag,
           nmasked_g);
-    /* Exactly one vid.v + one vmslt.vx per unrolled chunk. */
+    /* Exactly one vid.v + one vmsltu.vx per unrolled chunk. */
     CHECK(nvid_m == c->U, "%s: maskedtail has %d vid.v (want U=%d)", tag,
           nvid_m, c->U);
-    CHECK(ncmp_m == c->U, "%s: maskedtail has %d vmslt.vx (want U=%d)", tag,
+    CHECK(ncmp_m == c->U, "%s: maskedtail has %d vmsltu.vx (want U=%d)", tag,
           ncmp_m, c->U);
     CHECK(nmasked_m > 0, "%s: maskedtail has no masked mem ops", tag);
 
     /* v0 reservation: the only vector instruction writing v0 is
-     * vmslt.vx; every other vector register operand is nonzero and
+     * vmsltu.vx; every other vector register operand is nonzero and
      * lmul-aligned. Vector/scalar field classification per funct3:
      * OPIVV/OPFVV/OPMVV (0-2): vd/vs1/vs2 vector; OPIVI (3): vd vector,
      * vs1 field is imm/selector (not a reg), vs2 vector except vid.v's
@@ -212,8 +223,8 @@ static void shape_one(const plan_t *pl, const cand_t *c,
             int is_vmv = (f6 == 0x17u);
             nvec++;
             if (vd == 0) {
-                CHECK((w & VMSLT_MASK) == VMSLT_BASE,
-                      "%s: v0 written by non-vmslt.vx 0x%08x at +%zu",
+                CHECK((w & VMSLTU_MASK) == VMSLTU_BASE,
+                      "%s: v0 written by non-vmsltu.vx 0x%08x at +%zu",
                       tag, w, i);
             } else {
                 CHECK(vd % lmul == 0, "%s: vd=v%d at +%zu not %d-aligned",

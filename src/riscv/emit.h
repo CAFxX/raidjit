@@ -98,22 +98,23 @@ void em_vse8(em_t *e, int vs3, int rs1); /* *(rs1) = vs3, unit stride */
  * fault (no over-read/over-write past the tail). */
 void em_vle8_v_m(em_t *e, int vd, int rs1);  /* vd = *(rs1), v0.t */
 void em_vse8_v_m(em_t *e, int vs3, int rs1); /* *(rs1) = vs3, v0.t */
-/* vid.v vd: vd[i] = i (element index). OPIVI, funct6=010100, vs1 field
- * = 10111 selects vid, vm=1 (unmasked), vs2 field = 00000 (reserved;
+/* vid.v vd: vd[i] = i (element index). OPMVV, funct6=010100, vs1 field
+ * = 10001 selects vid, vm=1 (unmasked), vs2 field = 00000 (reserved;
  * the V spec requires it to be v0). NOTE: the destination group must
  * not overlap the mask register (v0) when LMUL > 1 -- the V spec
  * raises illegal-insn there -- so the maskedtail twin writes the index
- * vector into a body-clobbered temp, never v0. */
+ * vector into a body-clobbered temp, never v0. GAS-verified (vid.v v9
+ * -> 0x5208a4d7). */
 void em_vid_v(em_t *e, int vd);
-/* vmslt.vx vd, vs2, rs1: vd[i] = (vs2[i] < rs1) signed, the mask
- * producer for the maskedtail twin. OPMVX, funct6=011011, vm=1
+/* vmsltu.vx vd, vs2, rs1: vd[i] = (vs2[i] <u rs1) unsigned, the mask
+ * producer for the maskedtail twin. OPIVX, funct6=011010, vm=1
  * (unmasked: the old mask is dead at each rewrite). vd MUST be v0
- * (the mask register); the emitter asserts this. (Spec note: an early
- * draft of the maskedtail spec wrote funct6=011100 here; that is
- * vmsleu.vx (unsigned <=). The described semantics -- signed < -- are
- * vmslt.vx = 011011, corroborated against the ratified V spec §15 and
- * an independent encoding table.) */
-void em_vmslt_vx(em_t *e, int vd, int vs2, int rs1);
+ * (the mask register); the emitter asserts this. Unsigned, not
+ * vmslt.vx (funct6=011011 signed): at SEW=8 the scalar truncates to 8
+ * bits (V spec §11.1), so tmp >= 128 would read negative under the
+ * signed compare. GAS-verified (vmsltu.vx v0,v9,a3 -> 0x6a96c057;
+ * note 011100 is vmsleu.vx, unsigned <=). */
+void em_vmsltu_vx(em_t *e, int vd, int vs2, int rs1);
 /* Zihintntl NTL.ALL: non-temporal locality hint for the immediately
  * following memory instruction (streaming: no exploitable temporal
  * locality). Encoded as ADD x0,x0,x5 -- a HINT, i.e. architecturally a

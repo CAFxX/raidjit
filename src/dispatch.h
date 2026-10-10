@@ -45,7 +45,8 @@ typedef enum {
                       * TAIL_SCALAR_MULT (below). */
     TAIL_NONE = 1,   /* no tail code at all: admits only len % group == 0 */
     TAIL_MASKED = 2, /* fully predicated/masked vector tail (SVE whilelt
-                      * twin, track B1sve; AVX-512 k1 twin, track B1x86):
+                      * twin, track B1sve; AVX-512 k1 twin, track B1x86;
+                      * RVV maskedtail twin):
                       * admits ONLY tail lengths (len % group != 0). A
                       * masked twin is installed only after winning its
                       * tail gate, so it deterministically serves the

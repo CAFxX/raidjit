@@ -77,7 +77,8 @@
 typedef struct {
     int notail;     /* notail twin won the large-size shootout */
     int predtail;   /* SVE predicated-tail twin won its duel */
-    int maskedtail; /* AVX-512 masked-tail twin won its duel */
+    int maskedtail; /* AVX-512 masked-tail twin won its duel; RVV maskedtail
+                     * twin won its duel */
 } planid_tail_t;
 
 /* Operation descriptor for ID formatting: the plan-shape determinants
