@@ -292,10 +292,11 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
         n += 1;
     }
     if (crc_fold) {
-        /* Phase 2 v2 (lanes = streams): one zmm per 4 streams for fold state
-         * (4x 128-bit states packed, one per lane). ceil(nstreams/4). */
-        int nstreams = pl->n_in + pl->n_out;
-        n += (nstreams + 3) / 4;
+        /* Phase 2 v2: one 128-bit state per stream (xmm register). The fold
+         * is per-stream 128-bit PCLMULQDQ; states are not packed (packing
+         * overhead exceeds VPCLMULQDQ benefit given the encode's 64B vectors).
+         */
+        n += pl->n_in + pl->n_out;
     }
     return n;
 }
