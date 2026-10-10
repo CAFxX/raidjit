@@ -1659,10 +1659,21 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "nibble, non-remat");
         return -1;
     }
-    /* Recovery closed-form emitter twin (algos #4): implemented in
-     * gen_body_rec_cf above; the planner only enumerates it for
-     * P_MULACC recovery plans where the closed form applies and the
-     * win conditions hold. */
+    /* Recovery closed-form emitter twin (algos #4): validated here, never
+     * wrong code for force-built candidates. Requires P_MULACC, rec_cf_data,
+     * nf in {1,2} matching n_out/n_in, and no other body twin. */
+    if (cand->rec_cf) {
+        const struct rec_cf_data *cfd = pl->rec_cf;
+        if (!cfd || pl->kind != P_MULACC ||
+            (cfd->nf != 1 && cfd->nf != 2) ||
+            pl->n_out != cfd->nf || pl->n_in != cfd->ns ||
+            cand->pipe || cand->remat) {
+            snprintf(err, errlen,
+                     "riscv backend: rec_cf twin needs P_MULACC with "
+                     "rec_cf_data, no other body twins");
+            return -1;
+        }
+    }
 
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
