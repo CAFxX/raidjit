@@ -512,10 +512,255 @@ static void mulacc_column(cg_t *cg, int col, int ncols,
     }
 }
 
+/* ---------------- recovery closed-form body (algos #4, rec_cf twin) -- */
+
 static void gen_stores(cg_t *cg);
+
+/* Accumulate one syndrome column: acc ^= c*in[s] with acc = acc0+u per
+ * lane. first = 1 when this is the accumulator's first contributing
+ * column (acc dead: copy/move instead of xor-with-zero). Mirrors
+ * mulacc_column's per-(j,col) logic for a single accumulator row, with
+ * the coefficient array swapped from pl->mat to the cf_data row. */
+static void cf_syndrome_column(cg_t *cg, int s, uint8_t c, int acc0,
+                               int first)
+{
+    int U = cg->U;
+    /* Predicated-tail mode processes one lane per chunk (the u=0 slice). */
+    int ulanes = cg->pred ? 1 : U;
+    if (!c)
+        return;
+    if (c != 1) {
+        c_ldpool(cg, cg->tbl_lo, CK_NIBLO, c);
+        c_ldpool(cg, cg->tbl_hi, CK_NIBHI, c);
+    }
+    c_inptr(cg, X10, s);
+    for (int u = 0; u < ulanes; u++) {
+        int acc = acc0 + u;
+        c_ld_to(cg, cg->t, u, X10);
+        if (c == 1) {
+            if (first)
+                c_copy(cg, acc, cg->t);
+            else
+                c_xor(cg, acc, cg->t);
+        } else {
+            c_and3(cg, cg->tlo, cg->t);
+            c_lsr4(cg, cg->thi, cg->t);
+            c_tbl_into(cg, cg->r1, cg->tbl_lo, cg->tlo);
+            c_tbl_into(cg, cg->r2, cg->tbl_hi, cg->thi);
+            if (first) {
+                /* acc dead: unpredicated EOR on SVE, mov+eor on NEON --
+                 * exactly mulacc_column's first-column path (the
+                 * destination is dead, not zero, so EOR3 is unusable;
+                 * in pred mode the unpredicated form is exact on active
+                 * lanes, same argument as gen_pred_tail documents). */
+                if (cg->is_sve) {
+                    em_sve_eor_unpred(&cg->em, V(cg, acc), V(cg, cg->r1),
+                                      V(cg, cg->r2));
+                    cg->uops += 1;
+                } else {
+                    c_copy(cg, acc, cg->r1);
+                    c_xor(cg, acc, cg->r2);
+                }
+            } else if (cg->use_eor3) {
+                c_eor3(cg, acc, cg->r1, cg->r2);
+            } else {
+                c_xor(cg, acc, cg->r1);
+                c_xor(cg, acc, cg->r2);
+            }
+        }
+    }
+}
+
+/* dst = c*src over GF(2^8); dst's old value is dead (consumed by the
+ * multiply). c==0: zero dst. c==1: copy. Otherwise the nibble-split
+ * TBL idiom with the dead-dst reduction. src is preserved. */
+static void cf_mul_dead(cg_t *cg, int dst, int src, uint8_t c)
+{
+    if (c == 0) {
+        if (cg->is_sve)
+            em_sve_dup(&cg->em, V(cg, dst), 0);
+        else
+            em_neon_movi(&cg->em, dst, 0);
+        cg->uops += 1;
+        return;
+    }
+    if (c == 1) {
+        c_copy(cg, dst, src);
+        return;
+    }
+    c_ldpool(cg, cg->tbl_lo, CK_NIBLO, c);
+    c_ldpool(cg, cg->tbl_hi, CK_NIBHI, c);
+    c_and3(cg, cg->tlo, src);
+    c_lsr4(cg, cg->thi, src);
+    c_tbl_into(cg, cg->r1, cg->tbl_lo, cg->tlo);
+    c_tbl_into(cg, cg->r2, cg->tbl_hi, cg->thi);
+    if (cg->is_sve) {
+        em_sve_eor_unpred(&cg->em, V(cg, dst), V(cg, cg->r1), V(cg, cg->r2));
+        cg->uops += 1;
+    } else {
+        c_copy(cg, dst, cg->r1);
+        c_xor(cg, dst, cg->r2);
+    }
+}
+
+/* dst ^= c*src over GF(2^8); dst is live. c==0: no-op. c==1: plain
+ * xor. Otherwise the nibble idiom; on SVE2 (use_eor3) the reduction
+ * folds into one EOR3. src is preserved. */
+static void cf_mulxor_live(cg_t *cg, int dst, int src, uint8_t c)
+{
+    if (c == 0)
+        return;
+    if (c == 1) {
+        c_xor(cg, dst, src);
+        return;
+    }
+    c_ldpool(cg, cg->tbl_lo, CK_NIBLO, c);
+    c_ldpool(cg, cg->tbl_hi, CK_NIBHI, c);
+    c_and3(cg, cg->tlo, src);
+    c_lsr4(cg, cg->thi, src);
+    c_tbl_into(cg, cg->r1, cg->tbl_lo, cg->tlo);
+    c_tbl_into(cg, cg->r2, cg->tbl_hi, cg->thi);
+    if (cg->use_eor3)
+        c_eor3(cg, dst, cg->r1, cg->r2);
+    else {
+        c_xor(cg, dst, cg->r1);
+        c_xor(cg, dst, cg->r2);
+    }
+}
+
+/* Zero one accumulator row (acc0+u per lane). Used for an all-zero
+ * syndrome (no contributing column): the accumulator would otherwise
+ * stay dead. Unreachable via the planner for a P_MULACC plan's primary
+ * syndrome, but a force-built candidate must not read dead accs. */
+static void cf_zero_acc(cg_t *cg, int acc0)
+{
+    int ulanes = cg->pred ? 1 : cg->U;
+    for (int u = 0; u < ulanes; u++) {
+        int acc = acc0 + u;
+        if (cg->is_sve)
+            em_sve_dup(&cg->em, V(cg, acc), 0);
+        else
+            em_neon_movi(&cg->em, acc, 0);
+        cg->uops += 1;
+    }
+}
+
+/* e=2 2x2 combine for one lane (unfolded form: 6 GF multiplies):
+ *   x1 = (d*p ^ b*q)*detinv into P's reg,
+ *   x2 = (c*p ^ a*q)*detinv into Q's reg.
+ * P = acc0+u holds p, Q = acc1+u holds q (both live on entry, dead on
+ * exit). Temps: t holds x1_pre, r1 holds x2_pre; tlo/thi/r1/r2 are the
+ * multiply working set. p is dead after its c-term is extracted, q
+ * after its a-term; the P/Q homes are dead then (their old values
+ * consumed), so the detinv multiplies use the dead-dst form -- with the
+ * Q-home multiply first, since it consumes r1 while the P-home
+ * multiply would clobber it. The a-term accumulates through r2 only
+ * (r1 holds c*p live, t holds x1_pre live): the TBL writes r2 fully, so
+ * the sequential xor-into-r1 is exact. */
+static void cf_combine_lane(cg_t *cg, int u, int acc0, int acc1,
+                            const struct rec_cf_data *cfd)
+{
+    int P = acc0 + u, Q = acc1 + u;
+    int t = cg->t;
+    /* x1_pre = d*p ^ b*q into t */
+    cf_mul_dead(cg, t, P, cfd->d);
+    cf_mulxor_live(cg, t, Q, cfd->b);
+    /* x2_pre = c*p ^ a*q into r1 */
+    cf_mul_dead(cg, cg->r1, P, cfd->c);
+    if (cfd->a == 1) {
+        c_xor(cg, cg->r1, Q);
+    } else if (cfd->a != 0) {
+        c_ldpool(cg, cg->tbl_lo, CK_NIBLO, cfd->a);
+        c_ldpool(cg, cg->tbl_hi, CK_NIBHI, cfd->a);
+        c_and3(cg, cg->tlo, Q);
+        c_lsr4(cg, cg->thi, Q);
+        c_tbl_into(cg, cg->r2, cg->tbl_lo, cg->tlo);
+        c_xor(cg, cg->r1, cg->r2);
+        c_tbl_into(cg, cg->r2, cg->tbl_hi, cg->thi);
+        c_xor(cg, cg->r1, cg->r2);
+    }
+    /* P = detinv*x1_pre, Q = detinv*x2_pre (P/Q dead: p/q consumed).
+     * Q first: it consumes r1, which the P multiply would clobber. */
+    cf_mul_dead(cg, Q, cg->r1, cfd->detinv);
+    cf_mul_dead(cg, P, t, cfd->detinv);
+}
+
+/* Recovery closed-form body (algos #4, rec_cf twin).
+ *
+ * e=1: x_f = cinv * syndrome, syndrome = XOR_s (ecoef[s] * in[s]).
+ * e=2: p = XOR_s (ecoef1[s]*in[s]), q = XOR_s (ecoef2[s]*in[s]), then
+ * the per-lane 2x2 combine above.
+ *
+ * Register usage is exactly compute_regs' P_MULACC nibble assignment
+ * (accs, t, tlo, thi, r1, r2, tbl_lo, tbl_hi, mask): the twin is only
+ * enumerated on P_MULACC plans, which always have a nontrivial baked
+ * coefficient, so the nibble set is always allocated (asserted). The
+ * scalar tail stays on the generic baked-R path (gen_tail): GF(2^8)
+ * distributivity makes it bit-identical to the closed form. */
+static void gen_body_rec_cf(cg_t *cg)
+{
+    const struct rec_cf_data *cfd = cg->pl->rec_cf;
+    int U = cg->U;
+    assert(cfd && (cfd->nf == 1 || cfd->nf == 2));
+    assert(cg->need_mask); /* nibble reg set allocated (see above) */
+    if (cfd->nf == 1) {
+        int first = -1;
+        for (int s = 0; s < cfd->ns; s++)
+            if (cfd->ecoef[s]) {
+                first = s;
+                break;
+            }
+        if (first < 0)
+            cf_zero_acc(cg, 0);
+        else
+            for (int s = 0; s < cfd->ns; s++)
+                cf_syndrome_column(cg, s, cfd->ecoef[s], 0, s == first);
+        /* x_f = cinv * syndrome */
+        if (cfd->cinv != 1) {
+            int ulanes = cg->pred ? 1 : U;
+            for (int u = 0; u < ulanes; u++)
+                cf_mul_dead(cg, u, u, cfd->cinv);
+        }
+    } else {
+        /* p into acc row 0, q into acc row 1 */
+        int first1 = -1, first2 = -1;
+        for (int s = 0; s < cfd->ns; s++)
+            if (cfd->ecoef1[s]) {
+                first1 = s;
+                break;
+            }
+        for (int s = 0; s < cfd->ns; s++)
+            if (cfd->ecoef2[s]) {
+                first2 = s;
+                break;
+            }
+        if (first1 < 0)
+            cf_zero_acc(cg, 0);
+        else
+            for (int s = 0; s < cfd->ns; s++)
+                cf_syndrome_column(cg, s, cfd->ecoef1[s], 0, s == first1);
+        if (first2 < 0)
+            cf_zero_acc(cg, U);
+        else
+            for (int s = 0; s < cfd->ns; s++)
+                cf_syndrome_column(cg, s, cfd->ecoef2[s], U, s == first2);
+        {
+            int ulanes = cg->pred ? 1 : U;
+            for (int u = 0; u < ulanes; u++)
+                cf_combine_lane(cg, u, 0, U, cfd);
+        }
+    }
+    gen_stores(cg);
+}
 
 static void gen_body(cg_t *cg)
 {
+    /* Recovery closed-form twin (algos #4): syndrome+combine body
+     * instead of the generic MULACC over the baked R matrix. */
+    if (cg->cand.rec_cf) {
+        gen_body_rec_cf(cg);
+        return;
+    }
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U;
@@ -1549,13 +1794,27 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "nibble, non-remat");
         return -1;
     }
-    /* Recovery closed-form emitter twin (algos #4): not yet implemented
-     * in the backend emitter; the planner enumerates it but the build
-     * fails cleanly until the emitter lands. */
+    /* Recovery closed-form emitter twin (algos #4): the backend emits
+     * the syndrome+combine body (gen_body_rec_cf) instead of the generic
+     * MULACC over the baked R matrix. The planner only enumerates it on
+     * P_MULACC recovery plans carrying rec_cf_data for nf in {1,2},
+     * never combined with another body twin; anything else (including
+     * force-built candidates) fails cleanly here -- never wrong code. */
     if (cand->rec_cf) {
-        snprintf(err, errlen,
-                 "aarch64 backend: rec_cf twin not yet implemented");
-        return -1;
+        const struct rec_cf_data *cfd = pl->rec_cf;
+        if (!cfd || pl->kind != P_MULACC ||
+            (cfd->nf != 1 && cfd->nf != 2) ||
+            pl->n_out != cfd->nf || pl->n_in != cfd->ns ||
+            !plan_any_nontrivial(pl) ||
+            cand->pipe || cand->remat || cand->xorsched ||
+            cand->xorbit || cand->permi2b || cand->mshift) {
+            snprintf(err, errlen,
+                     "aarch64 backend: rec_cf twin needs a P_MULACC "
+                     "recovery plan with rec_cf_data (nf 1..2, "
+                     "n_out == nf, n_in == ns), a nontrivial baked "
+                     "coefficient, and no other body twin");
+            return -1;
+        }
     }
     cg.opts = opts;
     cg.cpu = cpu;
@@ -1720,6 +1979,49 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         cg.use_eor3 = cg.is_sve && cpu->sve2 && nontriv;
     }
 
+    /* rec_cf twin: the body above is the generic MULACC gate over the
+     * baked R matrix, but gen_body_rec_cf emits the syndrome+combine
+     * form, whose EOR3 sites differ. Recompute the gate from the cf
+     * coefficients so it stays exact: a syndrome takes the accumulate
+     * (EOR3-eligible) path for a nontrivial coefficient past its first
+     * contributing column (mirrors cf_syndrome_column's first logic);
+     * the e=2 combine's b-term (t ^= b*q, t live) is also eligible.
+     * Dead-dst multiplies (final cinv, d/c/a terms, detinv) never use
+     * EOR3. */
+    if (cand->rec_cf) {
+        const struct rec_cf_data *cfd = pl->rec_cf;
+        int nontriv = 0;
+        if (cfd->nf == 1) {
+            int first = -1;
+            for (int s = 0; s < cfd->ns && first < 0; s++)
+                if (cfd->ecoef[s])
+                    first = s;
+            for (int s = 0; s < cfd->ns && !nontriv; s++)
+                if (s != first && cfd->ecoef[s] != 0 &&
+                    cfd->ecoef[s] != 1)
+                    nontriv = 1;
+        } else {
+            int first1 = -1, first2 = -1;
+            for (int s = 0; s < cfd->ns && first1 < 0; s++)
+                if (cfd->ecoef1[s])
+                    first1 = s;
+            for (int s = 0; s < cfd->ns && first2 < 0; s++)
+                if (cfd->ecoef2[s])
+                    first2 = s;
+            for (int s = 0; s < cfd->ns && !nontriv; s++) {
+                if (s != first1 && cfd->ecoef1[s] != 0 &&
+                    cfd->ecoef1[s] != 1)
+                    nontriv = 1;
+                if (s != first2 && cfd->ecoef2[s] != 0 &&
+                    cfd->ecoef2[s] != 1)
+                    nontriv = 1;
+            }
+            if (cfd->b != 0 && cfd->b != 1)
+                nontriv = 1;
+        }
+        cg.use_eor3 = cg.is_sve && cpu->sve2 && nontriv;
+    }
+
     /* Over-pressure must fail cleanly (return -1), not abort. The
      * planner's filter normally prevents this, but force-built
      * candidates (tests) must also be safe. */
@@ -1821,7 +2123,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->notail ? " notail" : "",
                  cand->predtail ? " predtail" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+nibble U=%d%s%s%s%s%s%s%s",
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+nibble U=%d%s%s%s%s%s%s%s%s",
                  pl->name, isa,
                  pl->kind == P_DELTA ? "delta" :
                  pl->kind == P_HORNER ? "horner" : "mulacc",
@@ -1829,6 +2131,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cg.cand.remat ? "+remat" : "",
                  cg.use_eor3 ? "+eor3" : "",
                  cand->pipe ? "+pipe" : "",
+                 cand->rec_cf ? "+reccf" : "",
                  cand->notail ? " notail" : "",
                  cand->predtail ? " predtail" : "");
 

@@ -14,18 +14,11 @@ CC := $(CROSS_COMPILE)$(CC)
 # and test binaries live under $(BUILDDIR).
 BUILDDIR = build-$(ARCH)
 
-COMMON_SRCS = src/gf.c src/plan.c src/ports.c src/topo.c src/bench.c src/ref.c src/api.c \
+COMMON_SRCS = src/gf.c src/plan.c src/topo.c src/bench.c src/ref.c src/api.c \
         src/prune.c src/dispatch.c src/xorsched.c src/matrix_search.c \
         src/xorcode.c src/survivor.c src/prefetch_calib.c src/planid.c \
         src/crc.c src/crc_fast.c src/striping.c src/api_crc.c src/fused.c \
         src/api_batched.c
-# Port model data: generated from data/uarch/*.ports (source of truth).
-# Adding a uarch = add a .ports file (no C code change), then rebuild.
-PORTS_DATA = src/ports_data.inc
-$(PORTS_DATA): data/uarch/*.ports tools/gen_ports_inc.py
-	python3 tools/gen_ports_inc.py data/uarch $@
-# ports.c includes the generated data; ensure it's built first.
-src/ports.c: $(PORTS_DATA)
 ifeq ($(ARCH),x86_64)
 ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c \
         src/x86_64/crc_fast.c
@@ -67,7 +60,6 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
-        $(BUILDDIR)/test_ports \
         $(BUILDDIR)/test_recover_closedform \
         $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_crc_fast $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
         $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc \
@@ -77,7 +69,7 @@ X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
         $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b \
         $(BUILDDIR)/test_xorbit $(BUILDDIR)/test_mshift \
-        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative
+        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative $(BUILDDIR)/test_rec_cf_emit
 ifeq ($(ARCH),x86_64)
 TESTS = $(PORTABLE_TESTS) $(X86_ONLY_TESTS)
 else
@@ -334,6 +326,7 @@ ifeq ($(ARCH),x86_64)
 	./$(BUILDDIR)/test_xorbit
 	./$(BUILDDIR)/test_mshift
 	./$(BUILDDIR)/test_crc_fast_x86
+	./$(BUILDDIR)/test_rec_cf_emit
 endif
 	./$(BUILDDIR)/test_nt
 	./$(BUILDDIR)/test_pdelta
@@ -358,7 +351,6 @@ endif
 	./$(BUILDDIR)/test_prefetch_calib
 	./$(BUILDDIR)/test_traps
 	./$(BUILDDIR)/test_planner_fuzz
-	./$(BUILDDIR)/test_ports
 	./$(BUILDDIR)/test_recover_closedform
 	./$(BUILDDIR)/test_pipe
 	./$(BUILDDIR)/test_crc
@@ -560,11 +552,11 @@ $(BUILDDIR)/test_notail_xorsched: tests/test_notail_xorsched.c $(BUILDDIR)/libra
 $(BUILDDIR)/test_planner_fuzz: tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
-$(BUILDDIR)/test_ports: tests/test_ports.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
-	$(CC) $(CFLAGS) -o $@ tests/test_ports.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
-
 $(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_rec_cf_emit: tests/test_rec_cf_emit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_rec_cf_emit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_pipe: tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
@@ -604,6 +596,3 @@ $(BUILDDIR)/test_lrc: tests/test_lrc.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUIL
 
 $(BUILDDIR)/test_twin_audit: tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
-
-$(BUILDDIR)/test_pinned_negative: tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
-	$(CC) $(CFLAGS) -o $@ tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
