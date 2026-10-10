@@ -255,11 +255,26 @@ static void check_mutation(plan_t *pl, const char *tname)
 }
 
 /* ---- JIT differential (forced xorbit=1) + model lockstep ---- */
+
+/* Native ISAs with JIT backends in this build. The xorbit differential
+ * + lockstep runs for each native ISA (this is the coverage that caught
+ * the AArch64/RVV xorbit codegen bugs: the naive-body fall-through,
+ * the missing &1, the RVV HORNER segfault). */
+#if defined(__aarch64__)
+static const isa_t jit_isas[] = { ISA_NEON, ISA_SVE };
+static const char *jit_isa_names[] = { "NEON", "SVE" };
+#elif defined(__riscv)
+static const isa_t jit_isas[] = { ISA_RVV };
+static const char *jit_isa_names[] = { "RVV" };
+#else
+static const isa_t jit_isas[] = { ISA_SSE };
+static const char *jit_isa_names[] = { "SSE" };
+#endif
+#define NJIT_ISAS (sizeof(jit_isas) / sizeof(jit_isas[0]))
+
 static void check_jit(const rj_cpu_info *cpu, plan_t *pl, isa_t isa, int U,
                       size_t len, const char *tname)
 {
-    if (isa != ISA_SSE)
-        return; /* AVX paths share the emitter; SSE is the tested ISA */
     if (xorbit_need_regs(isa, pl, U) > isa_nregs(isa))
         return;
     cand_t cn;
@@ -359,8 +374,13 @@ int main(void)
         size_t lens[] = { 16, 64, 100, 256 };
         for (size_t ui = 0; ui < 3; ui++)
             for (size_t li = 0; li < 4; li++)
-                check_jit(&cpu, &pl, ISA_SSE, Us[ui], lens[li],
-                          "mulacc4x2");
+                for (unsigned ii = 0; ii < NJIT_ISAS; ii++) {
+                    char tn[64];
+                    snprintf(tn, sizeof(tn), "mulacc4x2-%s",
+                             jit_isa_names[ii]);
+                    check_jit(&cpu, &pl, jit_isas[ii], Us[ui], lens[li],
+                              tn);
+                }
         xorbit_free(pl.bit_sched);
         free(pl.mat);
     }
@@ -381,8 +401,12 @@ int main(void)
         pl.bit_sched = xorbit_build(&pl);
         check_sched_correct(&pl, "mulacc6x3");
         check_flat_bound(&pl, "mulacc6x3");
-        check_jit(&cpu, &pl, ISA_SSE, 1, 128, "mulacc6x3");
-        check_jit(&cpu, &pl, ISA_SSE, 2, 200, "mulacc6x3");
+        for (unsigned ii = 0; ii < NJIT_ISAS; ii++) {
+            char tn[64];
+            snprintf(tn, sizeof(tn), "mulacc6x3-%s", jit_isa_names[ii]);
+            check_jit(&cpu, &pl, jit_isas[ii], 1, 128, tn);
+            check_jit(&cpu, &pl, jit_isas[ii], 2, 200, tn);
+        }
         xorbit_free(pl.bit_sched);
         free(pl.mat);
     }
@@ -423,7 +447,11 @@ int main(void)
         pl.bit_sched = xorbit_build(&pl);
         check_sched_correct(&pl, "delta");
         check_flat_bound(&pl, "delta");
-        check_jit(&cpu, &pl, ISA_SSE, 1, 128, "delta");
+        for (unsigned ii = 0; ii < NJIT_ISAS; ii++) {
+            char tn[64];
+            snprintf(tn, sizeof(tn), "delta-%s", jit_isa_names[ii]);
+            check_jit(&cpu, &pl, jit_isas[ii], 1, 128, tn);
+        }
         xorbit_free(pl.bit_sched);
         free(pl.mat);
     }

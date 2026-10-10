@@ -122,6 +122,7 @@ void em_neon_eor(em_t *e, int vd, int vn, int vm);
 void em_neon_and(em_t *e, int vd, int vn, int vm);
 void em_neon_orr(em_t *e, int vd, int vn, int vm);     /* vector copy */
 void em_neon_ushr(em_t *e, int vd, int vn, unsigned sh); /* sh in 1..8 */
+void em_neon_shl(em_t *e, int vd, int vn, unsigned sh); /* sh in 1..7 */
 void em_neon_tbl(em_t *e, int vd, int vn, int vm);     /* vd = tbl({vn},vm) */
 void em_neon_movi(em_t *e, int vd, unsigned imm8);
 void em_neon_stp_pre(em_t *e, int qt1, int qt2, int rn, int off);  /* [xRn,#off]! */
@@ -148,5 +149,6 @@ void em_sve_orr(em_t *e, int zdn, int pg, int zm);      /* destructive: zDn|=zM 
 void em_sve_mov(em_t *e, int zd, int zn);               /* zD.d = zN.d, true copy */
 void em_sve_lsr(em_t *e, int zdn, int pg, unsigned sh);/* sh in 1..7 */
 void em_sve_lsr_unpred(em_t *e, int zd, int zn, unsigned sh); /* lsr zd.b,zn.b,#sh, unpredicated; sh in 1..7 */
+void em_sve_lsl_unpred(em_t *e, int zd, int zn, unsigned sh); /* lsl zd.b,zn.b,#sh, unpredicated; sh in 1..7 */
 void em_sve_tbl(em_t *e, int zd, int zn, int zm);      /* zd = tbl({zn},zm) */
 void em_sve_dup(em_t *e, int zd, int imm8);            /* dup zd.b, #imm8 (signed) */

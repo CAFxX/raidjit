@@ -98,6 +98,12 @@ static void t_neon(void)
     em_neon_and(&e, 4, 5, 6);      CHECK_WORD(&e, 0x4E261CA4u);
     em_neon_orr(&e, 13, 14, 14);   CHECK_WORD(&e, 0x4EAE1DCDu);
     em_neon_ushr(&e, 8, 9, 4);     CHECK_WORD(&e, 0x6F0C0528u);
+    /* SHL .16b: GAS-verified 2026-10-10, immh:immb = 8+sh */
+    em_neon_shl(&e, 16, 17, 1);    CHECK_WORD(&e, 0x4f095630u);
+    em_neon_shl(&e, 16, 17, 4);    CHECK_WORD(&e, 0x4f0c5630u);
+    em_neon_shl(&e, 16, 17, 7);    CHECK_WORD(&e, 0x4f0f5630u);
+    em_neon_shl(&e, 0, 1, 3);      CHECK_WORD(&e, 0x4f0b5420u);
+    em_neon_shl(&e, 31, 30, 5);    CHECK_WORD(&e, 0x4f0d57dfu);
     em_neon_tbl(&e, 9, 10, 11);    CHECK_WORD(&e, 0x4E0B0149u);
     em_neon_movi(&e, 12, 15);      CHECK_WORD(&e, 0x4F00E5ECu);
     em_neon_stp_pre(&e, 8, 9, 31, -32);  CHECK_WORD(&e, 0xADBF27E8u);
@@ -173,6 +179,20 @@ static void t_sve(void)
     em_sve_lsr_unpred(&e, 22, 18, 4);  CHECK_WORD(&e, 0x042c9656u);
     em_sve_lsr_unpred(&e, 0, 1, 7);    CHECK_WORD(&e, 0x04299420u);
     em_sve_lsr_unpred(&e, 31, 30, 1);  CHECK_WORD(&e, 0x042f97dfu);
+    /* LSL (unpredicated): GAS-verified 2026-10-10. Base 0x04209C00,
+     * bits 19:16 = 8+sh (the tszh:tszl:imm3 format biases byte shifts).
+     * A naive "LSR base + bit 13" derivation got both the base and the
+     * immediate wrong; GAS caught it. */
+    em_sve_lsl_unpred(&e, 16, 17, 1);  CHECK_WORD(&e, 0x04299e30u);
+    em_sve_lsl_unpred(&e, 16, 17, 4);  CHECK_WORD(&e, 0x042c9e30u);
+    em_sve_lsl_unpred(&e, 16, 17, 7);  CHECK_WORD(&e, 0x042f9e30u);
+    /* Diverse regs (AGENTS.md: even/odd, low/high): */
+    em_sve_lsl_unpred(&e, 22, 18, 4);  CHECK_WORD(&e, 0x042c9e56u);
+    em_sve_lsl_unpred(&e, 0, 1, 7);    CHECK_WORD(&e, 0x042f9c20u);
+    em_sve_lsl_unpred(&e, 31, 30, 1);  CHECK_WORD(&e, 0x04299fdfu);
+    em_sve_lsl_unpred(&e, 0, 0, 1);    CHECK_WORD(&e, 0x04299c00u);
+    em_sve_lsl_unpred(&e, 5, 9, 3);    CHECK_WORD(&e, 0x042b9d25u);
+    em_sve_lsl_unpred(&e, 27, 13, 6);  CHECK_WORD(&e, 0x042e9dbbu);
     em_sve_tbl(&e, 25, 26, 27);    CHECK_WORD(&e, 0x053B3359u);
     em_sve_dup(&e, 30, 15);        CHECK_WORD(&e, 0x2538C1FEu);
     em_sve_dup(&e, 21, -128);      CHECK_WORD(&e, 0x2538D015u);

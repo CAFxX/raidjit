@@ -535,6 +535,8 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
     int nhoist = (n_in < 2) ? 0 : (n_in < 5 ? n_in : 5);
     int first_in[RJ_MAX_DISKS];
     xs_first_in(pl, first_in);
+    (void)notail; /* RVV: remainder excluded either way; x86/AArch64: notail
+                   * only omits the uncounted scalar/predicated tail. */
 
     /* Store uops: NEON pairs adjacent lanes with STNP on the nt path
      * (one uop per pair, trailing lane falls back to STR); every other
@@ -544,24 +546,18 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
                                        : (long)pl->n_out * U;
 
     if (isa == ISA_RVV) {
-        /* Full version: gen_body is emitted 2x -- once with nu=U in the
-         * counted full-group loop (F6), once with nu=1 in the remainder
-         * loop. Stores are inside gen_body; 2 counted vsetvli (the F6
-         * prologue vsetvli and the remainder vsetvli -- prologue const
-         * setup is uncounted, and all other prologue instructions use
-         * raw em_* calls). Notail twin: the counted loop is the whole
-         * version (dispatcher guarantees len % group == 0), so only
-         * the single nu=U body is emitted, plus the one prologue
-         * vsetvli (src/riscv/jit.c counts exactly one cg->uops += 1
-         * outside gen_body on the notail path). */
+        /* Full version: gen_body is emitted once with nu=U in the
+         * counted full-group loop (F6). The remainder loop is
+         * steady-state-excluded (like AArch64's predicated tail and
+         * the x86 scalar tail): its body and vsetvli are not counted.
+         * Stores are inside gen_body; 1 counted vsetvli (the F6
+         * prologue). Prologue const setup is uncounted, and all other
+         * prologue instructions use raw em_* calls. Notail twin: the
+         * counted loop is the whole version, so only the single nu=U
+         * body is emitted, plus the one prologue vsetvli. */
         long bU = sched ? xs_body_sched(s, isa, U, nhoist)
                         : xs_body_naive(pl, isa, U, nhoist, first_in);
-        if (notail)
-            return (bU + stU) + 1;
-        long b1 = sched ? xs_body_sched(s, isa, 1, nhoist)
-                        : xs_body_naive(pl, isa, 1, nhoist, first_in);
-        long st1 = (long)pl->n_out;
-        return (bU + stU) + (b1 + st1) + 2;
+        return (bU + stU) + 1;
     }
     /* x86/AArch64: the notail twin omits only the scalar tail, which
      * emits no counted uops, so the notail prediction is identical. */
@@ -984,12 +980,12 @@ void xorbit_free(xorbit_t *s)
 
 int xorbit_need_regs(isa_t isa, const plan_t *pl, int U)
 {
-    (void)isa;
-    /* n_out*U accumulators + inreg + r1 + r2 + mask1. The nibble
-     * tables are dead on this path.
+    /* n_out*U accumulators + inreg + r1 + r2 (+ mask1, except RVV where
+     * vand.vi takes an immediate). The nibble tables are dead on this
+     * path.
      * Emitter redesign (track A3): + maxlive for temp-stack storage.
-     * For flat temps (current scheduler), maxlive == 0, so the formula
-     * reduces to the original n_out*U + 4. */
+     * For flat temps (current scheduler), maxlive == 0. */
+    int extra = (isa == ISA_RVV) ? 3 : 4;
     int maxlive = 0;
     if (pl && pl->bit_sched) {
         int *def = NULL, *lastuse = NULL;
@@ -999,7 +995,7 @@ int xorbit_need_regs(isa_t isa, const plan_t *pl, int U)
         free(def);
         free(lastuse);
     }
-    return pl->n_out * U + 4 + maxlive;
+    return pl->n_out * U + extra + maxlive;
 }
 
 /* ---- static cost model for the bit-program twin ----
@@ -1020,11 +1016,13 @@ static int xb_nhoist(const plan_t *pl)
 
 /* Fan-out uops for one (b, jlist) group, mirroring xorbit_fanout.
  * touched[j] is updated exactly like the emitter's. */
-static long xb_fanout_uops(const int *users, int nusers, int is_sse,
+static long xb_fanout_uops(const int *users, int nusers, isa_t isa,
                            int is_delta, int *touched)
 {
     long uops = 0;
-    long sh = is_sse ? 2 : 1; /* c_sllw (vd != s1: mov + shift on SSE) */
+    /* c_sllw cost: SSE needs mov+shift (vd != s1); AVX/NEON/SVE/RVV have
+     * 3-operand shifts (1 uop). */
+    long sh = (isa == ISA_SSE) ? 2 : 1;
     int w = 0;
     while (w < nusers) {
         int b = users[w] & 7;
@@ -1060,8 +1058,10 @@ static long xb_fanout_uops(const int *users, int nusers, int is_sse,
 
 /* Scheduled body uops for U vectors. Direct simulation of
  * gen_body_xorbit's emission order and 1-entry input-byte cache. */
-static long xb_body_sched(const xorbit_t *s, int is_sse, int U, int nhoist)
+static long xb_body_sched(const xorbit_t *s, isa_t isa, int U, int nhoist)
 {
+    int is_sse = (isa == ISA_SSE);
+    int is_x86 = (isa == ISA_SSE || isa == ISA_AVX2 || isa == ISA_AVX512);
     int n_out = s->n_out;
     int ni_sched = s->n_in_sched;
     int is_delta = (s->kind == P_DELTA);
@@ -1079,22 +1079,24 @@ static long xb_body_sched(const xorbit_t *s, int is_sse, int U, int nhoist)
         for (int m = 0; m < s->ntemps; m++) {
             int ia = s->temps[m].a >> 3, ib = s->temps[m].b >> 3;
             if (cur_in != ia) {
-                if (!is_delta && ia >= nhoist)
+                /* x86 only: AArch64/RVV inptr (c_inptr/c_ldptr) is 0 uops. */
+                if (!is_delta && ia >= nhoist && is_x86)
                     uops += 1; /* body_inptr mov */
                 uops += 1;     /* c_ld */
                 cur_in = ia;
             }
-            uops += 3; /* c_srlw (2) + c_and (1) */
+            /* bit extraction: shift + and. SSE: 2+1=3 (mov+shift); others: 1+1=2. */
+            uops += is_sse ? 3 : 2;
             if (cur_in != ib) {
-                if (!is_delta && ib >= nhoist)
+                if (!is_delta && ib >= nhoist && is_x86)
                     uops += 1;
                 uops += 1;
                 cur_in = ib;
             }
-            uops += 3; /* c_srlw (2) + c_and (1) */
+            uops += is_sse ? 3 : 2; /* bit extraction: shift + and */
             uops += 1; /* c_vpxor */
             uops += xb_fanout_uops(s->temps[m].users, s->temps[m].nusers,
-                                   is_sse, is_delta, touched);
+                                   isa, is_delta, touched);
         }
         /* phase 2: surviving input bits */
         for (long q = 0; q < 8L * (long)ni_sched; q++) {
@@ -1102,14 +1104,14 @@ static long xb_body_sched(const xorbit_t *s, int is_sse, int U, int nhoist)
                 continue;
             int i = (int)(q >> 3);
             if (cur_in != i) {
-                if (!is_delta && i >= nhoist)
+                if (!is_delta && i >= nhoist && is_x86)
                     uops += 1;
                 uops += 1;
                 cur_in = i;
             }
-            uops += 3; /* c_srlw (2) + c_and (1) */
+            uops += is_sse ? 3 : 2; /* bit extraction: shift + and */
             uops += xb_fanout_uops(s->inbit_users[q],
-                                   s->inbit_nusers[q], is_sse, is_delta,
+                                   s->inbit_nusers[q], isa, is_delta,
                                    touched);
         }
     }
@@ -1131,12 +1133,252 @@ static void xb_first_col(const plan_t *pl, int ncols, int *first_col)
     }
 }
 
+/* AArch64 naive nibble body uops for U vectors (MUL_NIBBLE, no
+ * ternlog/permi2b/remat/pipe/pred). Mirrors src/aarch64/jit.c exactly:
+ * mulacc_column for P_MULACC/P_DELTA, the inline i-loop for P_HORNER.
+ * Excludes prologue const-setup (uncounted by convention) and stores
+ * (added by xorbit_version_uops' caller).
+ *
+ * is_sve selects NEON vs SVE counting (c_ldpool is 2 uops on SVE, 1 on
+ * NEON; the first-column nontrivial accumulate is 1 uop on SVE via
+ * unpredicated EOR, 2 on NEON via mov+eor). SVE2 EOR3 is assumed
+ * available: this makes the model a LOWER BOUND on the true naive cost
+ * (on non-SVE2 hardware the true naive is costlier), so the
+ * enumeration gate (u_sched < u_naive) stays sound -- it may miss wins
+ * on non-SVE2, but never admits a losing twin. */
+static long xb_body_naive_aarch64(const plan_t *pl, int U, int is_sve)
+{
+    int n_in = pl->n_in, n_out = pl->n_out;
+    int use_eor3 = is_sve; /* lower bound; see above */
+    int ldpool = is_sve ? 2 : 1;
+    long uops = 0;
+    int first_col[RJ_MAX_DISKS];
+
+    if (pl->kind == P_MULACC) {
+        xb_first_col(pl, n_in, first_col);
+        /* No dead-row prologue on AArch64 (first_col logic overwrites
+         * accumulators on first touch). */
+        for (int i = 0; i < n_in; i++) {
+            int any = 0;
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
+                    any = 1;
+                    break;
+                }
+            if (!any)
+                continue;
+            /* c_inptr: 0 uops. */
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->mat[(size_t)j * (size_t)n_in + (size_t)i];
+                if (!c)
+                    continue;
+                int first = (i == first_col[j]);
+                /* Hoisted table load per (j,i), nontrivial only. */
+                if (c != 1)
+                    uops += 2L * ldpool;
+                for (int u = 0; u < U; u++) {
+                    uops += 1; /* c_ld t */
+                    if (c == 1) {
+                        uops += 1; /* copy (first) / xor */
+                    } else {
+                        uops += 4; /* and3, lsr4, 2 tbl */
+                        if (first)
+                            uops += is_sve ? 1 : 2;
+                        else
+                            uops += use_eor3 ? 1 : 2;
+                    }
+                }
+            }
+        }
+    } else if (pl->kind == P_DELTA) {
+        int nc = pl->nchanged;
+        /* seed accs from oldpar: c_inptr (0) + c_ld per (j,u). */
+        uops += (long)n_out * U;
+        for (int i = 0; i < nc; i++) {
+            int any = 0;
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)nc + (size_t)i]) {
+                    any = 1;
+                    break;
+                }
+            if (!any)
+                continue;
+            /* c_inptr + raw X3 ldr/add: 0 uops. first_col=NULL: never
+             * first, always accumulate. */
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->mat[(size_t)j * (size_t)nc + (size_t)i];
+                if (!c)
+                    continue;
+                if (c != 1)
+                    uops += 2L * ldpool;
+                for (int u = 0; u < U; u++) {
+                    uops += 3; /* delta formation: 2 ld + xor */
+                    if (c == 1) {
+                        uops += 1;
+                    } else {
+                        uops += 4;
+                        uops += use_eor3 ? 1 : 2;
+                    }
+                }
+            }
+        }
+    } else { /* P_HORNER */
+        for (int i = 0; i < n_in; i++) {
+            /* mulacc_col_info: any nonzero in this column. (Real HORNER
+             * plans carry the Vandermonde matrix; a NULL mat is treated
+             * as all-active, matching the emitter's crash-free prefix.) */
+            int any = 1;
+            if (pl->mat) {
+                any = 0;
+                for (int j = 0; j < n_out; j++)
+                    if (pl->mat[(size_t)j * (size_t)n_in + (size_t)i]) {
+                        any = 1;
+                        break;
+                    }
+            }
+            if (!any)
+                continue;
+            /* c_inptr (u==0): 0 uops. */
+            for (int u = 0; u < U; u++) {
+                if (i == 0) {
+                    uops += 1; /* c_ld t */
+                    uops += n_out; /* c_copy per row */
+                } else {
+                    uops += 1; /* c_ld r1 */
+                    for (int j = 0; j < n_out; j++) {
+                        uint8_t c = pl->horner_c[j];
+                        if (c == 1 || c == 0) {
+                            uops += 1;
+                        } else {
+                            uops += 4;
+                            uops += use_eor3 ? 1 : 2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return uops;
+}
+
+/* RVV naive nibble body uops for U vectors (MUL_NIBBLE, no
+ * ternlog/permi2b/remat/pipe, no Zvbc). Mirrors src/riscv/jit.c exactly:
+ * mulacc_rows_c for P_MULACC/P_DELTA, the inline i-loop for P_HORNER.
+ * Excludes prologue const-setup and vsetvli (uncounted by convention)
+ * and stores (added by xorbit_version_uops' caller). Prefetch is
+ * excluded (the gate always passes prefetch_dist=0). Uop counts are
+ * LMUL-independent (only mem scales with LMUL). */
+static long xb_body_naive_rvv(const plan_t *pl, int U)
+{
+    int n_in = pl->n_in, n_out = pl->n_out;
+    long uops = 0;
+    int first_col[RJ_MAX_DISKS];
+
+    if (pl->kind == P_MULACC || pl->kind == P_DELTA) {
+        int ncols = (pl->kind == P_DELTA) ? pl->nchanged : n_in;
+        if (pl->kind == P_MULACC) {
+            xb_first_col(pl, n_in, first_col);
+            for (int j = 0; j < n_out; j++)
+                if (first_col[j] < 0)
+                    uops += U; /* dead-row prologue vzero */
+        }
+        /* Table hoisting: single distinct nontrivial coefficient in
+         * the whole matrix -> tables live from the prologue
+         * (uncounted); per-column c_ldtab calls are skipped. */
+        uint8_t seen_all[256] = { 0 };
+        int ndistinct = 0;
+        for (int k = 0; k < n_out * ncols; k++) {
+            uint8_t c = pl->mat[k];
+            if (c < 2 || seen_all[c])
+                continue;
+            seen_all[c] = 1;
+            ndistinct++;
+        }
+        int hoist = (ndistinct == 1);
+        if (pl->kind == P_DELTA) {
+            /* seed accs from oldpar: c_vle per (j,u). */
+            uops += (long)n_out * U;
+        }
+        for (int i = 0; i < ncols; i++) {
+            int any = 0;
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)ncols + (size_t)i]) {
+                    any = 1;
+                    break;
+                }
+            if (!any)
+                continue;
+            if (pl->kind == P_MULACC) {
+                /* input loads: c_vle per u. */
+                uops += U;
+            } else {
+                /* delta formation: 2 vle + vxor per u. */
+                uops += 3L * U;
+            }
+            /* c == 1 rows: 1 uop per (j,u) (vmv if first, else vxor). */
+            for (int j = 0; j < n_out; j++)
+                if (pl->mat[(size_t)j * (size_t)ncols + (size_t)i] == 1)
+                    uops += U;
+            /* distinct nontrivial coefficients. */
+            uint8_t seen[256] = { 0 };
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->mat[(size_t)j * (size_t)ncols + (size_t)i];
+                if (c < 2 || seen[c])
+                    continue;
+                seen[c] = 1;
+                if (!hoist)
+                    uops += 4; /* c_ldtab (win=0) */
+                for (int jj = 0; jj < n_out; jj++) {
+                    if (pl->mat[(size_t)jj * (size_t)ncols + (size_t)i] != c)
+                        continue;
+                    /* vand, vsrl4, 2 vrg, vxor, vmv/vxor: 6 per u. */
+                    uops += 6L * U;
+                }
+            }
+        }
+    } else { /* P_HORNER */
+        if (n_in == 0) {
+            /* Degenerate: vzero per (j,u). */
+            uops += (long)n_out * U;
+        }
+        for (int i = 0; i < n_in; i++) {
+            /* input loads: c_vle per u. */
+            uops += U;
+            if (i == 0) {
+                /* acc = t: vmv per (j,u). */
+                uops += (long)n_out * U;
+                continue;
+            }
+            for (int j = 0; j < n_out; j++) {
+                uint8_t c = pl->horner_c[j];
+                if (c == 1 || c == 0) {
+                    uops += U; /* vxor/vmv */
+                } else {
+                    /* vand, vsrl4, 2 vrg, 2 vxor: 6 per u. Tables live
+                     * in hreg from the prologue (uncounted). */
+                    uops += 6L * U;
+                }
+            }
+        }
+    }
+    return uops;
+}
+
 /* Naive nibble body uops for U vectors (MUL_NIBBLE, no ternlog/permi2b/
  * remat). Mirrors the x86_64 naive emitter's main path exactly,
  * including its quirks (DELTA pointer movs uncounted; AVX512-DELTA
  * NIBHI pinning). */
 static long xb_body_naive(const plan_t *pl, isa_t isa, int U, int nhoist)
 {
+    /* AArch64 has its own naive emitter shape (hoisted tables,
+     * EOR3, zero-cost inptr); the x86 mirror below would miscount it. */
+    if (isa == ISA_NEON || isa == ISA_SVE)
+        return xb_body_naive_aarch64(pl, U, isa == ISA_SVE);
+    /* RVV has its own naive emitter shape (per-coefficient table
+     * loads, hoisting, vzero dead rows); the x86 mirror below would
+     * miscount it. */
+    if (isa == ISA_RVV)
+        return xb_body_naive_rvv(pl, U);
     int n_in = pl->n_in, n_out = pl->n_out;
     int is_sse = (isa == ISA_SSE);
     int is_avx512 = (isa == ISA_AVX512);
@@ -1253,7 +1495,8 @@ static long xb_body_naive(const plan_t *pl, isa_t isa, int U, int nhoist)
 long xorbit_version_uops(const xorbit_t *s, const plan_t *pl,
                          isa_t isa, int U, int sched, int nt)
 {
-    if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512)
+    if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512 &&
+        isa != ISA_NEON && isa != ISA_SVE && isa != ISA_RVV)
         return -1;
     if (!pl || U < 1)
         return -1;
@@ -1264,9 +1507,13 @@ long xorbit_version_uops(const xorbit_t *s, const plan_t *pl,
     (void)nt;
     int nhoist = xb_nhoist(pl);
     long stU = (long)pl->n_out * U; /* stores */
-    long body = sched ? xb_body_sched(s, isa == ISA_SSE, U, nhoist)
+    long body = sched ? xb_body_sched(s, isa, U, nhoist)
                       : xb_body_naive(pl, isa, U, nhoist);
-    return body + stU;
+    /* RVV: the F6 prologue vsetvli is counted (src/riscv/jit.c). The
+     * remainder loop is steady-state-excluded (its vsetvli is not
+     * counted). */
+    long vsetvli = (isa == ISA_RVV) ? 1 : 0;
+    return body + stU + vsetvli;
 }
 
 /* ---- Temp-stack liveness for nested temps (emitter redesign, track A3) ----

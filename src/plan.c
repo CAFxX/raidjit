@@ -1146,8 +1146,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
      * under the emitter's own counting convention -- this is the gate
      * the dominance-pruning track relies on (a twin exists only if it
      * strictly beats naive, so naive can never dominate it). Never
-     * combined with ternlog/permi2b/remat (different bodies), and only
-     * on x86 (the bit-program consumer is x86-64-only for now). The
+     * combined with ternlog/permi2b/remat (different bodies). The
      * NT/prefetch twin loops below see these and twin them automatically,
      * so the full ISA x U x xorbit x nt x prefetch product is covered.
      * NOTE: prune.c's twin_dominates must pin the xorbit axis (like
@@ -1163,7 +1162,8 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 out[i].xorsched)
                 continue;
             isa_t isa = out[i].isa;
-            if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512)
+            if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512 &&
+                isa != ISA_NEON && isa != ISA_SVE && isa != ISA_RVV)
                 continue;
             if (out[i].mul != MUL_NIBBLE)
                 continue;

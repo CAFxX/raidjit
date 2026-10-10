@@ -315,13 +315,15 @@ int main(void)
                                            1, 1, 0, 0);
         long snotail = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
                                              1, 1, 0, 1);
-        CHECK(nfull == 44 && nnotail == 22,
-              "X1: naive RVV model %ld/%ld, want 44/22", nfull, nnotail);
-        CHECK(sfull == 36 && snotail == 18,
-              "X1: sched RVV model %ld/%ld, want 36/18", sfull, snotail);
-        /* structural pin: full = notail + (remainder nu=1 body) + 1
-         * extra vsetvli -- exactly 2 body emissions, 2 vsetvli. */
-        CHECK(nfull - nnotail == 22 && sfull - snotail == 18,
+        /* RVV remainder loop is steady-state-excluded (like AArch64's
+         * predicated tail): full == notail in counted uops. The notail
+         * twin's benefit is code size (no remainder loop emitted), not
+         * steady-state uops. */
+        CHECK(nfull == 22 && nnotail == 22,
+              "X1: naive RVV model %ld/%ld, want 22/22", nfull, nnotail);
+        CHECK(sfull == 18 && snotail == 18,
+              "X1: sched RVV model %ld/%ld, want 18/18", sfull, snotail);
+        CHECK(nfull - nnotail == 0 && sfull - snotail == 0,
               "X1: full/notail delta wrong (%ld/%ld)",
               nfull - nnotail, sfull - snotail);
         xorsched_free(pl.xor_sched);
@@ -572,7 +574,10 @@ int main(void)
                 for (int i = 0; i < xs->n_in; i++)
                     pf_streams += seen[i];
                 long pf_uops =
-                    (isa == ISA_RVV) ? 2L * pf_streams : pf_streams;
+                    (isa == ISA_RVV) ? 1L * pf_streams : pf_streams;
+                /* RVV: prefetch emitted once per stream in the counted
+                 * main body; the remainder loop is steady-state-excluded
+                 * (its prefetch is not counted). */
                 long div = (isa == ISA_RVV) ? (long)U * 16
                                             : (long)v.group_bytes;
                 long eu = (long)(v.uops_per_byte * (double)div + 0.5);
