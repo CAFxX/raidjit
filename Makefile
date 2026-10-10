@@ -86,7 +86,44 @@ else
 TESTS = $(PORTABLE_TESTS)
 endif
 
-all: $(BUILDDIR)/libraidjit.a $(TESTS) $(BUILDDIR)/demo
+all: $(BUILDDIR)/libraidjit.a $(TESTS) $(BUILDDIR)/demo wasm
+
+# WASM build (enforces "WASM always current" standing order).
+# Requires emsdk on PATH. If emcc is not found, prints a warning and
+# continues — the native build must never fail due to missing emsdk.
+EMCC := $(shell command -v emcc 2>/dev/null)
+WASM_OUT := tools/wasm/out
+WASM_MODULES := $(WASM_OUT)/raidjit_x86.js $(WASM_OUT)/raidjit_aarch64.js \
+                $(WASM_OUT)/raidjit_riscv.js $(WASM_OUT)/disasm.js
+WASM_PAGE := $(WASM_OUT)/raidjit_kernels.html
+WASM_VERSION := $(shell date +%Y-%m-%d)
+
+.PHONY: wasm wasm-page wasm-check
+
+wasm-check:
+ifeq ($(EMCC),)
+	@echo "WASM skipped: emcc not found on PATH (source ~/tools/emsdk/emsdk_env.sh to enable)"
+else
+	@echo "emcc found: $(EMCC)"
+endif
+
+wasm: wasm-check
+ifeq ($(EMCC),)
+	@# emcc not available — warning already printed by wasm-check, skip silently
+else
+	$(MAKE) -f tools/wasm/Makefile.wasm
+	$(MAKE) wasm-page
+endif
+
+wasm-page: $(WASM_MODULES)
+	python3 tools/gen_live_kernels_page.py $(WASM_PAGE)
+	@# Stamp the build version into the page
+	@sed -i 's|<p class="note">|<p class="note">page build <code>$(WASM_VERSION)</code> |' $(WASM_PAGE)
+	@# Copy to the deliverable location if the directory exists
+	@if [ -d "$(HOME)/workspace/your_files/raidjit" ]; then \
+		cp $(WASM_PAGE) $(HOME)/workspace/your_files/raidjit/raidjit_kernels.html; \
+		echo "Webpage updated: $(HOME)/workspace/your_files/raidjit/raidjit_kernels.html"; \
+	fi
 
 # QEMU test targets for cross builds (run on x86_64 host). The portable
 # tests run under qemu; x86-only tests are skipped. These targets enforce
