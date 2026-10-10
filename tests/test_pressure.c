@@ -151,7 +151,7 @@ int main(void)
         for (int i = 0; i < nc; i++) {
             /* every offered candidate must fit the regfile */
             int need = plan_need_regs(cands[i].isa, cands[i].mul, &pl,
-                                      cands[i].U, cands[i].remat, 0);
+                                      cands[i].U, cands[i].remat, 0, 0);
             CHECK(need <= isa_nregs(cands[i].isa),
                   "cand %s U=%d needs %d > %d regs",
                   isa_name(cands[i].isa), cands[i].U, need,
@@ -232,7 +232,7 @@ int main(void)
             for (int i = 0; i < nc; i++) {
                 /* every offered candidate must fit the regfile */
                 int need = plan_need_regs(cands[i].isa, cands[i].mul, &pl,
-                                          cands[i].U, cands[i].remat, 0);
+                                          cands[i].U, cands[i].remat, 0, 0);
                 CHECK(need <= isa_nregs(cands[i].isa),
                       "cand %s U=%d needs %d > %d regs",
                       isa_name(cands[i].isa), cands[i].U, need,

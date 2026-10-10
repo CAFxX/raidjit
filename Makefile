@@ -51,6 +51,8 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_riscv_zvbc \
         $(BUILDDIR)/test_riscv_zvbb \
         $(BUILDDIR)/test_rvv_f6 $(BUILDDIR)/test_rvv_lmul \
+        $(BUILDDIR)/test_riscv_maskedtail_emit \
+        $(BUILDDIR)/test_rvv_maskedtail \
         $(BUILDDIR)/test_pdelta_edge \
         $(BUILDDIR)/test_boundaries $(BUILDDIR)/test_aarch64_shape \
         $(BUILDDIR)/test_prune $(BUILDDIR)/test_dispatch \
@@ -234,6 +236,9 @@ _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_rvv_lmul
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_rvv_lmul
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_rvv_lmul
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_rvv_maskedtail
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_rvv_maskedtail
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_rvv_maskedtail
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_dispatch
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=256 ./$(BUILDDIR)/test_dispatch
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU),vlen=512 ./$(BUILDDIR)/test_dispatch
@@ -313,6 +318,7 @@ clean:
 test: $(TESTS)
 	$(if $(CROSS_COMPILE),$(error cannot run cross-compiled tests natively; use test-qemu-aarch64 or test-qemu-riscv64))
 	./$(BUILDDIR)/test_aarch64_emit
+	./$(BUILDDIR)/test_riscv_maskedtail_emit
 ifeq ($(ARCH),x86_64)
 	./$(BUILDDIR)/test_emit
 	./$(BUILDDIR)/test_affine
@@ -527,6 +533,12 @@ $(BUILDDIR)/test_rvv_f6: tests/test_rvv_f6.c $(BUILDDIR)/libraidjit.a $(HDRS) | 
 	$(CC) $(CFLAGS) -o $@ tests/test_rvv_f6.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 $(BUILDDIR)/test_rvv_lmul: tests/test_rvv_lmul.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_rvv_lmul.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_riscv_maskedtail_emit: tests/test_riscv_maskedtail_emit.c src/riscv/emit.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_riscv_maskedtail_emit.c src/riscv/emit.c $(LDFLAGS)
+
+$(BUILDDIR)/test_rvv_maskedtail: tests/test_rvv_maskedtail.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_rvv_maskedtail.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_dispatch: tests/test_dispatch.c $(BUILDDIR)/libraidjit.a | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_dispatch.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

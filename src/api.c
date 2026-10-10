@@ -72,9 +72,9 @@ void rj_init(void)
 /* ---------------- compile ---------------- */
 
 /* One tail twin's install gate (SVE predtail, track B1sve; AVX-512
- * maskedtail, track B1x86); see src/api.h. The twin is built by the
- * caller from the shootout winner; the duel pits it against the general
- * (scalar-tail) version at tail-heavy lengths. */
+ * maskedtail, track B1x86; RVV maskedtail); see src/api.h. The twin is
+ * built by the caller from the shootout winner; the duel pits it
+ * against the general (scalar-tail) version at tail-heavy lengths. */
 int api_tail_duel_gate(version_t *tw, version_t *general, const plan_t *wpl,
                        const rj_options *o, int verbose, version_t *twins,
                        int *ntwins, tail_duel_fn duel, const char *name,

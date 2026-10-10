@@ -150,6 +150,11 @@ typedef struct {
                     * vm=0 masked forms (v0.t). Table loads (c_ldtab/
                     * c_ldtab1) stay unmasked: pool entries are replicated
                     * to full VLMAX and vl == VLMAX in the tail. */
+    int tail_lab;    /* maskedtail only: label at the start of the
+                    * unrolled masked tail; the counted loop's
+                    * empty-iteration branch targets it (the strip-mining
+                    * path uses loop_lab instead). Bound at the top of
+                    * gen_tail_masked. */
     size_t vlenb;    /* VLEN in bytes on this machine (vlenb CSR), read
                     * once at build time; sizes the replicated
                     * constant-pool table entries (see pool_get) */
@@ -1576,6 +1581,10 @@ static void gen_tail_masked(cg_t *cg)
 {
     em_t *e = &cg->em;
     int U = cg->U;
+    /* The empty-loop branch in gen_function targets this label when the
+     * counted loop has zero iterations; the fall-through from the loop
+     * reaches it too (a bound label is just a position marker). */
+    em_bind(e, cg->tail_lab);
     em_vsetvli(e, T0, X0, VSEW8, cg->vlmul, 1, 1); /* T0 = vl = VLMAX */
     cg->uops += 1;
     em_addi(e, A3, A2, 0); /* A3 = remaining for chunk 0 */
@@ -1645,8 +1654,14 @@ static void gen_function(cg_t *cg)
         /* notail: len > 0 (the len==0 guard above already left for done)
          * and len % group == 0, so niter >= 1 always; retarget the
          * empty-loop branch at done since the remainder path (and its
-         * loop_lab) is not emitted. */
-        c_beq_long(cg, A4, X0, cg->notail ? done_lab : loop_lab);
+         * loop_lab) is not emitted. maskedtail: the empty-loop branch
+         * targets the masked tail's start label (tail_lab); the
+         * strip-mining path's loop_lab is not emitted there. */
+        if (cg->maskedtail)
+            cg->tail_lab = em_label(e);
+        c_beq_long(cg, A4, X0,
+                   cg->notail ? done_lab
+                              : cg->maskedtail ? cg->tail_lab : loop_lab);
         /* Pipe prologue (track I8): issue the first iteration's
          * first-column loads into Dn. After the empty-loop branch
          * (N >= 1), before the loop label; T1 == 0 here. Uncounted:
