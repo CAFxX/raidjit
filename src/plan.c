@@ -1064,8 +1064,12 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
     /* VPTERNLOG twins for AVX-512 nibble candidates: the benchmark decides
      * empirically whether the 3-input XOR wins (fewer uops but r1+r2 live
      * simultaneously, increasing register pressure). Only for P_MULACC/
-     * P_DELTA: the ternlog flag is only consulted in mulacc_column(). */
-    if (pl->kind == P_MULACC || pl->kind == P_DELTA) {
+     * P_DELTA: the ternlog flag is only consulted in mulacc_column().
+     * Skipped when pl->rec_cf is set: the closed-form recovery twin is
+     * strictly better for those plans, and a ternlog candidate would use
+     * the generic (worse) path (BUG_t1_80: 44% pessimization on
+     * rec{0,1}). */
+    if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && !pl->rec_cf) {
         int ntemp = n;
         for (int i = 0; i < ntemp && n < maxout; i++) {
             if (out[i].isa == ISA_AVX512 && out[i].mul == MUL_NIBBLE &&

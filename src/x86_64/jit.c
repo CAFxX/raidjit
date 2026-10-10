@@ -111,6 +111,11 @@ typedef struct {
                       * (track B1x86). Disjoint from notail. */
     int permi2b;     /* VPERMI2B nibble twin (track B2) */
     uint8_t logtab[256], exptab[512];
+    int vpternlogd_emitted; /* ternlog twin: count of VPTERNLOGD insns
+                             * emitted. If cand->ternlog was requested but
+                             * zero were emitted, the pin was a no-op and
+                             * jit_build_version rejects it (phantom twin
+                             * fix, BUG_t1_80). */
 } cg_t;
 
 static int is_sse(const cg_t *cg) { return cg->cand.isa == ISA_SSE; }
@@ -418,6 +423,7 @@ static void c_vpternlog(cg_t *cg, int vd, int s1, int s2)
     assert(cg->cand.isa == ISA_AVX512);
     em_vpternlog(e, vd, s1, s2, 0x96, cg->vl);
     cg->uops += 1;
+    cg->vpternlogd_emitted++;
 }
 
 /* vd ^= s1 ^ [mem] via VPTERNLOGD (AVX-512 only). Counted as one uop
@@ -435,6 +441,7 @@ static void c_vpternlog_mem(cg_t *cg, int vd, int s1, int b, int x, int sc,
     em_vpternlog_mem(e, vd, s1, b, x, sc, disp, 0x96, cg->vl);
     cg->uops += 1;
     cg->mem += cg->vl;
+    cg->vpternlogd_emitted++;
 }
 
 /* Folded XOR-with-memory (one uop on every x86 ISA: pxor m128 on SSE,
@@ -3218,6 +3225,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->mshift ? "+mshift" : "",
                  cand->pipe ? "+pipe" : "",
                  cand->rec_cf ? "+reccf" : "");
+
+    /* Phantom twin check (BUG_t1_80): if ternlog was requested but zero
+     * VPTERNLOGD instructions were emitted, the pin was a no-op. Reject
+     * with a clean error instead of recording a false twin label. */
+    if (cand->ternlog && cg.vpternlogd_emitted == 0) {
+        if (err && errlen > 0)
+            snprintf(err, errlen,
+                     "ternlog twin requested but no VPTERNLOGD emitted "
+                     "(plan has no foldable triples)");
+        goto fail;
+    }
 
     free(buf);
     free(cg.pool);
