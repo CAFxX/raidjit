@@ -3,3 +3,4 @@ build-*/
 *.a
 .DS_Store
 __pycache__
+tools/wasm/vendor/
