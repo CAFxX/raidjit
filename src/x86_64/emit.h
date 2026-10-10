@@ -139,6 +139,19 @@ void em_vpclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm);
 /* VEXTRACTI32X4: xmm1 = 128-bit lane imm of zmm2 (EVEX.66.0F3A.W0 39 /r
  * ib), zero-extended. Requires AVX512F. */
 void em_vextracti32x4(em_t *e, int vd, int vs, unsigned imm);
+/* PCLMULQDQ: xmm1 = carryless multiply of selected 64-bit halves
+ * (VEX.128.66.0F3A.44 /r ib). imm selects the halves (0x00 = lo*lo,
+ * 0x11 = hi*hi). Non-destructive 3-operand: vd=dst(ModRM.reg),
+ * vs1=VEX.vvvv, vs2=ModRM r/m. VEX: all operands must be xmm0-15.
+ * Requires PCLMULQDQ. */
+void em_pclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm);
+/* VPXORD, 128-bit EVEX form (EVEX.66.0F.W0 EF /r): vd = s1 ^ s2,
+ * zeroes bits [511:128] of vd. Requires AVX512F. */
+void em_vpxor_evex128(em_t *e, int vd, int s1, int s2);
+/* VMOVDQA32, 128-bit EVEX forms (EVEX.66.0F.W0 6F/7F /r), 16-byte
+ * aligned. Requires AVX512F. */
+void em_vmovdqa_ld_evex128(em_t *e, int vd, int b, int x, int sc, int disp);
+void em_vmovdqa_st_evex128(em_t *e, int b, int x, int sc, int disp, int vs);
 
 /* --- legacy SSE encodings (no VEX; for the SSE ISA level) --- */
 void em_movdqa_ld_sse(em_t *e, int vd, int b, int x, int sc, int disp);

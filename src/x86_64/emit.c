@@ -1012,3 +1012,71 @@ void em_vextracti32x4(em_t *e, int vd, int vs, unsigned imm)
     em_u8(e, (unsigned)(0xC0 | ((vs & 7) << 3) | (vd & 7)));
     em_u8(e, imm & 0xFF);
 }
+
+/* PCLMULQDQ (carryless multiply, quadword granular), 128-bit VEX form.
+ * VEX.128.66.0F3A.44 /r ib : PCLMULQDQ xmm1, xmm2, xmm3/m128, imm8.
+ * xmm1(dst) = CLMUL(xmm2, xmm3) with the 64-bit halves selected by imm8:
+ *   imm=0x00: dst = CLMUL(src1[63:0], src2[63:0])   (lo*lo)
+ *   imm=0x11: dst = CLMUL(src1[127:64], src2[127:64]) (hi*hi)
+ *   imm=0x01: dst = CLMUL(src1[127:64], src2[63:0])  (hi*lo)
+ *   imm=0x10: dst = CLMUL(src1[63:0], src2[127:64])  (lo*hi)
+ * Non-destructive 3-operand: vd=xmm1 (ModRM.reg), vs1=xmm2 (VEX.vvvv),
+ * vs2=xmm3 (ModRM r/m). WIG (W=0 to match GAS). VEX addresses only
+ * xmm0-15: callers must keep all three operands in the low 16 vector
+ * registers (the crc_fold backend reserves its temps/consts there).
+ * Requires PCLMULQDQ. Used by the REDUX crc_fold (per-stream 128-bit
+ * fold); the 512-bit em_vpclmulqdq stays for other consumers.
+ * (GAS assembles this form under the vpclmul{lq|hq}{lq|hq}dq mnemonics;
+ * the legacy 66 0F 3A 44 form is a different, destructive-2-operand
+ * encoding and is NOT what this emitter produces.) */
+void em_pclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm)
+{
+    int R = (vd >> 3) & 1;
+    int B = (vs2 >> 3) & 1;
+    /* 3-byte VEX (map 3 = 0F3A); W=0, L=0 (128-bit), pp=1 (66). */
+    emit_vex(e, 3, 0, R, 0, B, vs1, 0, 1);
+    em_u8(e, 0x44);
+    em_u8(e, (unsigned)(0xC0 | ((vd & 7) << 3) | (vs2 & 7)));
+    em_u8(e, imm & 0xFF);
+}
+
+/* VPXORD, 128-bit EVEX form: vd = s1 ^ s2 (32-bit lanes).
+ * EVEX.66.0F.W0 EF /r : bits [511:128] of vd's zmm are zeroed.
+ * Needed for the crc_fold state XORs: the VEX VPXOR cannot address
+ * xmm16-31, but fold states may live there. Requires AVX512F. */
+void em_vpxor_evex128(em_t *e, int vd, int s1, int s2)
+{
+    int R = (vd >> 3) & 1;
+    int X = (s2 >> 4) & 1;
+    int B = (s2 >> 3) & 1;
+    int R2 = (vd >> 4) & 1;
+    emit_evex(e, 1, 0, R, X, B, R2, s1, 0, 1, 0, 0);
+    em_u8(e, 0xEF);
+    em_u8(e, (unsigned)(0xC0 | ((vd & 7) << 3) | (s2 & 7)));
+}
+
+/* VMOVDQA32, 128-bit EVEX forms (load/store).
+ * EVEX.66.0F.W0 6F /r (load) and 7F /r (store): 16-byte aligned.
+ * Needed for crc_fold state load/store: the VEX VMOVDQA cannot address
+ * xmm16-31. Requires AVX512F. */
+void em_vmovdqa_ld_evex128(em_t *e, int vd, int b, int x, int sc, int disp)
+{
+    int R, X, B;
+    rxb(vd, b, x, &R, &X, &B);
+    int R2 = (vd >> 4) & 1;
+    emit_evex(e, 1, 0, R, X, B, R2, 0, 0, 1, 0, 0);
+    em_u8(e, 0x6F);
+    /* EVEX disp8 is scaled by the 16-byte memory operand size. */
+    emit_mrm(e, vd, b, x, sc, disp, 16);
+}
+
+void em_vmovdqa_st_evex128(em_t *e, int b, int x, int sc, int disp, int vs)
+{
+    int R, X, B;
+    rxb(vs, b, x, &R, &X, &B);
+    int R2 = (vs >> 4) & 1;
+    emit_evex(e, 1, 0, R, X, B, R2, 0, 0, 1, 0, 0);
+    em_u8(e, 0x7F);
+    /* EVEX disp8 is scaled by the 16-byte memory operand size. */
+    emit_mrm(e, vs, b, x, sc, disp, 16);
+}

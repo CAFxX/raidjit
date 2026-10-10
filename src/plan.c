@@ -292,11 +292,12 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
         n += 1;
     }
     if (crc_fold) {
-        /* Phase 2 v2: one 128-bit state per stream (xmm register). The fold
-         * is per-stream 128-bit PCLMULQDQ; states are not packed (packing
-         * overhead exceeds VPCLMULQDQ benefit given the encode's 64B vectors).
-         */
-        n += pl->n_in + pl->n_out;
+        /* REDUX crc_fold: N stream states + 3 temps (xc/xa/xb) + 2 constants
+         * (xk1/xk2) = N+5 128-bit lanes, disjoint from the encode's
+         * registers (spec §4; the backend assigns exactly these and asserts
+         * lockstep). The fold pool is NOT packed (packing overhead exceeds
+         * any benefit given the encode's 64B vectors). */
+        n += pl->n_in + pl->n_out + 5;
     }
     return n;
 }
@@ -1380,13 +1381,16 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             n++;
         }
     }
-    /* Phase 2 (interleaved CRC fold): when the plan wants CRC and the
+    /* REDUX (interleaved CRC fold): when the plan wants CRC and the
      * uarch gate is open, every candidate folds (no plain candidates).
-     * When the gate is closed, return zero candidates so the caller
-     * falls back to the scalar path (fused.c recompiles want_crc=0).
-     * The gate is re-checked by the backend at build time (defense in
-     * depth). */
+     * ENCODE targets only (spec §3.5): a PARITY_UPDATE (P_DELTA) target
+     * takes the scalar CRC path, so return zero candidates and let the
+     * caller fall back (fused.c recompiles want_crc=0). When the gate is
+     * closed, likewise return zero candidates. The gate is re-checked
+     * by the backend at build time (defense in depth). */
     if (pl->want_crc) {
+        if (pl->kind == P_DELTA)
+            return 0;
         if (!fused_crc_interleave_ok(cpu))
             return 0;
         for (int i = 0; i < n; i++)

@@ -302,9 +302,9 @@ static void fused_driver_call(const struct rj_fused *f,
     int tn = t >= 0 ? f->nin[t] : 0;
     int tno = t >= 0 ? f->nout[t] : 0;
     assert(t < 0 || tn + tno <= RJ_FUSED_MAX_FLAT / 2);
-    /* Phase 2 v2 (lanes = streams): fold state is 16 bytes per stream
-     * (one 128-bit state). The kernel packs 4 streams per zmm.
-     * Allocated on the stack, 64-byte aligned. */
+    /* REDUX: fold state is 16 bytes per stream (one 128-bit state;
+     * spec §3.1-§3.2). Allocated on the stack, 64-byte aligned (the
+     * contract requires 16). */
     alignas(64) uint8_t fold_state[RJ_FUSED_MAX_FLAT / 2 * 16];
     int nstreams = tn + tno;
     if (f->crc_fold) {
@@ -524,19 +524,15 @@ int fused_crc_interleave_ok(const rj_cpu_info *cpu)
     if (!cpu)
         return 0;
 #if defined(__x86_64__)
-    /* x86-64: PCLMULQDQ required (128-bit fold). The v2 design uses
-     * per-stream 128-bit folds, not VPCLMULQDQ 4-stream packing (packing
-     * overhead exceeds the benefit). Conservative µarch allowlist:
-     * SPR, Zen4, ICL-SP have strong PCLMULQDQ (1/cycle). */
+    /* REDUX: PCLMULQDQ (128-bit fold) + AVX512F required; SPR-only
+     * (spec §3.6 -- ICL-SP/Zen4 are NOT carried over; re-opening them
+     * needs per-µarch throughput data and a spec amendment). Unknown or
+     * new µarchs fail closed. cpu->vpclmulqdq is deliberately NOT
+     * required: the fold uses 128-bit PCLMULQDQ, not VPCLMULQDQ. */
     if (!cpu->pclmulqdq || !cpu->avx512f)
         return 0;
-    {
-        rj_uarch_t u = rj_uarch_current();
-        if (u == RJ_UARCH_INTEL_SAPPHIRERAPIDS ||
-            u == RJ_UARCH_AMD_ZEN4 ||
-            u == RJ_UARCH_INTEL_ICELAKE)
-            return 1;
-    }
+    if (rj_uarch_current() == RJ_UARCH_INTEL_SAPPHIRERAPIDS)
+        return 1;
     return 0;
 #elif defined(__aarch64__)
     /* AArch64: gate CLOSED for Phase 2 (see spec §2). The codebase has no

@@ -13,6 +13,7 @@
 #include "gf.h"
 #include "cpu.h"
 #include "xorsched.h"
+#include "fused.h" /* fused_crc_interleave_ok: the crc_fold uarch gate */
 
 #include <sys/mman.h>
 #include <stdlib.h>
@@ -23,7 +24,7 @@
 
 /* constant-pool entry kinds */
 enum { CK_NIBLO, CK_NIBHI, CK_AFF, CK_MASK, CK_LOG, CK_EXP,
-         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE, CK_MSHIFT };
+         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE, CK_MSHIFT, CK_CRCFOLD };
 
 typedef struct {
     em_t em;
@@ -42,6 +43,21 @@ typedef struct {
     int ncent, ccent;
     /* register assignment */
     int t, tlo, thi, r1, r2, tbl, tbl2, t2, mask;
+    /* REDUX crc_fold register pool (cand->crc_fold only; -1 otherwise).
+     * The fold needs N+5 128-bit lanes, disjoint from the encode's
+     * 0..E-1 (E = encode regs used): 5 VEX-bound temps/consts at E..E+4
+     * (VEX.128 PCLMULQDQ addresses only xmm0-15, so the backend rejects
+     * E > 11 cleanly) followed by the N stream states at fold_xs0..E+N+4
+     * (EVEX-only access: em_vpxor_evex128 / em_vmovdqa_ld/st_evex128).
+     * This is bottom-up continuation, not the spec's top-down zmm31
+     * placement: the backend's vmax+1 == plan_need_regs lockstep assert
+     * forces the fold pool to extend the encode's 0-based assignment,
+     * and VEX cannot address the spec's zmm_{32-(N+5)}..zmm31 anyway.
+     * Disjointness, determinism, exact N+5 accounting and fail-closed
+     * filtering are preserved; see the backend gate below. */
+    int fold_xc, fold_xa, fold_xb, fold_xk1, fold_xk2; /* E..E+4 */
+    int fold_xs0;  /* first stream-state reg (E+5); N = n_in + n_out states */
+    int fold_n;
     /* VPMULTISHIFTQB high-nibble control (track I2, mshift twin): the
      * loop-invariant per-lane shift counts (byte j of each 64-bit lane
      * holds 8*j+4). Register-resident: VPMULTISHIFTQB's control is
@@ -212,6 +228,16 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     } else if (kind == CK_LOG) {
         memcpy(tmp, cg->logtab, 256);
         len = 256;
+    } else if (kind == CK_CRCFOLD) {
+        /* REDUX crc_fold multiply constants: 16 bytes holding the 64-bit
+         * constant in both lanes ({K,K}, little-endian), so imm=0x00 and
+         * imm=0x11 both read the right half. c=0 -> K1 = 0xae689191
+         * (x^-128 mod QREF), c=1 -> K2 = 0xccaa009e (x^-64 mod QREF).
+         * Loaded once at kernel entry into fold_xk1/xk2 (hoisted). */
+        uint64_t k = (c == 0) ? 0xae689191ULL : 0xccaa009eULL;
+        memcpy(tmp, &k, 8);
+        memcpy(tmp + 8, &k, 8);
+        len = 16;
     } else { /* CK_EXP */
         memcpy(tmp, cg->exptab, 256);
         len = 256;
@@ -271,6 +297,56 @@ static void raw_ldpool(cg_t *cg, int vd, size_t off)
         em_movdqa_ld_sse(e, vd, R15, -1, 0, (int)off);
     else
         em_vmovdqa_ld(e, vd, R15, -1, 0, (int)off, cg->vl);
+}
+
+/* ---------------- REDUX crc_fold helpers ----------------
+ * Per-stream 128-bit fold (spec hidden_files/crc_fold_v2_SPEC.md §2):
+ *   W  = S XOR C            (C = 16-byte message chunk)
+ *   S' = CLMUL(W[63:0], K1) XOR CLMUL(W[127:64], K2)
+ * States live in fold_xs0.. (one xmm per stream, whole kernel);
+ * xc/xa/xb/xk1/xk2 are the shared temps/consts. Only called when
+ * cand->crc_fold (implies ISA_AVX512; the backend gate enforces it). */
+
+/* Fold one 16B chunk already in fold_xc into stream s's state. */
+static void gen_fold_chunk(cg_t *cg, int s)
+{
+    em_t *e = &cg->em;
+    int xs = cg->fold_xs0 + s;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    em_vpxor_evex128(e, cg->fold_xc, cg->fold_xc, xs); /* W = C ^ S */
+    em_pclmulqdq(e, cg->fold_xa, cg->fold_xc, cg->fold_xk1, 0x00);
+    em_pclmulqdq(e, cg->fold_xb, cg->fold_xc, cg->fold_xk2, 0x11);
+    em_vpxor_evex128(e, xs, cg->fold_xa, cg->fold_xb); /* S' = A ^ B */
+    cg->uops += 4;
+}
+
+/* Fold the 64B vector in zmm zreg into stream s (4 x 16B chunks). */
+static void gen_fold_zmm(cg_t *cg, int zreg, int s)
+{
+    em_t *e = &cg->em;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    for (int k = 0; k < 4; k++) {
+        em_vextracti32x4(e, cg->fold_xc, zreg, (unsigned)k);
+        gen_fold_chunk(cg, s);
+    }
+    cg->uops += 4; /* 4 extracts; the chunks' uops counted above */
+}
+
+/* Fold 64B at [b + x*sc + disp] into stream s (4 x 16B loads).
+ * Used where the body consumes an input vector through a memory operand
+ * (no zmm materialization) or skips an unused input column: the bytes
+ * are in memory either way, so the fold observes exactly what the
+ * encode consumes. */
+static void gen_fold_mem(cg_t *cg, int b, int x, int sc, int disp, int s)
+{
+    em_t *e = &cg->em;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    for (int k = 0; k < 4; k++) {
+        em_vmovdqa_ld_evex128(e, cg->fold_xc, b, x, sc, disp + k * 16);
+        gen_fold_chunk(cg, s);
+    }
+    cg->uops += 4; /* 4 loads; the chunks' uops counted in the helper */
+    cg->mem += 64;
 }
 
 static void c_st(cg_t *cg, int b, int x, int sc, int disp, int vs)
@@ -509,9 +585,33 @@ static void c_vmov(cg_t *cg, int vd, int vs)
 
 /* ---------------- codegen ---------------- */
 
+/* REDUX crc_fold entry: load the N stream states from fold_state and
+ * init the hoisted K1/K2 constants. Called from gen_const_setup before
+ * the tile loop. On entry [RSP] holds the fold_state pointer (pushed by
+ * gen_function's prologue); R15 is the constant-pool base (need_r15 is
+ * forced on for fold kernels). Between entry and exit the states live
+ * only in the fold_xs0.. xmms. */
+static void gen_fold_setup(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    /* R10 = fold_state (16-byte aligned per the driver contract). */
+    em_mov_rm(e, R10, RSP, -1, 0, 0);
+    for (int s = 0; s < cg->fold_n; s++)
+        em_vmovdqa_ld_evex128(e, cg->fold_xs0 + s, R10, -1, 0, s * 16);
+    /* Hoisted constants: xk1 = {K1,K1}, xk2 = {K2,K2} (both lanes, so
+     * imm=0x00 and imm=0x11 both read the right half). */
+    em_vmovdqa_ld_evex128(e, cg->fold_xk1, R15, -1, 0,
+                          (int)pool_get(cg, CK_CRCFOLD, 0));
+    em_vmovdqa_ld_evex128(e, cg->fold_xk2, R15, -1, 0,
+                          (int)pool_get(cg, CK_CRCFOLD, 1));
+}
+
 static void gen_const_setup(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
+    if (cg->cand.crc_fold)
+        gen_fold_setup(cg);
     if (cg->cand.xorbit) {
         /* Bit-program twin: the 0x01 bit-extract mask (the nibble
          * tables are dead on this path). */
@@ -1479,19 +1579,41 @@ static void gen_body(cg_t *cg)
             for (int j = 0; j < n_out; j++)
                 if (pl->mat[j * n_in + i])
                     users[nu++] = j;
-            if (!nu)
+            int pr = -1;
+            if (!nu) {
+                /* REDUX crc_fold: the encode skips this input column,
+                 * but the CRC still covers the stream's bytes. Fold
+                 * from memory (the vector is never materialized). */
+                if (cg->cand.crc_fold) {
+                    pr = body_inptr(cg, i, R10);
+                    for (int u = 0; u < U; u++)
+                        gen_fold_mem(cg, pr, R11, 0, u * vl, i);
+                }
                 continue;
-            int pr = body_inptr(cg, i, R10);
+            }
+            pr = body_inptr(cg, i, R10);
             c_prefetch_in(cg, pr);
             for (int u = 0; u < U; u++) {
                 if (nu == 1) {
                     int acc = users[0] * U + u;
-                    if (i == first_in[users[0]])
+                    if (i == first_in[users[0]]) {
                         c_ld(cg, acc, pr, R11, 0, u * vl);
-                    else
+                        /* REDUX crc_fold: acc holds input i's bytes. */
+                        if (cg->cand.crc_fold)
+                            gen_fold_zmm(cg, acc, i);
+                    } else {
                         c_vpxor_mem(cg, acc, acc, pr, R11, 0, u * vl);
+                        /* REDUX crc_fold: memory-operand consume; fold
+                         * input i's bytes from their address. */
+                        if (cg->cand.crc_fold)
+                            gen_fold_mem(cg, pr, R11, 0, u * vl, i);
+                    }
                 } else {
                     c_ld(cg, cg->t, pr, R11, 0, u * vl);
+                    /* REDUX crc_fold: fold input i's vector once (the
+                     * fan-out below only reads it). */
+                    if (cg->cand.crc_fold)
+                        gen_fold_zmm(cg, cg->t, i);
                     for (int k = 0; k < nu; k++) {
                         int acc = users[k] * U + u;
                         if (i == first_in[users[k]])
@@ -1523,12 +1645,24 @@ static void gen_body(cg_t *cg)
         for (int i = 0; i < n_in; i++) {
             int any, neednib;
             mulacc_col_info(pl, i, n_in, &any, &neednib);
-            if (!any)
+            if (!any) {
+                /* REDUX crc_fold: the encode skips this column, but the
+                 * CRC still covers the stream's bytes. */
+                if (cg->cand.crc_fold) {
+                    int pr0 = body_inptr(cg, i, R10);
+                    for (int u = 0; u < U; u++)
+                        gen_fold_mem(cg, pr0, R11, 0, u * vl, i);
+                }
                 continue;
+            }
             int pr = body_inptr(cg, i, R10);
             c_prefetch_in(cg, pr);
             for (int u = 0; u < U; u++) {
                 c_ld(cg, cg->t, pr, R11, 0, u * vl);
+                /* REDUX crc_fold: t holds input i's bytes (fold before
+                 * the nibble split reuses t's lanes). */
+                if (cg->cand.crc_fold)
+                    gen_fold_zmm(cg, cg->t, i);
                 if (neednib && !gfni)
                     nibble_split(cg, cg->tlo, cg->thi, cg->t);
                 mulacc_column(cg, i, n_in, u, first_col);
@@ -1598,11 +1732,17 @@ static void gen_body(cg_t *cg)
                      * uop per u. acc[0] = u never aliases t (= n_out*U),
                      * and the `continue` keeps t dead. */
                     c_ld(cg, 0 * U + u, pr, R11, 0, u * vl);
+                    /* REDUX crc_fold: acc holds input 0's bytes. */
+                    if (cg->cand.crc_fold)
+                        gen_fold_zmm(cg, 0 * U + u, 0);
                     for (int j = 1; j < n_out; j++)
                         c_vmov(cg, j * U + u, 0 * U + u);
                     continue;
                 }
                 c_ld(cg, cg->t, pr, R11, 0, u * vl);
+                /* REDUX crc_fold: fold input i's vector once. */
+                if (cg->cand.crc_fold)
+                    gen_fold_zmm(cg, cg->t, i);
                 for (int j = 0; j < n_out; j++) {
                     uint8_t c = pl->horner_c[j];
                     int acc = j * U + u;
@@ -1658,8 +1798,13 @@ static void gen_body(cg_t *cg)
 
     for (int j = 0; j < n_out; j++) {
         em_mov_rm(e, R10, R9, -1, 0, j * 8);
-        for (int u = 0; u < U; u++)
+        for (int u = 0; u < U; u++) {
+            /* REDUX crc_fold: the parity vector is complete in the acc;
+             * fold it before the store (or the zmm's reuse). */
+            if (cg->cand.crc_fold)
+                gen_fold_zmm(cg, j * U + u, n_in + j);
             c_st(cg, R10, R11, 0, u * vl, j * U + u);
+        }
     }
 }
 
@@ -1858,6 +2003,53 @@ static void tail_mul_byte(cg_t *cg, uint8_t c)
 }
 
 /* scalar tail for len % group bytes. r11 = tail_start, rcx = len. */
+/* REDUX crc_fold: fold the whole 16B chunks of the scalar tail region.
+ * Spec §3.4: the kernel folds exactly floor(tl/16)*16 bytes per call;
+ * the vector body covers 64B multiples, so the tail's whole chunks
+ * ([tail_start, tail_start + nchunks*16)) must be folded here -- the
+ * bytes the encode consumed/produced, observed exactly once:
+ *   - input streams: 16B chunks from in[i] (memory; inputs are never
+ *     modified by the kernel);
+ *   - parity streams: 16B chunks from out[j] (the byte loop above
+ *     already computed and stored every tail byte; reloading observes
+ *     exactly the produced bytes).
+ * On entry R11 == RCX (byte loop finished) and [RSP] = tail_start.
+ * The sub-16B remainder is the driver's rj_crc_fold_tail (spec §6);
+ * the kernel never folds partial chunks. */
+static void gen_fold_tail_chunks(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_in = pl->n_in, n_out = pl->n_out;
+    int done = em_label(e), chunk = em_label(e);
+    /* RBX = tail_start; RAX = nchunks = (RCX - tail_start) >> 4. */
+    em_mov_rm(e, RBX, RSP, -1, 0, 0);
+    em_mov_rr(e, RAX, RCX);
+    em_sub_rr(e, RAX, RBX);
+    em_shr_ri(e, RAX, 4);
+    em_test_rr(e, RAX, RAX);
+    em_jcc(e, CC_E, done);
+    em_xor_rr(e, R10, R10); /* R10 = chunk byte offset */
+    em_bind(e, chunk);
+    for (int i = 0; i < n_in; i++) {
+        /* RDX = in[i] + tail_start; fold 16B at [RDX + R10]. */
+        em_mov_rm(e, RDX, R8, -1, 0, i * 8);
+        em_add_rr(e, RDX, RBX);
+        em_vmovdqa_ld_evex128(e, cg->fold_xc, RDX, R10, 0, 0);
+        gen_fold_chunk(cg, i);
+    }
+    for (int j = 0; j < n_out; j++) {
+        em_mov_rm(e, RDX, R9, -1, 0, j * 8);
+        em_add_rr(e, RDX, RBX);
+        em_vmovdqa_ld_evex128(e, cg->fold_xc, RDX, R10, 0, 0);
+        gen_fold_chunk(cg, n_in + j);
+    }
+    em_add_ri(e, R10, 16);
+    em_dec_r(e, RAX);
+    em_jcc(e, CC_NE, chunk);
+    em_bind(e, done);
+}
+
 static void gen_tail(cg_t *cg)
 {
     em_t *e = &cg->em;
@@ -1990,6 +2182,8 @@ static void gen_tail(cg_t *cg)
         em_cmp_rr(e, R11, RCX);
         em_jcc(e, CC_B, lj);
     }
+    if (cg->cand.crc_fold)
+        gen_fold_tail_chunks(cg);
     em_add_ri(e, RSP, 8);
 }
 
@@ -2282,7 +2476,8 @@ static void gen_function(cg_t *cg)
     int need_r15 = cg->pl->kind == P_MULACC ||
                    ((cg->pl->kind == P_DELTA || cg->pl->kind == P_HORNER) &&
                     (cg->need_mask || cg->need_logexp)) ||
-                   cg->maskedtail;
+                   cg->maskedtail || cg->cand.crc_fold;
+    /* crc_fold needs R15 for the K1/K2 constant-pool loads at entry. */
 
     /* Pointer hoisting: decided before the pushes because HH[2..4]
      * (R12-R14) are callee-saved. */
@@ -2300,6 +2495,13 @@ static void gen_function(cg_t *cg)
         em_push_r(e, R13);
         em_push_r(e, R14);
     }
+    /* REDUX crc_fold: the 4th argument (fold_state, RCX on entry) must
+     * survive the whole kernel (entry loads + exit stores). No GPR is
+     * free across body+tail (RSI/RDI are hoisted input pointers, RBX is
+     * the tail accumulator), so spill it to the stack. It is pushed last
+     * and popped first (into R10) at the single done_lab exit. */
+    if (cg->cand.crc_fold)
+        em_push_r(e, RCX);
     /* NOTE: the pushes leave rsp%16 as 0 or 8 inside the body depending
      * on the count (RBX [+R15] [+R12-R14 when nhoist>2]: 1, 2, 4 or 5
      * pushes -> rsp%16 is 0, 8, 8 or 0). This is safe
@@ -2372,6 +2574,14 @@ static void gen_function(cg_t *cg)
         em_bind(e, done_lab);
     }
 
+    /* REDUX crc_fold exit: store the N stream states back to fold_state
+     * (the driver owns the buffer; the kernel only borrows it). R10 =
+     * fold_state, popped LIFO before the other saved registers. */
+    if (cg->cand.crc_fold) {
+        em_pop_r(e, R10);
+        for (int s = 0; s < cg->fold_n; s++)
+            em_vmovdqa_st_evex128(e, R10, -1, 0, s * 16, cg->fold_xs0 + s);
+    }
     if (cg->nhoist > 2) {
         em_pop_r(e, R14);
         em_pop_r(e, R13);
@@ -2401,6 +2611,56 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                       const rj_cpu_info *cpu, const rj_options *opts,
                       version_t *v, char *err, size_t errlen)
 {
+    /* REDUX crc_fold gate (spec §3.6; defense in depth -- the planner's
+     * fused_crc_interleave_ok check in plan_candidates is the primary
+     * filter). A crc_fold=1 candidate must never be built when the gate
+     * is closed on this CPU (e.g. a hand-crafted plan ID reaching
+     * rj_compile_pinned, or a stale planner): reject cleanly, never
+     * wrong code, never an assertion abort. */
+    if (cand->crc_fold && !fused_crc_interleave_ok(cpu)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: crc_fold=1 but the interleaved-CRC "
+                 "uarch gate is closed on this CPU");
+        return -1;
+    }
+    /* REDUX crc_fold backend requirements. The fold is implemented for
+     * the plain AVX-512 vector bodies only (P_XOR naive, P_MULACC,
+     * P_HORNER with MUL_NIBBLE/MUL_GFNI): the fold hooks sit at the
+     * input-vector loads and the parity stores, which the exotic body
+     * twins (pipe/xorbit/xorsched/permi2b/mshift/remat/ternlog and the
+     * masked/predicated tails) restructure or bypass. P_DELTA is out of
+     * scope (spec §3.5: PARITY_UPDATE targets take the scalar CRC path).
+     * nt/prefetch/notail are orthogonal (store policy / prefetch /
+     * empty tail) and stay allowed. Reject incompatible combinations
+     * cleanly -- never wrong code. */
+    if (cand->crc_fold) {
+        if (cand->isa != ISA_AVX512) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 requires ISA_AVX512");
+            return -1;
+        }
+        if (cand->mul != MUL_NIBBLE && cand->mul != MUL_GFNI) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 requires MUL_NIBBLE or "
+                     "MUL_GFNI (got %d)", cand->mul);
+            return -1;
+        }
+        if (pl->kind == P_DELTA) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 is ENCODE-only "
+                     "(PARITY_UPDATE takes the scalar CRC path)");
+            return -1;
+        }
+        if (cand->pipe || cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->mshift || cand->remat || cand->maskedtail ||
+            cand->ternlog || cand->predtail) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 incompatible with "
+                     "pipe/xorbit/xorsched/permi2b/mshift/remat/maskedtail/"
+                     "ternlog/predtail twins");
+            return -1;
+        }
+    }
     (void)cpu;
     /* Rematerialization is implemented only for P_HORNER. User-reachable
      * via pinned candidates (WASM API): fail cleanly, never abort. */
@@ -2770,6 +3030,36 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 vmax = r - 1;
             }
         }
+    }
+    /* REDUX crc_fold register pool: N+5 lanes continuing the encode's
+     * 0-based assignment (the vmax+1 == want_regs lockstep below forces
+     * bottom-up continuation; see the cg_t field comment for why the
+     * spec's top-down zmm31 placement is not used). E = encode regs.
+     * The 5 VEX-bound temps/consts take E..E+4: VEX.128 PCLMULQDQ
+     * addresses only xmm0-15, so E > 11 is rejected cleanly here
+     * (fail-closed; the planner's 32-bound filter does not know about
+     * the VEX limit). The N stream states take E+5... (EVEX-only). */
+    cg.fold_xc = cg.fold_xa = cg.fold_xb = -1;
+    cg.fold_xk1 = cg.fold_xk2 = -1;
+    cg.fold_xs0 = -1;
+    cg.fold_n = 0;
+    if (cand->crc_fold) {
+        int E = vmax + 1;
+        if (E > 11) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 needs the 5 VEX temps in "
+                     "xmm0-15 (encode uses %d regs)", E);
+            free(cg.hreg);
+            return -1;
+        }
+        cg.fold_xc = E;
+        cg.fold_xa = E + 1;
+        cg.fold_xb = E + 2;
+        cg.fold_xk1 = E + 3;
+        cg.fold_xk2 = E + 4;
+        cg.fold_n = pl->n_in + pl->n_out;
+        cg.fold_xs0 = E + 5;
+        vmax = E + 4 + cg.fold_n;
     }
     /* Single source of truth: the planner's filter must agree exactly
      * with this assignment. A drift here once admitted candidates past

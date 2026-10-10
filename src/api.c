@@ -334,7 +334,14 @@ static rj_jit *rj_compile_impl(const rj_topology *topo, const rj_op *op,
     /* The twins are built from the WINNER's plan: on the survivor
      * path that is the winning subset's plan (wpl), so the chosen set
      * bakes into every dispatched variant. Dispatcher ABI unchanged. */
-    if (o.benchmark && !wpl->noop) {
+    /* Stage 2 is skipped for REDUX crc_fold winners: fold kernels take
+     * the 4-argument entry (fold_state in RCX), but an installed
+     * dispatcher has the 3-argument rj_fn signature -- routing a fold
+     * kernel through it would feed the kernel a garbage fold_state and
+     * crash. The general fold kernel serves every length correctly
+     * (its scalar tail folds whole 16B chunks per the §3.4 contract),
+     * so no twin is needed. */
+    if (o.benchmark && !wpl->noop && !vs[winner].cand.crc_fold) {
         char e3[256];
         /* VPERMI2B twin (track B2, SOTA item 15): built from the stage-1
          * winner, NOT enumerated in stage-1 (plan_candidates never sets

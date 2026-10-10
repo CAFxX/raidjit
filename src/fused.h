@@ -40,5 +40,5 @@ typedef void (*rj_fn_crc_fold)(const void *in[], void *out[], size_t len,
 /* Phase 2 (interleaved CRC fold) microarchitecture gate: 1 if in-kernel
  * CRC folding is allowed on this CPU, 0 for scalar fallback. Conservative:
  * unknown/new µarchs always return 0. See
- * hidden_files/crc_fold_phase2_SPEC.md §2. */
+ * hidden_files/crc_fold_v2_SPEC.md §3.6. */
 int fused_crc_interleave_ok(const rj_cpu_info *cpu);
