@@ -14,11 +14,18 @@ CC := $(CROSS_COMPILE)$(CC)
 # and test binaries live under $(BUILDDIR).
 BUILDDIR = build-$(ARCH)
 
-COMMON_SRCS = src/gf.c src/plan.c src/topo.c src/bench.c src/ref.c src/api.c \
+COMMON_SRCS = src/gf.c src/plan.c src/ports.c src/topo.c src/bench.c src/ref.c src/api.c \
         src/prune.c src/dispatch.c src/xorsched.c src/matrix_search.c \
         src/xorcode.c src/survivor.c src/prefetch_calib.c src/planid.c \
         src/crc.c src/crc_fast.c src/striping.c src/api_crc.c src/fused.c \
         src/api_batched.c
+# Port model data: generated from data/uarch/*.ports (source of truth).
+# Adding a uarch = add a .ports file (no C code change), then rebuild.
+PORTS_DATA = src/ports_data.inc
+$(PORTS_DATA): data/uarch/*.ports tools/gen_ports_inc.py
+	python3 tools/gen_ports_inc.py data/uarch $@
+# ports.c includes the generated data; ensure it's built first.
+src/ports.c: $(PORTS_DATA)
 ifeq ($(ARCH),x86_64)
 ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c \
         src/x86_64/crc_fast.c

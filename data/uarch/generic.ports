@@ -1,0 +1,23 @@
+# Port model: generic fallback (RJ_UARCH_UNKNOWN)
+# Matches the old I3 generic behavior: all ops 1/3.5 cycles, vec_bw 3.5.
+# A single "any" port with throughput 3.5 reproduces the weighted average
+# exactly (no port differentiation = max over one port = average).
+
+uarch: UNKNOWN
+version: 1
+
+ports: any=3.5
+
+class ternlog: any=1.0
+class xor: any=1.0
+class shuffle: any=1.0
+class gfni: any=1.0
+class pclmul: any=1.0
+class load: any=1.0
+class store: any=1.0
+class gpr: any=1.0
+
+scalar vec_bw=3.5
+scalar mem_cpb=0.015625
+scalar freq512=1.0
+scalar bw_bpc=8.0

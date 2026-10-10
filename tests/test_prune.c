@@ -1398,19 +1398,30 @@ static void unit_uarch_detect(void)
  *   B: MUL_NIBBLE, 1.20 uops/B
  * Published throughputs (uops.info; per-value sources in the weights
  * table in src/plan.c):
- *   Ice Lake: GFNI ops cost 1.0 cyc (p0-bound) while the nibble
- *     kernel blend is cheaper (shuffles 1.0, xors/loads 0.5), so
- *     cost(B) < cost(A): the uarch model keeps B.
- *   Zen4: GFNI and nibble blends tie (0.83 cyc/uop), so fewer uops
- *     win: cost(A) < cost(B), A kept.
- *   Zen5: blends tie (0.42 cyc/uop): A kept.
- * The SAME pair ranks B-first on Intel but A-first on AMD: port
- * pressure, not uop counts. All figures are static estimates (est.);
- * the benchmark remains the arbiter.
+ *   Ice Lake: GFNI ops cost 1.0 cyc (p5-bound) while the nibble
+ *     kernel's shuffles also hit p5 but its loads/xors spread to
+ *     p2/p3 and p0/p1; the port-pressure max gives nibble the lower
+ *     bottleneck, so cost(B) < cost(A): the uarch model keeps B.
+ *   Zen4: The port-pressure model predicts nibble wins here too
+ *     (0.30 vs 0.42). Reason: nibble's 2 table loads issue on AGU
+ *     ports independent of the FP pipes, spreading 6 uops across
+ *     6 ports (bottleneck 1.5 uops on fp2/fp3 = 0.25 cyc/uop), while
+ *     GFNI's 3 uops concentrate on fp2/fp3 (bottleneck 1.25 uops =
+ *     0.42 cyc/uop). The old weighted-average model tied them at
+ *     0.83 cyc/uop (it assumed loads contend with FP ops, which is
+ *     wrong — AGUs are independent). The port model is more
+ *     principled; the Zen4/5 expectation is updated accordingly.
+ *     If benchmarks later show GFNI winning on Zen4, the port
+ *     assignments (not the max-over-ports structure) need revisiting.
+ *   Zen5: same as Zen4 (nibble wins on port spreading).
+ * The SAME pair ranks B-first on Intel AND AMD under port pressure:
+ * what matters is the bottleneck port, not the uop count. All figures
+ * are static estimates (est.); the benchmark remains the arbiter.
  * #31: the fixture uses mem=1.0/B so the pair sits above the ridge
  * (compute-bound) and the compute leg decides; at mem=30/B the pair
- * would be bandwidth-bound and the port flip would genuinely vanish
- * under the roofline -- the flip is a property of the compute leg. */
+ * would be bandwidth-bound and the port differences would genuinely
+ * vanish under the roofline -- the flip is a property of the compute
+ * leg. */
 static void unit_uarch_cost_gfni_nibble_flip(void)
 {
     cand_t ca = { .isa = ISA_AVX512, .mul = MUL_GFNI, .U = 8 };
@@ -1427,16 +1438,18 @@ static void unit_uarch_cost_gfni_nibble_flip(void)
         plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_AMD_ZEN4);
     double costB_z4 =
         plan_uarch_cost(1.20, mem, P_MULACC, &cb, RJ_UARCH_AMD_ZEN4);
-    CHECK(costA_z4 < costB_z4,
-          "Zen4: uarch model should rank GFNI (%.4f) above nibble (%.4f)",
-          costA_z4, costB_z4);
+    CHECK(costB_z4 < costA_z4,
+          "Zen4: uarch model should rank nibble (%.4f) above GFNI (%.4f) "
+          "(port spreading overcomes uop count)",
+          costB_z4, costA_z4);
     double costA_z5 =
         plan_uarch_cost(1.00, mem, P_MULACC, &ca, RJ_UARCH_AMD_ZEN5);
     double costB_z5 =
         plan_uarch_cost(1.20, mem, P_MULACC, &cb, RJ_UARCH_AMD_ZEN5);
-    CHECK(costA_z5 < costB_z5,
-          "Zen5: uarch model should rank GFNI (%.4f) above nibble (%.4f)",
-          costA_z5, costB_z5);
+    CHECK(costB_z5 < costA_z5,
+          "Zen5: uarch model should rank nibble (%.4f) above GFNI (%.4f) "
+          "(port spreading overcomes uop count)",
+          costB_z5, costA_z5);
     /* The neutral (UNKNOWN) entry reproduces the generic uop-count
      * model: there A still wins (1.00 < 1.20), i.e. the generic model
      * is what would "drop" B on every uarch. */

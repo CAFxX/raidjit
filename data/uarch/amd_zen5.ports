@@ -1,0 +1,36 @@
+# Port model: AMD Zen5
+# uarch: RJ_UARCH_AMD_ZEN5
+# Sources:
+#   - uops.info (Zen5 page, preliminary)
+#   - Existing rj_uarch_weights_t (throughput priors)
+# Confidence: medium-low (Zen5 data newest, less cross-validated)
+# Version: 1
+# Note: Zen5 has full 512-bit datapath (1 uop per zmm instr, unlike Zen4's 2).
+# Weights: t_ternlog=0.33 (3/cycle), t_shuffle=0.50 (2/cycle), t_xor=0.25
+# (4/cycle), t_gfni=0.50 (2/cycle), t_ld64=0.50 (2/cycle).
+
+uarch: AMD_ZEN5
+version: 1
+
+# Zen5: 6 FP pipes? Conservative: 4 FP + 2 AGU (matches weight-derived widths)
+ports: fp0=1.0 fp1=1.0 fp2=1.0 fp3=1.0 agu0=1.0 agu1=1.0
+
+# VPTERNLOGD zmm: 1 uop (full 512-bit), 3/cycle => spreads over 3+ pipes.
+# Model as fp0/fp1/fp2 (0.34 each) to give 3/cycle bottleneck.
+class ternlog: fp0=0.34 fp1=0.33 fp2=0.33
+# VPXORD zmm: 1 uop, 4/cycle => all 4 FP pipes
+class xor: fp0=0.25 fp1=0.25 fp2=0.25 fp3=0.25
+# VPSHUFB zmm: 1 uop, 2/cycle => fp2/fp3 (shuffle pipes)
+class shuffle: fp2=0.5 fp3=0.5
+# GFNI zmm: 1 uop, 2/cycle => fp2/fp3
+class gfni: fp2=0.5 fp3=0.5
+# VPCLMULQDQ zmm: 1 uop, 2/cycle (est.)
+class pclmul: fp2=0.5 fp3=0.5
+class load: agu0=0.5 agu1=0.5
+class store: agu0=0.5 agu1=0.5
+class gpr: fp0=1.0
+
+scalar vec_bw=6.0
+scalar mem_cpb=0.0078125
+scalar freq512=1.0
+scalar bw_bpc=12.0

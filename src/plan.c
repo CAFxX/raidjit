@@ -1,5 +1,6 @@
 #include "plan.h"
 #include "gf.h"
+#include "ports.h"
 #include "prefetch_calib.h"
 #include "xorsched.h"
 #include <assert.h>
@@ -1437,11 +1438,24 @@ const rj_uarch_weights_t *rj_uarch_weights(rj_uarch_t u)
  * uarch-neutral to first order and folded into the same per-uop
  * rate. This is a HEURISTIC for static ordering (est.), not a
  * cycle-accurate model: the benchmark is the final arbiter. */
-static double kernel_w_uop(plan_kind_t kind, const cand_t *cand,
-                           const rj_uarch_weights_t *w)
+/* Instruction mix for the port-pressure model.
+ * Fills names[]/counts[] with the characteristic op mix for the
+ * candidate class (up to *n entries). Returns the number of entries,
+ * or 0 if the class has no kernel model (caller falls back to the
+ * generic dispatch-width rate).
+ *
+ * Counts are per GF multiply (nibble/GFNI) or per folded xor pair
+ * (P_XOR), read off the emitter sequences in src/x86_64/jit.c — the
+ * same structural mix the old kernel_w_uop used, but now as a
+ * per-class breakdown for port-pressure (not a weighted average).
+ */
+static int kernel_mix(plan_kind_t kind, const cand_t *cand,
+                      const char **names, double *counts, int n)
 {
     double n_tl = 0.0, n_shuf = 0.0, n_xor = 0.0, n_gfni = 0.0, n_ld = 0.0;
     int modeled = 0;
+    int i = 0;
+
     if (cand->isa == ISA_AVX512) {
         if (kind == P_MULACC || kind == P_DELTA || kind == P_HORNER) {
             if (cand->mul == MUL_GFNI) {
@@ -1466,49 +1480,114 @@ static double kernel_w_uop(plan_kind_t kind, const cand_t *cand,
             modeled = 1;
         }
     }
-    if (modeled) {
-        double ntot = n_tl + n_shuf + n_xor + n_gfni + n_ld;
-        return (n_tl * w->t_ternlog + n_shuf * w->t_shuffle +
-                n_xor * w->t_xor + n_gfni * w->t_gfni +
-                n_ld * w->t_ld64) / ntot;
+    if (!modeled)
+        return 0;
+    /* Emit non-zero entries. Order is fixed for determinism. */
+    if (n_tl > 0.0 && i < n) {
+        names[i] = "ternlog";
+        counts[i] = n_tl;
+        i++;
     }
-    /* No kernel model for this class (non-AVX512 ISA or exotic
-     * mul): generic dispatch-width rate. */
-    return 1.0 / w->vec_bw;
+    if (n_shuf > 0.0 && i < n) {
+        names[i] = "shuffle";
+        counts[i] = n_shuf;
+        i++;
+    }
+    if (n_xor > 0.0 && i < n) {
+        names[i] = "xor";
+        counts[i] = n_xor;
+        i++;
+    }
+    if (n_gfni > 0.0 && i < n) {
+        names[i] = "gfni";
+        counts[i] = n_gfni;
+        i++;
+    }
+    if (n_ld > 0.0 && i < n) {
+        names[i] = "load";
+        counts[i] = n_ld;
+        i++;
+    }
+    return i;
+}
+
+/* Port-pressure bottleneck for the candidate's kernel mix.
+ * Returns cycles/byte at the bottleneck port, or -1.0 if the class
+ * has no kernel model (caller uses the generic rate).
+ *
+ * This replaces the I3 weighted average (sum n_i*t_i / sum n_i) with
+ * the principled max-over-ports: cycles = max_p pressure[p]/tput[p].
+ * Ops on different ports execute in parallel; ops on the same port
+ * contend. The weighted average was wrong in both directions.
+ */
+static double kernel_port_bottleneck(plan_kind_t kind, const cand_t *cand,
+                                     const rj_port_model_t *pm,
+                                     double uops_per_byte)
+{
+    const char *names[8];
+    double counts[8];
+    const rj_pm_class_t *classes[8];
+    double mix[8];
+    double ntot = 0.0;
+    int n, i;
+
+    n = kernel_mix(kind, cand, names, counts, 8);
+    if (n == 0)
+        return -1.0;
+    for (i = 0; i < n; i++) {
+        classes[i] = rj_ports_find_class(pm, names[i]);
+        if (!classes[i])
+            return -1.0; /* class not in model; fallback */
+        ntot += counts[i];
+    }
+    if (ntot <= 0.0)
+        return -1.0;
+    /* Convert counts to uops/byte: the mix is per "unit" (multiply or
+     * xor pair); scale by uops_per_byte / ntot to get per-byte rates. */
+    for (i = 0; i < n; i++)
+        mix[i] = counts[i] * uops_per_byte / ntot;
+    return rj_ports_bottleneck(pm, classes, mix, n);
 }
 
 double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
                        plan_kind_t kind, const cand_t *cand, rj_uarch_t u)
 {
     const rj_uarch_weights_t *w = rj_uarch_weights(u);
-    /* Effective cycles per uop: the I3 kernel-mix rate, or the generic
-     * dispatch-width rate when there are no candidate axes. */
-    double w_uop = cand ? kernel_w_uop(kind, cand, w) : 1.0 / w->vec_bw;
+    const rj_port_model_t *pm = rj_ports_for_uarch(u);
+    /* Compute leg: port-pressure bottleneck (cycles/byte), or the
+     * generic dispatch-width rate when the class has no kernel model.
+     *
+     * The port model replaces the I3 weighted average with the
+     * principled max-over-ports. For classes without a model (non-x86
+     * ISA, exotic mul), fall back to uops_per_byte / vec_bw. */
+    double t_compute;
+    if (cand && pm) {
+        double bn = kernel_port_bottleneck(kind, cand, pm, uops_per_byte);
+        if (bn >= 0.0)
+            t_compute = bn;
+        else
+            t_compute = uops_per_byte / w->vec_bw;
+    } else {
+        t_compute = uops_per_byte / w->vec_bw;
+    }
     /* #31: roofline blend of the compute leg and the bandwidth leg.
      *
-     * Compute leg: t_compute = uops_per_byte * w_uop (cycles/byte at
-     * this uarch's port-weighted rate for the kernel's op mix).
+     * Compute leg: t_compute = port-pressure bottleneck (cycles/byte at
+     * the bottleneck port for the kernel's op mix). For classes without
+     * a port model, t_compute = uops_per_byte / vec_bw (generic rate).
      * Bandwidth leg: t_mem = mem_per_byte / bw_bpc (cycles/byte at the
      * uarch's conservative static single-core streaming bandwidth;
      * est., NOT measured).
      *
-     * Arithmetic intensity AI = uops_per_byte / mem_per_byte (uops per
-     * byte moved); ridge point ridge = (1/w_uop) / bw_bpc (peak
-     * uops/cycle over peak bytes/cycle, both from I3's weights and the
-     * static bandwidth figure). t_compute / t_mem = AI / ridge, so the
-     * blend keys off exactly that comparison: below the ridge
-     * (bandwidth-bound) the cost is ~t_mem (bytes moved); above it
-     * (compute-bound) ~t_compute (uop cost). The blend is the
-     * continuous p-norm (t_compute^4 + t_mem^4)^{1/4} -- at the ridge
-     * both legs contribute equally (cost = 2^{1/4} x either leg), and
-     * there is no hard max() switch. The blend is monotone in both
-     * legs, which the prune gate's roofline leg relies on: a twin with
-     * fewer uops and equal bytes can never cost more than the plain.
-     * A non-positive bw_bpc (only possible in hand-built test
-     * weights) degrades gracefully to the compute leg alone.
-     * HEURISTIC for static ordering (est.): the benchmark is the final
-     * arbiter. */
-    double t_compute = uops_per_byte * w_uop;
+     * The blend is the continuous p-norm (t_compute^4 + t_mem^4)^{1/4}:
+     * below the ridge (bandwidth-bound) the cost is ~t_mem; above it
+     * (compute-bound) ~t_compute, with no hard max() switch. The blend
+     * is monotone in both legs, which the prune gate's roofline leg
+     * relies on: a twin with fewer uops and equal bytes can never cost
+     * more than the plain. A non-positive bw_bpc (only possible in
+     * hand-built test weights) degrades gracefully to the compute leg
+     * alone. HEURISTIC for static ordering (est.): the benchmark is the
+     * final arbiter. */
     double t_mem = w->bw_bpc > 0.0 ? mem_per_byte / w->bw_bpc : 0.0;
     double c2 = t_compute * t_compute;
     double m2 = t_mem * t_mem;
