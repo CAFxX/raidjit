@@ -1050,10 +1050,13 @@ static long xb_body_sched(const xorbit_t *s, isa_t isa, int U, int nhoist)
 {
     int is_sse = (isa == ISA_SSE);
     int is_x86 = (isa == ISA_SSE || isa == ISA_AVX2 || isa == ISA_AVX512);
+    int is_aarch64 = (isa == ISA_NEON || isa == ISA_SVE);
     int n_out = s->n_out;
     int ni_sched = s->n_in_sched;
     int is_delta = (s->kind == P_DELTA);
     long uops = 0;
+    if (is_aarch64)
+        uops += 1; /* prologue mask setup (DUP/MOVI #1), counted for lockstep */
     if (!is_delta)
         uops += (long)s->ndead_bytes * U; /* prologue c_vzero */
     else
@@ -1124,8 +1127,12 @@ static void xb_first_col(const plan_t *pl, int ncols, int *first_col)
 /* AArch64 naive nibble body uops for U vectors (MUL_NIBBLE, no
  * ternlog/permi2b/remat/pipe/pred). Mirrors src/aarch64/jit.c exactly:
  * mulacc_column for P_MULACC/P_DELTA, the inline i-loop for P_HORNER.
- * Excludes prologue const-setup (uncounted by convention) and stores
- * (added by xorbit_version_uops' caller).
+ * Excludes prologue const-setup (mask DUP/MOVI + HORNER table loads).
+ * NOTE: The AArch64 emitter DOES count prologue (gen_const_setup adds
+ * uops), while this model does not. This makes the gate (u_sched < u_naive)
+ * require winning by more than the prologue cost, not a strict 1-uop win.
+ * The gate remains SOUND (no false admits) but may miss narrow wins.
+ * TODO: Count prologue in model for tight gate. See adversarial review.
  *
  * is_sve selects NEON vs SVE counting (c_ldpool is 2 uops on SVE, 1 on
  * NEON; the first-column nontrivial accumulate is 1 uop on SVE via

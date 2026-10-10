@@ -54,7 +54,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_pdelta_edge \
         $(BUILDDIR)/test_boundaries $(BUILDDIR)/test_aarch64_shape \
         $(BUILDDIR)/test_prune $(BUILDDIR)/test_dispatch \
-        $(BUILDDIR)/test_xorsched $(BUILDDIR)/test_xorsched_e2e \
+        $(BUILDDIR)/test_xorsched $(BUILDDIR)/test_xorsched_e2e $(BUILDDIR)/test_xorbit \
         $(BUILDDIR)/test_matrix_search $(BUILDDIR)/test_xorcode \
         $(BUILDDIR)/test_notail_xorsched $(BUILDDIR)/test_survivor \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
@@ -68,7 +68,7 @@ X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
         $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b \
-        $(BUILDDIR)/test_xorbit $(BUILDDIR)/test_mshift \
+        $(BUILDDIR)/test_mshift \
         $(BUILDDIR)/test_crc_fast_x86
 ifeq ($(ARCH),x86_64)
 TESTS = $(PORTABLE_TESTS) $(X86_ONLY_TESTS)

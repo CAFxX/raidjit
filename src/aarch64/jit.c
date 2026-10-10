@@ -600,14 +600,13 @@ static void gen_const_setup(cg_t *cg)
     const plan_t *pl = cg->pl;
     em_t *e = &cg->em;
     if (cg->cand.xorbit) {
-        /* Bit-program twin: set up the 0x01 mask register. Prologue
-         * const setup is not per-iteration work: uncounted, by the
-         * same convention as the nibble mask/table setup (and x86's
-         * mask load). */
+        /* Bit-program twin: set up the 0x01 mask register. Counted for
+         * model↔emitter lockstep (see xb_body_sched_aarch64). */
         if (cg->is_sve)
             em_sve_dup(e, V(cg, cg->xbt_mask), 1);
         else
             em_neon_movi(e, cg->xbt_mask, 1);
+        cg->uops += 1;
     } else if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && cg->need_mask) {
         if (cg->is_sve)
             em_sve_dup(e, V(cg, cg->mask), 15);

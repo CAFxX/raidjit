@@ -1052,7 +1052,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             if (out[i].mul != MUL_NIBBLE)
                 continue;
             int U = out[i].U;
-            if (xorbit_need_regs(isa, pl, U) > isa_nregs(isa))
+            int lmul = 1;
+            if (isa == ISA_RVV && out[i].lmul)
+                lmul = out[i].lmul;
+            if (xorbit_need_regs(isa, pl, U) * lmul > isa_nregs(isa))
                 continue;
             long u_naive = xorbit_version_uops(pl->bit_sched, pl, isa, U,
                                               0, 0);
