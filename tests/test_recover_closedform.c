@@ -83,7 +83,7 @@ static void diff_case(topo_int_t *ti, const char *tname, const int *F, int nf,
     uint8_t *Rcf = malloc((size_t)(nf > 0 ? nf : 1) * (size_t)(ns > 0 ? ns : 1));
     uint8_t *Rgen = malloc((size_t)(nf > 0 ? nf : 1) * (size_t)(ns > 0 ? ns : 1));
     memset(Rcf, 0xA5, (size_t)nf * (size_t)(ns > 0 ? ns : 1));
-    int cf = plan_recover_closed_form(ti, F, nf, S, ns, rows, nrows, Rcf);
+    int cf = plan_recover_closed_form(ti, F, nf, S, ns, rows, nrows, Rcf, NULL);
     int gen =
         solve_recovery_rows(ti->mat, nd, np, F, nf, S, ns, rows, nrows,
                             Rgen, NULL);
@@ -395,7 +395,7 @@ static void fuzz_differential(void)
         uint8_t Rcf[2 * 8], Rgen[2 * 8];
         memset(Rcf, 0xA5, sizeof(Rcf));
         int cf =
-            plan_recover_closed_form(&ti, F, nf, S, ns, perm, nrows, Rcf);
+            plan_recover_closed_form(&ti, F, nf, S, ns, perm, nrows, Rcf, NULL);
         int gen = solve_recovery_rows(mat, nd, np, F, nf, S, ns, perm,
                                       nrows, Rgen, NULL);
         total++;
@@ -421,7 +421,7 @@ static void fuzz_differential(void)
             }
             uint8_t R3[3 * 8];
             CHECK(plan_recover_closed_form(&ti, F3, 3, S3, ns3, perm, np,
-                                           R3) == 0,
+                                           R3, NULL) == 0,
                   "fuzz iter %d: nf=3 must fall back", iter);
             if (failures)
                 return;

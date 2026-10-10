@@ -210,6 +210,11 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * relation on the checked axes -- the software-pipelined loop is a
      * different codegen shape (double-buffered D/Dn datasets with
      * prologue/steady-state load scheduling), not a multiply twin.
+     * rec_cf is pinned (algos #4): a (rec_cf=1,ternlog=1)/(rec_cf=0,
+     * ternlog=0) pair must never satisfy the twin relation on the
+     * checked axes -- the closed-form recovery emitter is a different
+     * codegen shape (syndrome+combine vs generic MULACC over baked R),
+     * not a multiply twin.
      * Behavior-preserving for
      * the other axes today: all in-list candidates have
      * notail=0/predtail=0/maskedtail=0, and P_XOR pairs are refused by
@@ -228,6 +233,7 @@ static int twin_dominates(const version_t *a, const version_t *b,
         a->cand.xorbit != b->cand.xorbit ||
         a->cand.mshift != b->cand.mshift ||
         a->cand.pipe != b->cand.pipe ||
+        a->cand.rec_cf != b->cand.rec_cf ||
         a->cand.lmul != b->cand.lmul)
         return 0;
 

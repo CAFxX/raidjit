@@ -269,6 +269,12 @@ void plan_free(plan_t *pl)
 {
     xorsched_free(pl->xor_sched);
     xorbit_free(pl->bit_sched);
+    if (pl->rec_cf) {
+        free(pl->rec_cf->ecoef);
+        free(pl->rec_cf->ecoef1);
+        free(pl->rec_cf->ecoef2);
+        free(pl->rec_cf);
+    }
     free(pl->mat);
     free(pl->horner_c);
     memset(pl, 0, sizeof(*pl));
@@ -435,8 +441,10 @@ static uint8_t recover_eqn_coef(const topo_int_t *topo, int row, int d)
  * solve_recovery_rows. */
 int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
                              const int *S, int ns, const int *rows, int nrows,
-                             uint8_t *R)
+                             uint8_t *R, struct rec_cf_data **cf_out)
 {
+    if (cf_out)
+        *cf_out = NULL;
     int np = topo->npar;
     if (nf < 1 || nf > 2 || nrows < nf || ns < 0)
         return 0;
@@ -462,6 +470,27 @@ int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
         uint8_t kinv = gf_inv(cf); /* plan-time constant */
         for (int s = 0; s < ns; s++)
             R[s] = gf_mul(recover_eqn_coef(topo, pr, S[s]), kinv);
+        /* Build rec_cf_data for the emitter twin (algos #4). */
+        if (cf_out) {
+            struct rec_cf_data *cfd = calloc(1, sizeof(*cfd));
+            if (!cfd)
+                return 1; /* closed form applied; cf_data optional */
+            cfd->nf = 1;
+            cfd->ns = ns;
+            cfd->ecoef = malloc((size_t)ns);
+            if (!cfd->ecoef) {
+                free(cfd);
+                return 1;
+            }
+            for (int s = 0; s < ns; s++)
+                cfd->ecoef[s] = recover_eqn_coef(topo, pr, S[s]);
+            cfd->cinv = kinv;
+            /* Strength-reducible if power of 2 (xtime chain). */
+            cfd->cinv_cheap = (kinv == 1 || kinv == 2 || kinv == 4 ||
+                               kinv == 8 || kinv == 16 || kinv == 32 ||
+                               kinv == 64 || kinv == 128);
+            *cf_out = cfd;
+        }
         return 1;
     }
     /* nf == 2: replicate the solver's pivot pair. p0 = first row with
@@ -513,6 +542,40 @@ int plan_recover_closed_form(const topo_int_t *topo, const int *F, int nf,
         R[(size_t)ns + (size_t)s] =
             gf_mul(gf_mul(c2, e1) ^ gf_mul(a, e2), dinv);
     }
+    /* Build rec_cf_data for the emitter twin (algos #4). */
+    if (cf_out) {
+        struct rec_cf_data *cfd = calloc(1, sizeof(*cfd));
+        if (!cfd)
+            return 1; /* closed form applied; cf_data optional */
+        cfd->nf = 2;
+        cfd->ns = ns;
+        cfd->ecoef1 = malloc((size_t)ns);
+        cfd->ecoef2 = malloc((size_t)ns);
+        if (!cfd->ecoef1 || !cfd->ecoef2) {
+            free(cfd->ecoef1);
+            free(cfd->ecoef2);
+            free(cfd);
+            return 1;
+        }
+        cfd->row1_is_01 = 1;
+        cfd->row2_is_01 = 1;
+        for (int s = 0; s < ns; s++) {
+            uint8_t e1 = recover_eqn_coef(topo, p0, S[s]);
+            uint8_t e2 = recover_eqn_coef(topo, p1, S[s]);
+            cfd->ecoef1[s] = e1;
+            cfd->ecoef2[s] = e2;
+            if (e1 != 0 && e1 != 1)
+                cfd->row1_is_01 = 0;
+            if (e2 != 0 && e2 != 1)
+                cfd->row2_is_01 = 0;
+        }
+        cfd->a = a;
+        cfd->b = b;
+        cfd->c = c2;
+        cfd->d = d2;
+        cfd->detinv = dinv;
+        *cf_out = cfd;
+    }
     return 1;
 }
 
@@ -561,7 +624,8 @@ int plan_build_recover_rows(const topo_int_t *topo, const int *F, int nf,
     if (no_cf && no_cf[0] != '\0' && strcmp(no_cf, "0") != 0)
         use_cf = 0;
     int closed = use_cf ? plan_recover_closed_form(topo, F, nf, S, ns, rows,
-                                                   nrows, pl->mat)
+                                                   nrows, pl->mat,
+                                                   &pl->rec_cf)
                         : 0;
     if (!closed &&
         solve_recovery_rows(topo->mat, nd, np, F, nf, S, ns, rows, nrows,
