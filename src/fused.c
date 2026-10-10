@@ -524,11 +524,11 @@ int fused_crc_interleave_ok(const rj_cpu_info *cpu)
     if (!cpu)
         return 0;
 #if defined(__x86_64__)
-    /* x86-64: VPCLMULQDQ + AVX-512F required, AND µarch on the
-     * allowlist (SPR, Zen4, ICL-SP). Feature bits alone are not
-     * trusted: a weak VPCLMULQDQ implementation would silently be
-     * 2-4x, not "almost free". */
-    if (!cpu->vpclmulqdq || !cpu->avx512f)
+    /* x86-64: PCLMULQDQ required (128-bit fold). The v2 design uses
+     * per-stream 128-bit folds, not VPCLMULQDQ 4-stream packing (packing
+     * overhead exceeds the benefit). Conservative µarch allowlist:
+     * SPR, Zen4, ICL-SP have strong PCLMULQDQ (1/cycle). */
+    if (!cpu->pclmulqdq || !cpu->avx512f)
         return 0;
     {
         rj_uarch_t u = rj_uarch_current();
