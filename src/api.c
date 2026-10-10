@@ -437,7 +437,7 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
          *   method). The unrolled full-VL v0-masked tail
          *   (src/riscv/jit.c gen_tail_masked) replaces the strip-mining
          *   remainder loop. No extension gate beyond ISA_RVV (vid.v,
-         *   vmslt.vx and masked vle8.v/vse8.v are base V). Disjoint
+         *   vmsltu.vx and masked vle8.v/vse8.v are base V). Disjoint
          *   from notail/predtail (different ISA from both).
          *
          * Each twin is built from the winner and gated by
@@ -519,7 +519,7 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
          * one chunk per U; src/riscv/jit.c gen_tail_masked). Eligible
          * for every plan kind and multiply method: only data
          * loads/stores are masked, compute on masked-off lanes is
-         * don't-care, and table loads stay unmasked. vid.v/vmslt.vx and
+         * don't-care, and table loads stay unmasked. vid.v/vmsltu.vx and
          * masked vle8.v/vse8.v are base-V instructions, so no extension
          * gate beyond ISA_RVV is needed. The tail duel
          * (bench_tail_duel) validates correctness and requires a
