@@ -114,6 +114,9 @@ typedef struct {
      * Dn holds column 0 of the next iteration. -1 when pipe is off. */
     int pipe_dn;
     int tlo, thi, r1, r2, tbl_lo, tbl_hi, mask;
+    /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
+     * regs (mask via vand.vi immediate, no mask reg needed). */
+    int xbt_in, xbt_r1, xbt_r2;
     int r3;    /* Zvbc path 3rd carryless temp (q needs lo/hi live) */
     int cvec;  /* Zvbc path: broadcast GF coefficient (per row for
                 * HORNER via hreg[2j]; per column for MULACC/DELTA) */

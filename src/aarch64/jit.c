@@ -54,6 +54,9 @@ typedef struct {
     int U, group;    /* group = U*vl bytes per vector-loop iteration */
     int t, tlo, thi, r1, r2, tbl_lo, tbl_hi, mask; /* logical vector regs */
     int t2; /* XOR-schedule 2nd temp (P_XOR xorsched twin only) */
+    /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
+     * regs, and the 0x01 mask reg (see xorbit_need_regs). */
+    int xbt_in, xbt_r1, xbt_r2, xbt_mask;
     /* Software-pipelined loop twin (track I8, cand->pipe): base logical
      * regs of the per-column double-buffered datasets D (pipe_d, U
      * regs) and Dn (pipe_dn, U regs). In pipe mode the single input

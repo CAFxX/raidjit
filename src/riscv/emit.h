@@ -121,6 +121,7 @@ void em_vand_vi(em_t *e, int vd, int vs2, unsigned uimm);
 void em_vandn_vv(em_t *e, int vd, int vs1, int vs2); /* Zvbb */
 void em_vbrev8_v(em_t *e, int vd, int vs);           /* Zvbb */
 void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm);
+void em_vsll_vi(em_t *e, int vd, int vs2, unsigned uimm);
 void em_vrgather_vv(em_t *e, int vd, int vtab, int vidx); /* vd[i] =
                           vtab[vidx[i]]; table reg in vs2 field, index
                           reg in vs1 field */

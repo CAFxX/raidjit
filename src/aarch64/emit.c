@@ -387,6 +387,13 @@ void em_neon_ushr(em_t *e, int vd, int vn, unsigned sh) /* .16b */
     em_word(e, 0x6F000400u | ((((16u - sh) & 63u) << 16) |
                      (((uint32_t)vn & 31u) << 5) | ((uint32_t)vd & 31u)));
 }
+void em_neon_shl(em_t *e, int vd, int vn, unsigned sh) /* .16b */
+{
+    /* SHL immh:immb encodes shift directly; U=0 (bit 29) vs USHR's U=1 */
+    assert(sh >= 1 && sh <= 7);
+    em_word(e, 0x4F000400u | (((sh & 63u) << 16) |
+                     (((uint32_t)vn & 31u) << 5) | ((uint32_t)vd & 31u)));
+}
 void em_neon_tbl(em_t *e, int vd, int vn, int vm) /* vd = tbl({vn}, vm) */
 {
     em_word(e, 0x4E000000u | (((uint32_t)vm & 31u) << 16) |
@@ -549,10 +556,22 @@ void em_sve_lsr(em_t *e, int zdn, int pg, unsigned sh) /* .b, destructive */
  * (bits 19:16 = 16-sh). Base 0x04209400 is the GAS word with zd/zn/imm
  * fields cleared; do NOT derive it by clearing only imm (that leaves
  * zd/zn bits set and corrupts other operands -- see test regression). */
+/* LSL (unpredicated, immediate): lsl zd.b, zn.b, #sh. Base SVE, single
+ * uop, no predicate register involved.
+ * ENCODING NOTE: derived from the LSR encoding by setting bit 13
+ * (0x04209400 -> 0x0420B400), per ARM ARM DDI 0487 LSL_Z_ZI vs LSR_Z_ZI
+ * (shift-type field). imm4 = sh directly (not 16-sh like LSR).
+ * REQUIRES GAS cross-check before use (see AGENTS.md emitter lesson). */
 void em_sve_lsr_unpred(em_t *e, int zd, int zn, unsigned sh) /* sh in 1..7 */
 {
     assert(sh >= 1 && sh <= 7);
     em_word(e, 0x04209400u | ((((16u - sh) & 15u) << 16) |
+                     (((uint32_t)zn & 31u) << 5) | ((uint32_t)zd & 31u)));
+}
+void em_sve_lsl_unpred(em_t *e, int zd, int zn, unsigned sh) /* sh in 1..7 */
+{
+    assert(sh >= 1 && sh <= 7);
+    em_word(e, 0x0420B400u | (((sh & 15u) << 16) |
                      (((uint32_t)zn & 31u) << 5) | ((uint32_t)zd & 31u)));
 }
 void em_sve_tbl(em_t *e, int zd, int zn, int zm) /* zd = tbl({zn}, zm) */
