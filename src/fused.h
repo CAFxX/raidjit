@@ -29,9 +29,9 @@ int rj_fused_sub_npar(const rj_fused *f, int idx);  /* -1 unless ENCODE */
 void rj_fused_call(const rj_fused *f, const void *const *in, void *const *out,
                    size_t len, uint32_t *crc);
 
-/* Phase 2 (interleaved CRC fold): 4-argument kernel entry point.
- * The 4th argument is the fold_state pointer (nstreams*64 bytes,
- * 64-byte aligned, one zmm per stream). ONLY used when
+/* Phase 2 REDUX (interleaved CRC fold): 4-argument kernel entry point.
+ * The 4th argument is the fold_state pointer (nstreams*16 bytes,
+ * 16-byte aligned, one 128-bit state per stream). ONLY used when
  * rj_jit_crc_fold(v) == 1; the fused driver is the sole caller.
  * Never exposed publicly. */
 typedef void (*rj_fn_crc_fold)(const void *in[], void *out[], size_t len,

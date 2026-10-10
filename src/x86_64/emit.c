@@ -974,10 +974,9 @@ void em_mov_r8r8(em_t *e, int d, int s)
  *   imm=0x11: lane = CLMUL(src1[127:64], src2[127:64])
  *   imm=0x01: lane = CLMUL(src1[63:0], src2[127:64])
  *   imm=0x10: lane = CLMUL(src1[127:64], src2[63:0])
- * Requires AVX512F + VPCLMULQDQ. Used by the crc_fold twin for the
- * PCLMULQDQ CRC fold (single 128-bit stream state; the 4-lane
- * every-4th-chunk structure is not combinable -- see the impossibility
- * proof in the Phase 2 work notes). */
+ * Requires AVX512F + VPCLMULQDQ. (Phase 2 REDUX does not use this for
+ * the CRC fold — the per-stream 128-bit fold uses em_pclmulqdq instead.
+ * Kept for other consumers.) */
 void em_vpclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm)
 {
     /* dest (vd) in ModRM.reg, src2 (vs2) in r/m, src1 (vs1) in vvvv.
