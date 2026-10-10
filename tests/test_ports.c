@@ -89,15 +89,55 @@ int main(void) {
     CHECK(sh != NULL, "Zen5 shuffle class found");
     CHECK_CLOSE(bottleneck_1uop(zen5, sh), 0.5, 0.01, "Zen5 shuffle FP12");
     
+    /* --- ICL pclmul (load-bearing for CRC folding) --- */
+    /* VPCLMULQDQ zmm: 1*p5, TP 1.00 -> 1.0 cycles/uop */
+    const rj_pm_class_t *pc = rj_ports_find_class(icl, "pclmul");
+    CHECK(pc != NULL, "ICL pclmul class found");
+    CHECK_CLOSE(bottleneck_1uop(icl, pc), 1.0, 0.01, "ICL pclmul p5");
+
+    /* --- ICL load/store classes --- */
+    const rj_pm_class_t *ld = rj_ports_find_class(icl, "load");
+    CHECK(ld != NULL, "ICL load class found");
+    CHECK_CLOSE(bottleneck_1uop(icl, ld), 0.5, 0.01, "ICL load p2/p3");
+    const rj_pm_class_t *st = rj_ports_find_class(icl, "store");
+    CHECK(st != NULL, "ICL store class found");
+    CHECK_CLOSE(bottleneck_1uop(icl, st), 0.5, 0.01, "ICL store p4/p7");
+
     /* --- Zen4: uops.info verified values --- */
     const rj_port_model_t *zen4 = rj_ports_for_uarch(RJ_UARCH_AMD_ZEN4);
     CHECK(zen4 != NULL, "Zen4 model exists");
-    
+
     /* Zen4 512-bit is double-pumped: uops_per_instr = 2.0 */
     tl = rj_ports_find_class(zen4, "ternlog");
     CHECK(tl != NULL, "Zen4 ternlog class found");
     CHECK_CLOSE(tl->uops_per_instr, 2.0, 0.01, "Zen4 ternlog 2 uops/instr");
-    
+
+    /* Zen4 gfni: 2 uops on FP0/FP1 (uops.info: 1*FP01) -> 0.5 cycles/uop.
+     * Verifies the MAJOR-1 resolution (p0, not p01, on Intel; FP01 on Zen4). */
+    gf = rj_ports_find_class(zen4, "gfni");
+    CHECK(gf != NULL, "Zen4 gfni class found");
+    CHECK_CLOSE(bottleneck_1uop(zen4, gf), 0.5, 0.01, "Zen4 gfni FP01");
+
+    /* --- Zen5 gfni (MAJOR-1 resolution) --- */
+    /* Zen5 gfni: 1 uop on FP1/FP2 (uops.info: 1*FP12) -> 0.5 cycles/uop */
+    gf = rj_ports_find_class(zen5, "gfni");
+    CHECK(gf != NULL, "Zen5 gfni class found");
+    CHECK_CLOSE(bottleneck_1uop(zen5, gf), 0.5, 0.01, "Zen5 gfni FP12");
+
+    /* --- SPR smoke test --- */
+    const rj_port_model_t *spr = rj_ports_for_uarch(RJ_UARCH_INTEL_SAPPHIRERAPIDS);
+    CHECK(spr != NULL, "SPR model exists");
+    tl = rj_ports_find_class(spr, "ternlog");
+    CHECK(tl != NULL, "SPR ternlog class found");
+    CHECK_CLOSE(bottleneck_1uop(spr, tl), 0.5, 0.01, "SPR ternlog p05");
+
+    /* --- SKX smoke test --- */
+    const rj_port_model_t *skx = rj_ports_for_uarch(RJ_UARCH_INTEL_SKYLAKEX);
+    CHECK(skx != NULL, "SKX model exists");
+    sh = rj_ports_find_class(skx, "shuffle");
+    CHECK(sh != NULL, "SKX shuffle class found");
+    CHECK_CLOSE(bottleneck_1uop(skx, sh), 1.0, 0.01, "SKX shuffle p5");
+
     /* --- Edge cases --- */
     /* Empty mix -> 0 cycles */
     {

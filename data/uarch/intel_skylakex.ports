@@ -18,8 +18,13 @@ ports: p0=1.0 p1=1.0 p2=1.0 p3=1.0 p4=1.0 p5=1.0 p6=1.0 p7=1.0
 # weight t_ternlog=0.50 => 2/cycle. SKX VPTERNLOGD is p015 (uops.info) but
 # measured 2/cycle due to 512-bit port constraints. Model as p0/p1/p5
 # with effective throughput captured by port contention.)
-# SIMPLIFICATION: use p0/p1 (0.5 each) to match the 2/cycle throughput.
-# The p5 sharing is second-order for our mixes.
+# SIMPLIFICATION (reviewer #5): uops.info lists SKX VPTERNLOGD as p015, but
+# measured throughput is 2/cycle (512-bit port constraints), not 3/cycle.
+# Modeling as p0/p5 (0.5 each) captures the 2/cycle effective throughput
+# while keeping the model simple. The p1 sharing is second-order: our
+# kernel mixes are p0/p5-bound on the vector ALU, and the p1 component
+# would only matter in pathological all-ternlog microbenchmarks.
+# If a future mix shows systematic underprediction on SKX, revisit as p015.
 class ternlog uops=1.0: p0=0.5 p5=0.5
 class xor uops=1.0: p0=0.5 p5=0.5
 # VPSHUFB zmm: 1 uop, p5 (throughput 1.0)
