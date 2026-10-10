@@ -572,15 +572,21 @@ static void prune_invert_redgreen(rj_topology *t, const char *tag, int h,
         }
         survivor_free_subsets(subs, nsub);
     }
-    /* product level: the static survivor_select winner flips too */
+    /* product level: with the LRC locality planner rule (see
+     * hidden_files/lrc_locality_SPEC.md), survivor_select uses the
+     * explicit local-cover rule, NOT the cost-model shortlist. The
+     * rule is intentionally robust to cost inversion: even with
+     * inverted costs, the local row must still win. This is the
+     * behavior change from the LRC rule (previously the winner
+     * flipped with cost). */
     {
         int wr[RJ_MAX_DISKS];
         setenv("RJ_SUBSET_PRUNE_INVERT", "1", 1);
         static_win_rows(t, "red/inverted", (int[]){ fail_disk }, 1, wr);
         unsetenv("RJ_SUBSET_PRUNE_INVERT");
-        CHECK(wr[0] != local_row,
-              "%s red: inverted static winner still rows={%d}", tag,
-              wr[0]);
+        CHECK(wr[0] == local_row,
+              "%s red: LRC rule violated under inversion: winner rows={%d}, expected local {%d}",
+              tag, wr[0], local_row);
     }
     topo_int_free(&ti);
 }
