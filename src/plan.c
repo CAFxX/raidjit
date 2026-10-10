@@ -86,7 +86,6 @@ static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
                                 int U, int remat, int pipe)
 {
     int n_out = pl->n_out;
-    /* Phase 2: one vector register per stream for fold state. */
     
     if (isa == ISA_PEXT) {
         /* No PEXT backend exists (RISC-V P-extension work is deferred),
@@ -293,8 +292,10 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
         n += 1;
     }
     if (crc_fold) {
-        /* Phase 2: one vector register per stream for fold state. */
-        n += pl->n_in + pl->n_out;
+        /* Phase 2 v2 (lanes = streams): one zmm per 4 streams for fold state
+         * (4x 128-bit states packed, one per lane). ceil(nstreams/4). */
+        int nstreams = pl->n_in + pl->n_out;
+        n += (nstreams + 3) / 4;
     }
     return n;
 }

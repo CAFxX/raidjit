@@ -28,7 +28,7 @@ $(PORTS_DATA): data/uarch/*.ports tools/gen_ports_inc.py
 src/ports.c: $(PORTS_DATA)
 ifeq ($(ARCH),x86_64)
 ARCH_SRCS = src/x86_64/cpu.c src/x86_64/emit.c src/x86_64/jit.c \
-        src/x86_64/crc_fast.c
+        src/x86_64/crc_fast.c src/x86_64/crc_fold.c
 else ifeq ($(ARCH),aarch64)
 ARCH_SRCS = src/aarch64/cpu.c src/aarch64/emit.c src/aarch64/jit.c \
         src/aarch64/crc_fast.c

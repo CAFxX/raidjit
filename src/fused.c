@@ -21,6 +21,9 @@
 #include "api.h"
 #include "crc.h"
 #include "striping.h"
+#ifdef __x86_64__
+#include "x86_64/crc_fold.h"
+#endif
 
 #include <assert.h>
 #include <pthread.h>
@@ -299,22 +302,20 @@ static void fused_driver_call(const struct rj_fused *f,
     int tn = t >= 0 ? f->nin[t] : 0;
     int tno = t >= 0 ? f->nout[t] : 0;
     assert(t < 0 || tn + tno <= RJ_FUSED_MAX_FLAT / 2);
-    /* Phase 2: fold state (one zmm = 64 bytes per stream) when in-kernel
-     * folding is active. Allocated on the stack, 64-byte aligned. */
-    alignas(64) uint8_t fold_state[RJ_FUSED_MAX_FLAT / 2 * 64];
+    /* Phase 2 v2 (lanes = streams): fold state is 16 bytes per stream
+     * (one 128-bit state). The kernel packs 4 streams per zmm.
+     * Allocated on the stack, 64-byte aligned. */
+    alignas(64) uint8_t fold_state[RJ_FUSED_MAX_FLAT / 2 * 16];
     int nstreams = tn + tno;
     if (f->crc_fold) {
         assert(t >= 0);
         /* Initialize fold state: the backend defines the init convention.
-         * For x86-64: 0xFFFFFFFF in low 32 bits of each lane (reflected
-         * init), rest zero. The backend's kernel entry loads this. */
-        memset(fold_state, 0, (size_t)nstreams * 64);
+         * For x86-64: 0xFFFFFFFF in low 32 bits (reflected init), rest
+         * zero. The backend's kernel entry loads this. */
+        memset(fold_state, 0, (size_t)nstreams * 16);
         for (int i = 0; i < nstreams; i++) {
-            /* Set low 32 bits of each 128-bit lane to 0xFFFFFFFF. */
-            for (int lane = 0; lane < 4; lane++) {
-                uint32_t *p = (uint32_t *)(fold_state + i * 64 + lane * 16);
-                p[0] = 0xFFFFFFFFu;
-            }
+            uint32_t *p = (uint32_t *)(fold_state + i * 16);
+            p[0] = 0xFFFFFFFFu;
         }
     } else {
         if (crc && t >= 0)
@@ -361,12 +362,16 @@ static void fused_driver_call(const struct rj_fused *f,
 
     if (crc && t >= 0) {
         if (f->crc_fold) {
-            /* Phase 2: finalize fold state to CRCs. The backend defines
-             * the finalize; for x86-64: reduce 4 lanes per stream via
-             * shift-XOR, then Barrett reduce 128->32, XOR 0xFFFFFFFF.
-             * TODO: implement finalize (x86-64 worker). */
+            /* Phase 2 v2 (lanes = streams): finalize each stream's 128-bit
+             * state to CRC-32 via per-stream Barrett reduction. No cross-
+             * lane combination (lanes are independent streams). */
+#ifdef __x86_64__
+            rj_crc_fold_finalize_x86(fold_state, nstreams, len, crc);
+#else
+            /* AArch64/RISC-V gates are closed; this is unreachable. */
             for (int i = 0; i < nstreams; i++)
-                crc[i] = 0; /* placeholder */
+                crc[i] = 0;
+#endif
         } else {
             for (int i = 0; i < tn + tno; i++)
                 crc[i] = rj_crc32_final(acc[i]);
