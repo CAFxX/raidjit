@@ -72,6 +72,8 @@ void em_ld(em_t *e, int rd, int rs1, int off12);   /* rd = [rs1+off] */
 void em_sd(em_t *e, int rs2, int rs1, int off12);  /* [rs1+off] = rs2 */
 void em_beq(em_t *e, int rs1, int rs2, int lab);   /* rel, label fixup */
 void em_bne(em_t *e, int rs1, int rs2, int lab);   /* rel, label fixup */
+void em_blt(em_t *e, int rs1, int rs2, int lab);   /* rel, label fixup */
+void em_bge(em_t *e, int rs1, int rs2, int lab);   /* rel, label fixup */
 /* jal rd, label: J-type, +-1 MiB label fixup (for jumps beyond the
  * B-type +-4 KiB range, e.g. the strip-mining loop-back of a large
  * unrolled body) */
@@ -84,13 +86,34 @@ void em_trap_align(em_t *e, unsigned a); /* UNIMP sled to alignment a (power
 /* rd = address of (label + add); emits auipc+addi with a paired fixup */
 void em_lla(em_t *e, int rd, int lab, int add);
 
-/* --- vector (all unmasked, vm=1) --- */
+/* --- vector (all unmasked, vm=1, unless the _m masked forms) --- */
 void em_vsetvli(em_t *e, int rd, int rs1, int vsew, int vlmul, int vta,
                 int vma);
 void em_vsetivli(em_t *e, int rd, unsigned uimm, int vsew, int vlmul, int vta,
                  int vma);
 void em_vle8(em_t *e, int vd, int rs1);  /* vd = *(rs1), unit stride */
 void em_vse8(em_t *e, int vs3, int rs1); /* *(rs1) = vs3, unit stride */
+/* Masked unit-stride byte load/store (vm=0): the mask register is
+ * always v0. Used by the maskedtail twin's tail; inactive lanes do not
+ * fault (no over-read/over-write past the tail). */
+void em_vle8_v_m(em_t *e, int vd, int rs1);  /* vd = *(rs1), v0.t */
+void em_vse8_v_m(em_t *e, int vs3, int rs1); /* *(rs1) = vs3, v0.t */
+/* vid.v vd: vd[i] = i (element index). OPIVI, funct6=010100, vs1 field
+ * = 10111 selects vid, vm=1 (unmasked), vs2 field = 00000 (reserved;
+ * the V spec requires it to be v0). NOTE: the destination group must
+ * not overlap the mask register (v0) when LMUL > 1 -- the V spec
+ * raises illegal-insn there -- so the maskedtail twin writes the index
+ * vector into a body-clobbered temp, never v0. */
+void em_vid_v(em_t *e, int vd);
+/* vmslt.vx vd, vs2, rs1: vd[i] = (vs2[i] < rs1) signed, the mask
+ * producer for the maskedtail twin. OPMVX, funct6=011011, vm=1
+ * (unmasked: the old mask is dead at each rewrite). vd MUST be v0
+ * (the mask register); the emitter asserts this. (Spec note: an early
+ * draft of the maskedtail spec wrote funct6=011100 here; that is
+ * vmsleu.vx (unsigned <=). The described semantics -- signed < -- are
+ * vmslt.vx = 011011, corroborated against the ratified V spec §15 and
+ * an independent encoding table.) */
+void em_vmslt_vx(em_t *e, int vd, int vs2, int rs1);
 /* Zihintntl NTL.ALL: non-temporal locality hint for the immediately
  * following memory instruction (streaming: no exploitable temporal
  * locality). Encoded as ADD x0,x0,x5 -- a HINT, i.e. architecturally a
