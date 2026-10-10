@@ -312,6 +312,54 @@ static void c_lsr4(cg_t *cg, int d, int s)
     cg->uops += 1;
 }
 
+/* ---- Bit-program (xorbit) twin helpers ----
+ * Mirror the x86 c_srlw/c_and/c_sllw trio for the bit-program body.
+ * All forms are 1 uop (no SSE-style mov+shift penalty: NEON has
+ * 3-operand shifts via the new emitters, SVE uses unpredicated forms).
+ * The xorbit body is lane-independent, so unpredicated is sound (same
+ * argument as c_and3/c_lsr4). */
+
+/* d = s >> k, k in 1..7. Caller skips k=0 (no shift needed). */
+static void c_xbt_srl(cg_t *cg, int d, int s, unsigned k)
+{
+    em_t *e = &cg->em;
+    assert(k >= 1 && k <= 7);
+    if (cg->is_sve) {
+        em_sve_lsr_unpred(e, V(cg, d), V(cg, s), k);
+    } else {
+        assert(!cg->pred);
+        em_neon_ushr(e, d, s, k);
+    }
+    cg->uops += 1;
+}
+
+/* d = s & 0x01, using the xorbit 0x01 mask register (xbt_mask). */
+static void c_xbt_and1(cg_t *cg, int d, int s)
+{
+    em_t *e = &cg->em;
+    if (cg->is_sve) {
+        em_sve_and_unpred(e, V(cg, d), V(cg, s), V(cg, cg->xbt_mask));
+    } else {
+        assert(!cg->pred);
+        em_neon_and(e, d, s, cg->xbt_mask);
+    }
+    cg->uops += 1;
+}
+
+/* d = s << b, b in 1..7. Caller uses c_copy for b=0. */
+static void c_xbt_sll(cg_t *cg, int d, int s, unsigned b)
+{
+    em_t *e = &cg->em;
+    assert(b >= 1 && b <= 7);
+    if (cg->is_sve) {
+        em_sve_lsl_unpred(e, V(cg, d), V(cg, s), b);
+    } else {
+        assert(!cg->pred);
+        em_neon_shl(e, d, s, b);
+    }
+    cg->uops += 1;
+}
+
 /* d = table[idx]; table is the logical reg tblr */
 static void c_tbl_into(cg_t *cg, int d, int tblr, int idx)
 {
