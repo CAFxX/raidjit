@@ -1,0 +1,61 @@
+== Part 1: enumeration units ==
+  info: rdp(5) whole-disk: 2 valid subsets
+  info: evenodd(5) whole-disk: 2 valid subsets
+  info: liberation(4) whole-disk: 2 valid subsets
+== Part 2: shortlist units ==
+  info: rdp(5)/f01: 2/5 kept
+  info: liberation(4)/f01: 2/4 kept
+  info: rdp(5)/whole-disk0: 3/34 kept
+== Part 3: per-subset end-to-end ==
+  info: raid6(8)/f3: 2 subsets x 3 lengths all correct
+  info: rs(6,3)/f0: 3 subsets x 3 lengths all correct
+  info: rs(6,3)/f02: 3 subsets x 3 lengths all correct
+  info: rs(6,3)/f6: 1 subsets x 3 lengths all correct
+  info: rs(6,3)/f67: 1 subsets x 3 lengths all correct
+  info: rs(6,3)/f678: 1 subsets x 3 lengths all correct
+  info: rs(10,3)/f01: 3 subsets x 2 lengths all correct
+  info: rs(10,4)c/f13: 6 subsets x 2 lengths all correct
+  info: rdp(5)/f01: 5 subsets x 1 lengths all correct
+  info: evenodd(5)/f01: 4 subsets x 1 lengths all correct
+  info: liberation(4)/f01: 4 subsets x 1 lengths all correct
+== Part 4: mutation evidence ==
+== Part 4b: P2 significance-gate units ==
+== Part 5: dispatcher integration ==
+  info: rs(6,3)/f02 winner: rs(6,3) rec 0+2 [rows 0+1] mulacc avx512+gfni U=7 +notail +maskedtail
+  info: rdp(5)/f01 winner: rdp(5) rec 0+1 [rows 0+1] xor avx512 U=7 +notail +maskedtail
+  info: rdp(5)/whole-disk0 winner: rdp(5) rec 0+1+2+3 [rows 0+1+2+3] xor avx512 U=7 +notail +maskedtail
+== Part 6: product subset-independence ==
+  info: prod-indep mode=0 winner: rs(6,3) rec 0+2 [rows 0+1] mulacc avx512+gfni U=7 +notail +maskedtail
+  info: prod-indep mode=1 winner: rs(6,3) rec 0+2 [rows 0+1] mulacc avx512+gfni U=8 +notail +maskedtail
+== Part 7: L2 tripwire ==
+  info: tripwire rs(6,3)/f02 exh=0 nt=0 winner [rows 0+1] (rs(6,3) rec 0+2 [rows 0+1] mulacc avx512+gfni U=8 +notail +maskedtail)
+  info: tripwire rs(6,3)/f02 exh=1 nt=0 winner [rows 0+2] (rs(6,3) rec 0+2 [rows 0+2] mulacc avx512+gfni U=8 +notail +maskedtail)
+  info: tripwire rs(6,3)/f02 FLIP: shortlisted [rows 0+1] != exhaustive [rows 0+2]; running head-to-head referee
+  info: referee rs(6,3)/f02: A=42.67 GB/s B=45.96 GB/s window=14.4%
+  info: tripwire rs(6,3)/f02: flip within noise (42.67 vs 45.96 GB/s, window 14.4%): borderline, P4 domain
+  info: tripwire rs(6,3)/f02+nt exh=0 nt=1 winner [rows 0+1] (rs(6,3) rec 0+2 [rows 0+1] mulacc avx512+gfni U=8+nt +notail)
+  info: tripwire rs(6,3)/f02+nt exh=1 nt=1 winner [rows 0+1] (rs(6,3) rec 0+2 [rows 0+1] mulacc avx512+gfni U=4+nt +notail)
+  info: tripwire rs(10,4)c/f13 exh=0 nt=0 winner [rows 2+3] (custom(10,4) rec 1+3 [rows 2+3] mulacc avx512+gfni U=8 +notail +maskedtail)
+  info: tripwire rs(10,4)c/f13 exh=1 nt=0 winner [rows 1+3] (custom(10,4) rec 1+3 [rows 1+3] mulacc avx512+gfni U=8 +notail)
+  info: tripwire rs(10,4)c/f13 FLIP: shortlisted [rows 2+3] != exhaustive [rows 1+3]; running head-to-head referee
+  info: referee rs(10,4)c/f13: A=29.92 GB/s B=18.03 GB/s window=140.4%
+  info: tripwire rs(10,4)c/f13: flip within noise (29.92 vs 18.03 GB/s, window 140.4%): borderline, P4 domain
+  info: tripwire rs(10,4)c/f13+nt exh=0 nt=1 winner [rows 2+3] (custom(10,4) rec 1+3 [rows 2+3] mulacc avx512+gfni U=7+nt +notail)
+  info: tripwire rs(10,4)c/f13+nt exh=1 nt=1 winner [rows 0+2] (custom(10,4) rec 1+3 [rows 0+2] mulacc avx512+gfni U=8 +notail +maskedtail)
+  info: tripwire rs(10,4)c/f13+nt FLIP: shortlisted [rows 2+3] != exhaustive [rows 0+2]; running head-to-head referee
+  info: referee rs(10,4)c/f13+nt: A=36.46 GB/s B=36.68 GB/s window=46.1%
+  info: tripwire rs(10,4)c/f13+nt: flip within noise (36.46 vs 36.68 GB/s, window 46.1%): borderline, P4 domain
+  info: tripwire rdp(5)/whole-disk0 exh=0 nt=0 winner [rows 0+1+2+3] (rdp(5) rec 0+1+2+3 [rows 0+1+2+3] xor avx512 U=6 +notail +maskedtail)
+  info: tripwire rdp(5)/whole-disk0 exh=1 nt=0 winner [rows 0+1+2+3] (rdp(5) rec 0+1+2+3 [rows 0+1+2+3] xor avx512 U=4 +notail)
+  info: tripwire rdp(5)/whole-disk0+nt exh=0 nt=1 winner [rows 0+1+2+7] (rdp(5) rec 0+1+2+3 [rows 0+1+2+7] xor avx512 U=7+nt +notail)
+  info: tripwire rdp(5)/whole-disk0+nt exh=1 nt=1 winner [rows 0+1+2+7] (rdp(5) rec 0+1+2+3 [rows 0+1+2+7] xor avx512 U=7+nt +notail)
+  info: tripwire rs(6,3)/f0 exh=0 nt=0 winner [rows 2] (rs(6,3) rec 0 [rows 2] mulacc avx512+gfni U=8 +notail +maskedtail)
+  info: tripwire rs(6,3)/f0 exh=1 nt=0 winner [rows 0] (rs(6,3) rec 0 [rows 0] xor avx512 U=5 +notail +maskedtail)
+  info: tripwire rs(6,3)/f0 exh=0 nt=0 winner [rows 2] (rs(6,3) rec 0 [rows 2] mulacc avx512+gfni U=8 +notail +maskedtail)
+  info: tripwire rs(6,3)/f0 exh=1 nt=0 winner [rows 0] (rs(6,3) rec 0 [rows 0] xor avx512 U=8 +notail +maskedtail)
+  info: tripwire rs(6,3)/f0 FLIP: shortlisted [rows 2] != exhaustive [rows 0]; running head-to-head referee
+  info: referee rs(6,3)/f0: A=61.26 GB/s B=59.71 GB/s window=24.0%
+  info: tripwire rs(6,3)/f0: flip within noise (61.26 vs 59.71 GB/s, window 24.0%): borderline, P4 domain
+SELFTEST tripwire loud-path: the following FAIL line is intentional (asserts the loud-FAIL wiring)
+FAIL tripwire selftest-loud-path: GENUINE over-prune: exhaustive winner [rows 0] (50.17 GB/s) beats shortlisted winner [rows 2] (43.40 GB/s) beyond the 5.0% noise window
+421 checks, 0 failures

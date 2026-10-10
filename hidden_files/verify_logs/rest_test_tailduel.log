@@ -1,0 +1,2 @@
+note: compile e2e desc: raid5(4) xor avx512 U=2 +notail +maskedtail
+PASS test_tailduel

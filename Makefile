@@ -80,7 +80,9 @@ X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
         $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b \
         $(BUILDDIR)/test_xorbit $(BUILDDIR)/test_mshift \
-        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative $(BUILDDIR)/test_rec_cf_emit $(BUILDDIR)/test_crc_fold
+        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative $(BUILDDIR)/test_rec_cf_emit $(BUILDDIR)/test_crc_fold \
+        $(BUILDDIR)/test_crc_fold_prop $(BUILDDIR)/test_crc_fold_byteid \
+        $(BUILDDIR)/test_crc_fold_combo $(BUILDDIR)/test_crc_fold_gate
 ifeq ($(ARCH),x86_64)
 TESTS = $(PORTABLE_TESTS) $(X86_ONLY_TESTS)
 else
@@ -378,7 +380,14 @@ ifeq ($(ARCH),x86_64)
 	./$(BUILDDIR)/test_xorbit
 	./$(BUILDDIR)/test_mshift
 	./$(BUILDDIR)/test_crc_fast_x86
-        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative $(BUILDDIR)/test_rec_cf_emit $(BUILDDIR)/test_crc_fold
+	./$(BUILDDIR)/test_pinned_negative
+	./$(BUILDDIR)/test_rec_cf_emit
+	./$(BUILDDIR)/test_crc_fold
+	./$(BUILDDIR)/test_crc_fold_prop open
+	./$(BUILDDIR)/test_crc_fold_prop closed
+	./$(BUILDDIR)/test_crc_fold_byteid
+	./$(BUILDDIR)/test_crc_fold_combo
+	./$(BUILDDIR)/test_crc_fold_gate
 endif
 	./$(BUILDDIR)/test_nt
 	./$(BUILDDIR)/test_pdelta
@@ -647,6 +656,18 @@ $(BUILDDIR)/test_crc_fast_x86: tests/test_crc_fast_x86.c $(BUILDDIR)/libraidjit.
 
 $(BUILDDIR)/test_crc_fold: tests/test_crc_fold.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_crc_fold.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_crc_fold_prop: tests/test_crc_fold_prop.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_crc_fold_prop.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_crc_fold_byteid: tests/test_crc_fold_byteid.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_crc_fold_byteid.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_crc_fold_combo: tests/test_crc_fold_combo.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_crc_fold_combo.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_crc_fold_gate: tests/test_crc_fold_gate.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_crc_fold_gate.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_fused: tests/test_fused.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_fused.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

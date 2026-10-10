@@ -1,0 +1,74 @@
+cpu: AMD EPYC 9D25 126-Core Processor
+ok kat
+ok fast_vs_scalar
+ok mutation_demo
+ok api_surface
+benchmark path: raid5(4) xor avx512 U=2 +notail +maskedtail +crc
+ok benchmark_path
+raid5(4): tile 1048576
+ok fused raid5(4) len=1
+ok fused raid5(4) len=63
+ok fused raid5(4) len=64
+ok fused raid5(4) len=65
+ok fused raid5(4) len=1000
+ok fused raid5(4) len=4096
+ok fused raid5(4) len=1048575
+ok fused raid5(4) len=1048576
+ok fused raid5(4) len=1048577
+ok fused raid5(4) len=2097275
+raid6_rs(6): tile 1048576
+ok fused raid6_rs(6) len=1
+ok fused raid6_rs(6) len=63
+ok fused raid6_rs(6) len=64
+ok fused raid6_rs(6) len=65
+ok fused raid6_rs(6) len=1000
+ok fused raid6_rs(6) len=4096
+ok fused raid6_rs(6) len=1048575
+ok fused raid6_rs(6) len=1048576
+ok fused raid6_rs(6) len=1048577
+ok fused raid6_rs(6) len=2097275
+rs(6,3): tile 524288
+ok fused rs(6,3) len=1
+ok fused rs(6,3) len=63
+ok fused rs(6,3) len=64
+ok fused rs(6,3) len=65
+ok fused rs(6,3) len=1000
+ok fused rs(6,3) len=4096
+ok fused rs(6,3) len=524287
+ok fused rs(6,3) len=524288
+ok fused rs(6,3) len=524289
+ok fused rs(6,3) len=1048699
+rdp(5): tile 262144
+ok fused rdp(5) len=1
+ok fused rdp(5) len=63
+ok fused rdp(5) len=64
+ok fused rdp(5) len=65
+ok fused rdp(5) len=1000
+ok fused rdp(5) len=4096
+ok fused rdp(5) len=262143
+ok fused rdp(5) len=262144
+ok fused rdp(5) len=262145
+ok fused rdp(5) len=524411
+evenodd(5): tile 262144
+ok fused evenodd(5) len=1
+ok fused evenodd(5) len=63
+ok fused evenodd(5) len=64
+ok fused evenodd(5) len=65
+ok fused evenodd(5) len=1000
+ok fused evenodd(5) len=4096
+ok fused evenodd(5) len=262143
+ok fused evenodd(5) len=262144
+ok fused evenodd(5) len=262145
+ok fused evenodd(5) len=524411
+raid0(4): tile 1048576
+ok fused raid0(4) len=1
+ok fused raid0(4) len=63
+ok fused raid0(4) len=64
+ok fused raid0(4) len=65
+ok fused raid0(4) len=1000
+ok fused raid0(4) len=4096
+ok fused raid0(4) len=1048575
+ok fused raid0(4) len=1048576
+ok fused raid0(4) len=1048577
+ok fused raid0(4) len=2097275
+test_crc: all OK

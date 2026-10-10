@@ -1,0 +1,2 @@
+SKIP selection hooks (no pure dispatch hooks on this ISA)
+test_crc_fast: PASS (failures=0 deferred=0)
