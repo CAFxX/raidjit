@@ -18,7 +18,7 @@ COMMON_SRCS = src/gf.c src/plan.c src/ports.c src/topo.c src/bench.c src/ref.c s
         src/prune.c src/dispatch.c src/xorsched.c src/matrix_search.c \
         src/xorcode.c src/survivor.c src/prefetch_calib.c src/planid.c \
         src/crc.c src/crc_fast.c src/striping.c src/api_crc.c src/fused.c \
-        src/api_batched.c
+        src/api_batched.c src/ui_meta.c
 # Port model data: generated from data/uarch/*.ports (source of truth).
 # Adding a uarch = add a .ports file (no C code change), then rebuild.
 PORTS_DATA = src/ports_data.inc
@@ -70,6 +70,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
         $(BUILDDIR)/test_ports \
+        $(BUILDDIR)/test_ui_meta \
         $(BUILDDIR)/test_recover_closedform \
         $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_crc_fast $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
         $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc \
@@ -403,6 +404,7 @@ endif
 	./$(BUILDDIR)/test_traps
 	./$(BUILDDIR)/test_planner_fuzz
 	./$(BUILDDIR)/test_ports
+	./$(BUILDDIR)/test_ui_meta
 	./$(BUILDDIR)/test_recover_closedform
 	./$(BUILDDIR)/test_pipe
 	./$(BUILDDIR)/test_crc
@@ -612,6 +614,9 @@ $(BUILDDIR)/test_planner_fuzz: tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.
 
 $(BUILDDIR)/test_ports: tests/test_ports.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_ports.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_ui_meta: tests/test_ui_meta.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_ui_meta.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
