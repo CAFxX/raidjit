@@ -1,0 +1,38 @@
+# Port model: Intel Skylake-X / Cascade Lake
+# uarch: RJ_UARCH_INTEL_SKYLAKEX
+# Sources:
+#   - uops.info (Skylake-X page)
+#   - Agner Fog instruction_tables.pdf (Skylake-X section)
+#   - Existing rj_uarch_weights_t (throughput priors)
+# Confidence: high
+# Version: 1
+# Note: SKX has no GFNI (t_gfni unused); 512-bit freq derate 1.10 (est.)
+
+uarch: INTEL_SKYLAKEX
+version: 1
+
+ports: p0=1.0 p1=1.0 p2=1.0 p3=1.0 p4=1.0 p5=1.0 p6=1.0 p7=1.0
+
+# VPTERNLOGD zmm: 1 uop, p0/p1/p5 (SKX has 3 vector ALU ports; throughput 0.5
+# from weights suggests 2/cycle effective — use p015 with 0.34 each? No:
+# weight t_ternlog=0.50 => 2/cycle. SKX VPTERNLOGD is p015 (uops.info) but
+# measured 2/cycle due to 512-bit port constraints. Model as p0/p1/p5
+# with effective throughput captured by port contention.)
+# SIMPLIFICATION: use p0/p1 (0.5 each) to match the 2/cycle throughput.
+# The p5 sharing is second-order for our mixes.
+class ternlog uops=1.0: p0=0.5 p5=0.5
+class xor uops=1.0: p0=0.5 p5=0.5
+# VPSHUFB zmm: 1 uop, p5 (throughput 1.0)
+class shuffle uops=1.0: p5=1.0
+# No GFNI on SKX; class defined but unused (fallback)
+class gfni uops=1.0: p0=1.0
+# VPCLMULQDQ zmm: 1 uop, p5 (throughput 1.0)
+class pclmul uops=1.0: p5=1.0
+class load uops=1.0: p2=0.5 p3=0.5
+class store uops=1.0: p4=0.5 p7=0.5
+class gpr uops=1.0: p6=1.0
+
+scalar vec_bw=4.0
+scalar mem_cpb=0.0078125
+scalar freq512=1.10
+scalar bw_bpc=8.0
