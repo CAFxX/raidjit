@@ -185,7 +185,7 @@ static void test_pipe_case(const char *name, rj_topology *t, isa_t isa,
     CHECK(pl.kind == expect_kind, "%s: kind %d, want %d", name, pl.kind,
           expect_kind);
 
-    int need = plan_need_regs(isa, mul, &pl, U, 0, 1, 0);
+    int need = plan_need_regs(isa, mul, &pl, U, 0, 1, 0, 0);
     CHECK(need <= isa_nregs(isa), "%s: pipe needs %d regs > %d", name,
           need, isa_nregs(isa));
     if (failures) {
@@ -576,7 +576,7 @@ static void test_planner_pipe(void)
                 b->isa != ISA_RVV)
                 want = 0; /* x86-64 gate closed */
             else
-                want = plan_need_regs(b->isa, b->mul, &pl, b->U, 0, 1, 0) *
+                want = plan_need_regs(b->isa, b->mul, &pl, b->U, 0, 1, 0, 0) *
                            lmul <=
                        isa_nregs(b->isa);
             int found = has_pipe_twin(cands, n, b->isa, b->mul, b->U,
@@ -617,8 +617,8 @@ static void test_planner_pipe(void)
         CHECK(plan_build(&ti, &op, "wide", &pl, err, sizeof err) == 0,
               "plan: %s", err);
         CHECK(pl.kind == P_MULACC, "expected P_MULACC, got %d", pl.kind);
-        int need_base = plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 3, 0, 0, 0);
-        int need_pipe = plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 3, 0, 1, 0);
+        int need_base = plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 3, 0, 0, 0, 0);
+        int need_pipe = plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 3, 0, 1, 0, 0);
         CHECK(need_base == 14, "wide U=3 base need=%d, want 14", need_base);
         CHECK(need_pipe == 19, "wide U=3 pipe need=%d, want 19", need_pipe);
         int n = plan_candidates(&pl, &cpu, cands, 1024, 0, 0);
@@ -657,7 +657,7 @@ static void test_planner_pipe(void)
                 CHECK(pl.kind == P_MULACC, "expected P_MULACC, got %d",
                       pl.kind);
                 int need =
-                    plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0, 1, 0);
+                    plan_need_regs(ISA_AVX2, MUL_NIBBLE, &pl, 4, 0, 1, 0, 0);
                 CHECK(need == 22, "wide AVX2 U=4 pipe need=%d, want 22",
                       need);
                 rj_options o;
@@ -693,7 +693,7 @@ static void test_planner_pipe(void)
             if (plan_build(&ti, &op, "wide", &pl, err, sizeof err) ==
                 0) {
                 int need =
-                    plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 3, 0, 1, 0);
+                    plan_need_regs(ISA_NEON, MUL_NIBBLE, &pl, 3, 0, 1, 0, 0);
                 CHECK(need == 19, "wide NEON U=3 pipe need=%d, want 19",
                       need);
                 rj_options o;

@@ -136,7 +136,7 @@ static void test_remat_case(const char *name, rj_topology *t, isa_t isa,
     if (expect_ntriv >= 0)
         CHECK(ntriv == expect_ntriv, "%s: ntriv=%d, expected %d", name,
               ntriv, expect_ntriv);
-    int need = plan_need_regs(isa, MUL_NIBBLE, &pl, U, 1, 0, 0);
+    int need = plan_need_regs(isa, MUL_NIBBLE, &pl, U, 1, 0, 0, 0);
     CHECK(need <= 16, "%s: remat needs %d regs > 16", name, need);
 
     rj_cpu_info cpu;

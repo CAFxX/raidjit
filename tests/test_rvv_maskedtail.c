@@ -133,7 +133,7 @@ static void shape_one(const plan_t *pl, const cand_t *c,
         return;
     }
     int need_mt = plan_need_regs(ISA_RVV, c->mul, pl, c->U, c->remat,
-                                 c->pipe, 1) * lmul;
+                                 c->pipe, 1, 0) * lmul;
     if (need_mt <= 32) {
         CHECK(mt_built, "%s: maskedtail twin should fit (%d regs) but "
               "build failed: %s", tag, need_mt, err);

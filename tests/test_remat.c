@@ -161,7 +161,7 @@ static void test_remat_case(const char *name, rj_topology *t, mul_t mul,
     if (expect_ntriv >= 0)
         CHECK(ntriv == expect_ntriv, "%s: ntriv=%d, expected %d", name,
               ntriv, expect_ntriv);
-    int need = plan_need_regs(ISA_AVX512, mul, &pl, U, 1, 0, 0);
+    int need = plan_need_regs(ISA_AVX512, mul, &pl, U, 1, 0, 0, 0);
     CHECK(need <= 32, "%s: remat needs %d regs > 32", name, need);
 
     rj_cpu_info cpu;
