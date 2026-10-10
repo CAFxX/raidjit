@@ -152,22 +152,8 @@ def generate(models, out_path):
         for m in models:
             ident = c_identifier(m['uarch'])
             out.write(f"/* {m['uarch']} (from {m['source']}) */\n")
-            # Ports
-            out.write(f"static const rj_pm_port_t pm_ports_{ident}[] = {{\n")
-            for name, tput in m['ports']:
-                out.write(f'    {{"{name}", {tput}}},\n')
-            out.write("};\n")
-            # Classes (with uops_per_instr)
-            out.write(f"static const rj_pm_class_t pm_classes_{ident}[] = {{\n")
-            for cname, uops, dist in m['classes']:
-                # Build dist array in port order (RJ_PM_MAX_PORTS=10)
-                darr = [0.0] * 10
-                for pidx, frac in dist:
-                    darr[pidx] = frac
-                dstr = ", ".join(f"{v:.4f}" for v in darr)
-                out.write(f'    {{"{cname}", {uops:.1f}, {{{dstr}}}}},\n')
-            out.write("};\n")
-            # Model struct
+            # Model struct (ports and classes embedded directly; no
+            # separate arrays to avoid dead code)
             n_ports = len(m['ports'])
             n_classes = len(m['classes'])
             s = m['scalars']
