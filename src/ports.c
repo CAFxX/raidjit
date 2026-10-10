@@ -1,11 +1,39 @@
 #include "ports.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 /* Port model data (generated from data/uarch port files).
  * To regenerate: python3 tools/gen_ports_inc.py data/uarch src/ports_data.inc
  * Then rebuild. Adding a uarch = add a .ports file (no C code change).
  */
 #include "ports_data.inc"
+
+/* Log-once helper for fallback diagnostics (MAJOR-4: fallbacks must
+ * not be silent). */
+static void log_once(const char *key, const char *fmt, ...)
+{
+    /* Simple once-per-key logging using a small static set. */
+    static char seen[8][64];
+    static int n_seen = 0;
+    int i;
+    va_list ap;
+    char msg[256];
+
+    for (i = 0; i < n_seen; i++) {
+        if (strcmp(seen[i], key) == 0)
+            return;
+    }
+    if (n_seen < 8) {
+        strncpy(seen[n_seen], key, 63);
+        seen[n_seen][63] = '\0';
+        n_seen++;
+    }
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "raidjit: port-model: %s\n", msg);
+}
 
 /* Map uarch aliases to the model that covers them.
  * (The .ports files use canonical names; aliases resolve here.) */
@@ -28,7 +56,10 @@ const rj_port_model_t *rj_ports_for_uarch(rj_uarch_t u)
     const rj_port_model_t *m = pm_model_for_uarch(c);
     if (m)
         return m;
-    /* Fallback: generic model (matches old I3 UNKNOWN behavior). */
+    /* Fallback: generic model (matches old I3 UNKNOWN behavior).
+     * Logged once (MAJOR-4: fallbacks must not be silent). */
+    log_once("generic-fallback", "no port model for uarch %d, using generic",
+             (int)u);
     return pm_model_for_uarch(RJ_UARCH_UNKNOWN);
 }
 

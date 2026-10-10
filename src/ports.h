@@ -47,8 +47,8 @@ typedef struct {
 } rj_port_model_t;
 
 /* Get the port model for a uarch (never NULL; unknown uarchs get a
- * generic model). The result is cached; the underlying data is loaded
- * from data/uarch/ on first use. Thread-safe after first call. */
+ * generic model). The data is build-time-embedded const structs;
+ * this is a pure lookup, thread-safe on every call. */
 const rj_port_model_t *rj_ports_for_uarch(rj_uarch_t u);
 
 /* Find a class by name (NULL if not found). */

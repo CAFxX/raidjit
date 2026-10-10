@@ -1552,8 +1552,12 @@ static double kernel_port_bottleneck(plan_kind_t kind, const cand_t *cand,
 double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
                        plan_kind_t kind, const cand_t *cand, rj_uarch_t u)
 {
-    const rj_uarch_weights_t *w = rj_uarch_weights(u);
     const rj_port_model_t *pm = rj_ports_for_uarch(u);
+    /* Scalars come from the port model (data files), not the legacy
+     * C table. The .ports files are the source of truth. */
+    double vec_bw = pm ? pm->vec_bw : 3.5;
+    double bw_bpc = pm ? pm->bw_bpc : 8.0;
+    double freq512 = pm ? pm->freq512 : 1.0;
     /* Compute leg: port-pressure bottleneck (cycles/byte), or the
      * generic dispatch-width rate when the class has no kernel model.
      *
@@ -1566,9 +1570,9 @@ double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
         if (bn >= 0.0)
             t_compute = bn;
         else
-            t_compute = uops_per_byte / w->vec_bw;
+            t_compute = uops_per_byte / vec_bw;
     } else {
-        t_compute = uops_per_byte / w->vec_bw;
+        t_compute = uops_per_byte / vec_bw;
     }
     /* #31: roofline blend of the compute leg and the bandwidth leg.
      *
@@ -1588,11 +1592,15 @@ double plan_uarch_cost(double uops_per_byte, double mem_per_byte,
      * hand-built test weights) degrades gracefully to the compute leg
      * alone. HEURISTIC for static ordering (est.): the benchmark is the
      * final arbiter. */
-    double t_mem = w->bw_bpc > 0.0 ? mem_per_byte / w->bw_bpc : 0.0;
+    double t_mem = bw_bpc > 0.0 ? mem_per_byte / bw_bpc : 0.0;
+    /* freq512 derate applies to the compute leg only. Under AVX-512
+     * downclock, a memory-bound kernel's cycles/byte *decreases*
+     * (fewer cycles/sec at fixed bytes/sec), so the memory leg must
+     * NOT be scaled up. */
+    if (cand && cand->isa == ISA_AVX512)
+        t_compute *= freq512;
     double c2 = t_compute * t_compute;
     double m2 = t_mem * t_mem;
     double cost = sqrt(sqrt(c2 * c2 + m2 * m2));
-    if (cand && cand->isa == ISA_AVX512)
-        cost *= w->freq512;
     return cost;
 }
