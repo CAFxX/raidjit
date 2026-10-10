@@ -151,8 +151,8 @@ static void check_one(const rj_cpu_info *cpu, isa_t isa, int U,
      * test_boundaries.c:sve_vl_bytes.) */
     long divn = (isa == ISA_RVV) ? (long)U * 16 : (long)vn.group_bytes;
     long divs = (isa == ISA_RVV) ? (long)U * 16 : (long)vs.group_bytes;
-    long pn = xorsched_version_uops(xs, pl, isa, U, 0, 0, 0);
-    long ps = xorsched_version_uops(xs, pl, isa, U, 1, 0, 0);
+    long pn = xorsched_version_uops(xs, pl, isa, U, 0, 0);
+    long ps = xorsched_version_uops(xs, pl, isa, U, 1, 0);
     long en = (long)(vn.uops_per_byte * (double)divn + 0.5);
     long es = (long)(vs.uops_per_byte * (double)divs + 0.5);
     CHECK(en == pn, "%s %s U=%d: naive model %ld != emitter %ld", tname,
@@ -308,11 +308,11 @@ int main(void)
               "X1: t2 schedule shape changed (ntemps=%d ndup=%d)",
               pl.xor_sched->ntemps, pl.xor_sched->ndup_live);
         long nfull = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
-                                           1, 0, 0, 0);
+                                           1, 0, 0);
         long nnotail = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
                                              1, 0, 0, 1);
         long sfull = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
-                                           1, 1, 0, 0);
+                                           1, 1, 0);
         long snotail = xorsched_version_uops(pl.xor_sched, &pl, ISA_RVV,
                                              1, 1, 0, 1);
         CHECK(nfull == 44 && nnotail == 22,
@@ -413,9 +413,9 @@ int main(void)
                 if (!out2[i].xorsched)
                     continue;
                 long pn = xorsched_version_uops(pl.xor_sched, &pl,
-                                                out2[i].isa, out2[i].U, 0, 0, 0);
+                                                out2[i].isa, out2[i].U, 0, 0);
                 long ps = xorsched_version_uops(pl.xor_sched, &pl,
-                                                out2[i].isa, out2[i].U, 1, 0, 0);
+                                                out2[i].isa, out2[i].U, 1, 0);
                 CHECK(ps < pn,
                       "%s: enumerated twin fails gate (%ld >= %ld)",
                       topos[ti].name, ps, pn);
@@ -576,7 +576,7 @@ int main(void)
                 long div = (isa == ISA_RVV) ? (long)U * 16
                                             : (long)v.group_bytes;
                 long eu = (long)(v.uops_per_byte * (double)div + 0.5);
-                long pu = xorsched_version_uops(xs, &pl, isa, U, 1, 0, 0);
+                long pu = xorsched_version_uops(xs, &pl, isa, U, 1, 0);
                 CHECK(eu == pu + pf_uops,
                       "combo pf model+pref %ld != emitter %ld (%s U=%d)",
                       pu + pf_uops, eu, isa_str(isa), U);

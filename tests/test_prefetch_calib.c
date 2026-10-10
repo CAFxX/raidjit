@@ -74,23 +74,23 @@ static void test_formula(void)
 
     /* Base: stride = 4*64*6 = 1536 B/iter; iters = ceil(2000/1536) = 2;
      * dist = 2*4*64 = 512. */
-    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0, 0) == 512,
+    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0) == 512,
           "base formula: got %zu, want 512",
-          dist_for(ISA_AVX512, 4, 0, 6, 0, 0));
+          dist_for(ISA_AVX512, 4, 0, 6, 0));
 
     /* Iters clamp: L=100us -> 2e6 B in flight; ceil(2e6/1536) = 1303 ->
      * 64; dist = 64*4*64 = 16384. */
     prefetch_calib_inject(100000.0, 20.0, 1);
-    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0, 0) == 16384,
+    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0) == 16384,
           "iters clamp: got %zu, want 16384",
-          dist_for(ISA_AVX512, 4, 0, 6, 0, 0));
+          dist_for(ISA_AVX512, 4, 0, 6, 0));
 
     /* Iters floor: L=1ns,B=1GB/s -> 1 B; ceil(1/1536) = 1;
      * dist = 1*4*64 = 256. */
     prefetch_calib_inject(1.0, 1.0, 1);
-    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0, 0) == 256,
+    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0) == 256,
           "iters floor: got %zu, want 256",
-          dist_for(ISA_AVX512, 4, 0, 6, 0, 0));
+          dist_for(ISA_AVX512, 4, 0, 6, 0));
 
     prefetch_calib_inject(INJ_LAT, INJ_BW, 1);
 
@@ -102,9 +102,9 @@ static void test_formula(void)
 
     /* SVE with sve_vl=0 falls back to 16: stride = 4*16*6 = 384;
      * iters = ceil(2000/384) = 6; dist = 6*4*16 = 384. */
-    CHECK(dist_for(ISA_SVE, 4, 0, 6, 0, 0) == 384,
+    CHECK(dist_for(ISA_SVE, 4, 0, 6, 0) == 384,
           "sve vl fallback: got %zu, want 384",
-          dist_for(ISA_SVE, 4, 0, 6, 0, 0));
+          dist_for(ISA_SVE, 4, 0, 6, 0));
 
     /* RVV: vl = lmul*vlen = 16; stride = 1*16*6 = 96;
      * iters = ceil(2000/96) = 21; dist = 21*16 = 336 ->
@@ -127,17 +127,17 @@ static void test_formula(void)
     prefetch_calib_inject(INJ_LAT, INJ_BW, 1);
 
     /* Degenerate geometry declines the twin. */
-    CHECK(dist_for(ISA_AVX512, 4, 0, 0, 0, 0) == 0,
+    CHECK(dist_for(ISA_AVX512, 4, 0, 0, 0) == 0,
           "n_in=0: got %zu, want 0",
-          dist_for(ISA_AVX512, 4, 0, 0, 0, 0));
-    CHECK(dist_for(ISA_AVX512, 0, 0, 6, 0, 0) == 0,
-          "U=0: got %zu, want 0", dist_for(ISA_AVX512, 0, 0, 6, 0, 0));
+          dist_for(ISA_AVX512, 4, 0, 0, 0));
+    CHECK(dist_for(ISA_AVX512, 0, 0, 6, 0) == 0,
+          "U=0: got %zu, want 0", dist_for(ISA_AVX512, 0, 0, 6, 0));
 
     /* Invalid calibration fails closed: no twin. */
     prefetch_calib_inject(0.0, 0.0, 0);
-    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0, 0) == 0,
+    CHECK(dist_for(ISA_AVX512, 4, 0, 6, 0) == 0,
           "invalid calib: got %zu, want 0",
-          dist_for(ISA_AVX512, 4, 0, 6, 0, 0));
+          dist_for(ISA_AVX512, 4, 0, 6, 0));
 
     /* Restore a valid fake for the enumeration test below. */
     prefetch_calib_inject(INJ_LAT, INJ_BW, 1);

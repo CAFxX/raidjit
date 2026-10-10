@@ -1452,7 +1452,7 @@ int main(void)
     } else {
 #if defined(__aarch64__)
         variants[nvar].name = "neon";
-        variants[nvar++].cpu = mkcpu(1, 0, 0);
+        variants[nvar++].cpu = mkcpu(1, 0);
         /* Synthetic SVE variants generate SVE instructions that fault
          * (SIGILL) on hosts without SVE. Only include them if the host
          * actually supports SVE, otherwise the test crashes instead of
@@ -1495,17 +1495,17 @@ int main(void)
         }
 #else
         variants[nvar].name = "sse3";
-        variants[nvar++].cpu = mkcpu(1, 1, 0, 0, 0, 0, 0, 0);
+        variants[nvar++].cpu = mkcpu(1, 1, 0, 0, 0, 0, 0);
         variants[nvar].name = "avx2";
-        variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 0, 0, 0, 0);
+        variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 0, 0, 0);
         variants[nvar].name = "avx512-nogfni";
         variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 1, 1, 1, 0);
         variants[nvar].name = "avx512-gfni";
         variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 1, 1, 1, 1);
         variants[nvar].name = "avx512f-only";
-        variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 1, 0, 0, 0);
+        variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 1, 0, 0);
         variants[nvar].name = "sse2-only";
-        variants[nvar++].cpu = mkcpu(1, 0, 0, 0, 0, 0, 0, 0);
+        variants[nvar++].cpu = mkcpu(1, 0, 0, 0, 0, 0, 0);
 #endif
     }
 

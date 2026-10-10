@@ -196,7 +196,7 @@ int main(void)
     CHECK(em_xor_r8(&e, 8, 9),
           0x45, 0x32, 0xc1);
     /* movzbl (%r10), %r12d */
-    CHECK(em_movzx_rm8(&e, 12, 10, -1, 0, 0),
+    CHECK(em_movzx_rm8(&e, 12, 10, -1, 0),
           0x45, 0x0f, 0xb6, 0x22);
 
     /* ---- r12 as SIB index (REX.X=1): reference bytes from GNU as ----
@@ -205,7 +205,7 @@ int main(void)
      * Each vector below was assembled with `as` and the emitter output
      * compared byte-for-byte against the objdump disassembly. */
     /* mov (%rbx,%r12,1),%rax: REX carries X only (0x4a), no other bits */
-    CHECK(em_mov_rm(&e, 0, 3, 12, 0, 0),
+    CHECK(em_mov_rm(&e, 0, 3, 12, 0),
           0x4a, 0x8b, 0x04, 0x23);
     /* mov 0x10(%rsi,%r12,2),%r9: REX.WRX, disp8 */
     CHECK(em_mov_rm(&e, 9, 6, 12, 1, 16),
@@ -227,7 +227,7 @@ int main(void)
           0x4a, 0x8d, 0x04, 0xa7);
     /* r12 as base (not index): encodings unchanged by the index fix */
     /* mov (%r12),%rax */
-    CHECK(em_mov_rm(&e, 0, 12, -1, 0, 0),
+    CHECK(em_mov_rm(&e, 0, 12, -1, 0),
           0x49, 0x8b, 0x04, 0x24);
     /* mov 0x20(%r12),%rdx */
     CHECK(em_mov_rm(&e, 2, 12, -1, 0, 32),
@@ -361,7 +361,7 @@ int main(void)
             uint8_t buf[64];
             em_t e;
             em_init(&e, buf, sizeof buf);
-            em_mov_rm(&e, 0, 3, 4, 0, 0); /* x=RSP: must not encode */
+            em_mov_rm(&e, 0, 3, 4, 0); /* x=RSP: must not encode */
             em_free(&e);
             _exit(0); /* reached: the guard is gone */
         } else {

@@ -822,7 +822,7 @@ static void test_combinations(void)
     } else {
 #if defined(__aarch64__)
     variants[nvar].name = "neon";
-    variants[nvar++].cpu = mkcpu(1, 0, 0);
+    variants[nvar++].cpu = mkcpu(1, 0);
     {
         rj_cpu_info host;
         rj_cpu_detect(&host);
@@ -854,14 +854,14 @@ static void test_combinations(void)
          * x86-64. */
         if (host.ssse3) {
             variants[nvar].name = "sse3";
-            variants[nvar++].cpu = mkcpu(1, 1, 0, 0, 0, 0, 0, 0);
+            variants[nvar++].cpu = mkcpu(1, 1, 0, 0, 0, 0, 0);
         } else {
             variants[nvar].name = "sse2-only";
-            variants[nvar++].cpu = mkcpu(1, 0, 0, 0, 0, 0, 0, 0);
+            variants[nvar++].cpu = mkcpu(1, 0, 0, 0, 0, 0, 0);
         }
         if (host.avx2) {
             variants[nvar].name = "avx2";
-            variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 0, 0, 0, 0);
+            variants[nvar++].cpu = mkcpu(1, 1, 1, 1, 0, 0, 0);
         }
         if (host.avx512f && host.avx512bw && host.avx512vl) {
             variants[nvar].name = "avx512-nogfni";

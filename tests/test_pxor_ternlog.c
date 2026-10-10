@@ -177,7 +177,7 @@ static void check_config(int np, int nd, const uint8_t *mat, const char *pname,
     }
 
     for (int U = 1; U <= 8; U++) {
-        int ip = find_cand(&pl, &cpu, cands, nc, U, 0, 0);
+        int ip = find_cand(&pl, &cpu, cands, nc, U, 0);
         int it = find_cand(&pl, &cpu, cands, nc, U, 1, 0);
         if (ip < 0 || it < 0) {
             /* np==1: no twin by design (n_out>=2 gating); U beyond the
@@ -337,12 +337,12 @@ int main(void)
             uint8_t mat[24];
             /* dense */
             memset(mat, 1, sizeof mat);
-            check_config(np, nd, mat, "dense", 0, 0);
+            check_config(np, nd, mat, "dense", 0);
             /* checkerboard */
             for (int j = 0; j < np; j++)
                 for (int i = 0; i < nd; i++)
                     mat[j * nd + i] = (uint8_t)((i + j) & 1);
-            check_config(np, nd, mat, "checker", 0, 0);
+            check_config(np, nd, mat, "checker", 0);
             /* seeded random, two seeds */
             for (int s = 0; s < 2; s++) {
                 rng_state = 0x12345678ULL + (uint64_t)s * 0x9e3779b9ULL +

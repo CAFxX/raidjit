@@ -491,7 +491,7 @@ static void unit_twin_not_pareto_survives(void)
 static void unit_edge_lists(void)
 {
     version_t vs[1];
-    CHECK(prune_versions(vs, 0, 0) == 0, "empty list -> 0");
+    CHECK(prune_versions(vs, 0) == 0, "empty list -> 0");
     mkv(vs, P_MULACC, ISA_AVX512, MUL_GFNI, 8, 0, 0, 0, 0.660, 18.141,
         3136, "only");
     CHECK(prune_versions(vs, 1, 0) == 1, "singleton -> 1");
