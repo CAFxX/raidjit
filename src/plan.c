@@ -1285,7 +1285,8 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int lmul = 1;
             if (isa == ISA_RVV && out[i].lmul)
                 lmul = out[i].lmul;
-            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1, 0) *
+            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1, 0,
+                               pl->want_crc) *
                     lmul >
                 isa_nregs(isa))
                 continue;

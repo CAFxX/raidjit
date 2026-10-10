@@ -572,7 +572,8 @@ long xorsched_version_uops(const xorsched_t *s, const plan_t *pl,
 
 int xorsched_need_regs(isa_t isa, const plan_t *pl, int U)
 {
-    int base = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
+    int base = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0,
+                              pl->want_crc);
     if (pl->kind != P_XOR)
         return base;
     /* AVX folds the temp formation into a memory XOR (one live temp);
