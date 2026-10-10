@@ -1344,10 +1344,11 @@ rj_uarch_t rj_uarch_current(void)
  *     Intel: 0.50, 1 uop, ports p0/p5. Zen4: measured 0.50 (AMD doc
  *     0.50). Zen5: 0.25 (AMD doc; measured 0.25/0.37).
  * - VGF2P8MULB zmm: https://uops.info/html-instr/VGF2P8MULB_ZMM_ZMM_ZMM.html
- *     Intel: 1.00, 1 uop, port p0. Zen4: measured 1.00 (AMD doc 1.00).
- *     Zen5: measured 0.50.
+ *     Intel: 1.00, 1 uop, port p5 (see data/uarch/intel_icelake.ports).
+ *     Zen4: measured 1.00 (AMD doc 1.00). Zen5: measured 0.50.
  * - VGF2P8AFFINEQB zmm: https://uops.info/html-instr/VGF2P8AFFINEQB_ZMM_ZMM_ZMM_I8.html
- *     Intel: 1.00, 1 uop, port p0. Zen4: measured 1.00. Zen5: 0.50.
+ *     Intel: 1.00, 1 uop, port p5 (see data/uarch/intel_icelake.ports).
+ *     Zen4: measured 1.00. Zen5: 0.50.
  * - 64-byte vector load: Intel 0.50 (two 32B/cycle load ports); Zen4
  *   1.00 (double-pumped 32B pipes -> one 64B load/cycle; AMD SOG);
  *   Zen5 0.50 (est.: native 512-bit datapath, two loads/cycle).
