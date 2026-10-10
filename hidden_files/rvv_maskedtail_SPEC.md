@@ -123,8 +123,9 @@ Each gets a shape test pinning the encoding bytes.
   - Thread a "masked data memory" mode through `c_vle`/`c_vse` (the data
     load/store helpers). `gen_body`'s compute emitters are untouched.
   - `vid.v` needs a temp vector register (not v0, not an accumulator).
-- Static cost model: `cg->uops` increments for `vid.v` (1), `vmsltu.vx` per
-  chunk (1 each), masked loads/stores (same as unmasked). The model is exact
+- Static cost model: `cg->uops` increments for `vid.v` (1), the
+  `min(tmp,VLMAX)` clamp (4: sub/srai/and/add), `vmsltu.vx` per chunk
+  (1 each), masked loads/stores (same as unmasked). The model is exact
   by construction (each emitter increments).
 
 ## 7. `api.c` twin wiring
