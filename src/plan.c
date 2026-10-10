@@ -1149,9 +1149,8 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
      * combined with ternlog/permi2b/remat (different bodies). The
      * NT/prefetch twin loops below see these and twin them automatically,
      * so the full ISA x U x xorbit x nt x prefetch product is covered.
-     * NOTE: prune.c's twin_dominates must pin the xorbit axis (like
-     * xorsched/permi2b); that pin is a required follow-up (track A1
-     * follow-up list) -- without it an xorbit twin could form a
+     * NOTE: prune.c's twin_dominates pins the xorbit axis (like
+     * xorsched/permi2b) -- without it an xorbit twin could form a
      * cross-axis pruning pair with a ternlog twin.
      *
      * BUG_t1_529: xorbit is 5-8x worse than the nibble path on x86
