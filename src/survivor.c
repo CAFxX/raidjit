@@ -579,6 +579,160 @@ int survivor_significance_gate(const version_t *pool, const int *pool_sub,
     return fallback;
 }
 
+/* ---------------- LRC locality-aware recovery ----------------
+ *
+ * LRC topologies (docs/lrc.md) have local parity rows: pure-XOR rows
+ * with disjoint supports partitioning the data disks. A failure inside
+ * a local group recovers from r group-mates (pure XOR) instead of via
+ * the global rows (GF-multiply over ~k streams). The A5 survivor
+ * machinery already *happens* to prefer the local subset via the exact
+ * static signal (it strictly dominates on both axes), but that is
+ * emergent, not structural: benchmark noise or cost-model drift could
+ * silently lose it. These functions make locality an explicit planner
+ * rule.
+ *
+ * Detection is by matrix structure, not topology name: any matrix with
+ * pure-XOR disjoint partitioning rows is treated as LRC-shaped. This
+ * covers rj_topo_lrc, rj_topo_lrc_azure, rj_topo_lrc_optimal, and any
+ * future/custom topology with the shape. */
+
+/* Returns 1 if ti's parity matrix has identifiable local rows (pure
+ * XOR, disjoint supports, partitioning the data disks). Fills
+ * group_of[d] (0..ngroups-1) for each data disk d, and local_row[g]
+ * (parity-row index) per group. Returns 0 if not LRC-shaped. Pure;
+ * no allocation. See hidden_files/lrc_locality_SPEC.md. */
+int survivor_lrc_detect(const topo_int_t *ti, int *group_of,
+                        int *local_row, int *ngroups_out)
+{
+    int nd = ti->ndata, np = ti->npar;
+    const uint8_t *mat = ti->mat;
+    if (!mat || nd < 1 || np < 1)
+        return 0;
+    /* A row is a local-row candidate if every coefficient is 0/1 and
+     * at least one is 1. */
+    int is_local[RJ_MAX_DISKS];
+    int ngroups = 0;
+    for (int j = 0; j < np; j++) {
+        int binary = 1, any = 0;
+        for (int i = 0; i < nd; i++) {
+            uint8_t c = mat[(size_t)j * (size_t)nd + (size_t)i];
+            if (c != 0 && c != 1)
+                binary = 0;
+            if (c)
+                any = 1;
+        }
+        is_local[j] = (binary && any);
+        ngroups += (binary && any);
+    }
+    if (ngroups == 0)
+        return 0;
+    /* Disjoint supports + partition: each data disk in exactly one
+     * local row. */
+    for (int i = 0; i < nd; i++)
+        group_of[i] = -1;
+    int g = 0;
+    for (int j = 0; j < np; j++) {
+        if (!is_local[j])
+            continue;
+        local_row[g] = j;
+        for (int i = 0; i < nd; i++) {
+            if (mat[(size_t)j * (size_t)nd + (size_t)i]) {
+                if (group_of[i] != -1)
+                    return 0; /* column in two local rows */
+                group_of[i] = g;
+            }
+        }
+        g++;
+    }
+    for (int i = 0; i < nd; i++)
+        if (group_of[i] == -1)
+            return 0; /* column in no local row */
+    *ngroups_out = ngroups;
+    return 1;
+}
+
+/* Returns 1 if the failure pattern F[0..nf) admits a pure-local
+ * solution: every failed disk is covered by a distinct surviving local
+ * row. Fills cover_rows[0..nf) with the covering local parity-row
+ * indices (sorted ascending). Returns 0 otherwise (caller uses the
+ * generic path). F is the validated sorted/deduped failed list;
+ * group_of/local_row come from survivor_lrc_detect. */
+int survivor_lrc_local_cover(const topo_int_t *ti, const int *F, int nf,
+                             const int *group_of, const int *local_row,
+                             int ngroups, int *cover_rows)
+{
+    int nd = ti->ndata, np = ti->npar;
+    (void)ngroups;
+    int ncover = 0;
+    for (int f = 0; f < nf; f++) {
+        int d = F[f];
+        int row = -1;
+        if (d < nd) {
+            /* Failed data disk: its group's local row. */
+            int g = group_of[d];
+            if (g < 0)
+                return 0;
+            row = local_row[g];
+        } else if (d < nd + np) {
+            /* Failed parity disk: if it's a local row, recompute from
+             * its group (local, pure XOR); if it's a global row,
+             * recompute from data (generic, not local). The failed
+             * row itself is forced into the cover (survivor_enumerate
+             * forces failed parity rows). */
+            int pj = d - nd;
+            int is_local_row = 0;
+            for (int gg = 0; gg < ngroups; gg++)
+                if (local_row[gg] == pj)
+                    is_local_row = 1;
+            if (!is_local_row)
+                return 0; /* global parity: generic path */
+            row = pj;
+        } else {
+            return 0; /* out of range (shouldn't happen post-validation) */
+        }
+        /* The covering row must survive (not itself failed) and be
+         * distinct (one row per failure). */
+        int failed = 0;
+        for (int k = 0; k < nf; k++)
+            if (F[k] == nd + row)
+                failed = 1;
+        if (failed)
+            return 0;
+        for (int k = 0; k < ncover; k++)
+            if (cover_rows[k] == row)
+                return 0; /* two failures, one local row */
+        cover_rows[ncover++] = row;
+    }
+    /* Sort ascending (insertion; ncover <= nf, tiny). */
+    for (int i = 1; i < ncover; i++) {
+        int v = cover_rows[i], j = i - 1;
+        while (j >= 0 && cover_rows[j] > v) {
+            cover_rows[j + 1] = cover_rows[j];
+            j--;
+        }
+        cover_rows[j + 1] = v;
+    }
+    return 1;
+}
+
+/* 1 if every element of rows[0..nrows) is in cover[0..ncover). Both
+ * sorted ascending (cover_rows from survivor_lrc_local_cover is). */
+static int subset_rows_in(const int *rows, int nrows, const int *cover,
+                          int ncover)
+{
+    for (int i = 0; i < nrows; i++) {
+        int found = 0;
+        for (int j = 0; j < ncover; j++)
+            if (rows[i] == cover[j]) {
+                found = 1;
+                break;
+            }
+        if (!found)
+            return 0;
+    }
+    return 1;
+}
+
 int survivor_select(const topo_int_t *ti, const int *F, int nf,
                     const char *opname, const rj_cpu_info *cpu,
                     const rj_options *o, version_t **vs_out, int *nv_out,
@@ -602,11 +756,55 @@ int survivor_select(const topo_int_t *ti, const int *F, int nf,
         snprintf(err, errlen, "out of memory");
         return -1;
     }
-    /* L2 static signal (exactly one canonical version per subset),
-     * then the shortlist. Only shortlisted subsets pay the full
-     * candidate build + pooled bench below. */
-    survivor_l2_signal(subs, nsub, cpu, o);
-    survivor_shortlist(subs, nsub, keep);
+    /* LRC locality fast path (planner rule, not cost-model accident).
+     * If the topology is LRC-shaped and F admits a pure-local
+     * solution, restrict to the local subsets directly: the local rows
+     * are structurally cheaper (fewer streams, pure XOR vs
+     * GF-multiply), so no cost-model competition is needed. This is
+     * robust to benchmark noise and cost-model drift. Falls back to
+     * the generic path if the local subsets can't be built. See
+     * hidden_files/lrc_locality_SPEC.md. */
+    int lrc_group_of[RJ_MAX_DISKS], lrc_local_row[RJ_MAX_DISKS];
+    int lrc_ngroups = 0, lrc_cover[RJ_MAX_DISKS];
+    int use_lrc = 0;
+    if (survivor_lrc_detect(ti, lrc_group_of, lrc_local_row,
+                            &lrc_ngroups)
+        && survivor_lrc_local_cover(ti, F, nf, lrc_group_of,
+                                     lrc_local_row, lrc_ngroups,
+                                     lrc_cover)) {
+        /* On success lrc_cover holds exactly nf sorted row indices
+         * (one distinct covering local row per failure, by the
+         * duplicate check in survivor_lrc_local_cover). */
+        for (int i = 0; i < nsub; i++)
+            keep[i] = subset_rows_in(subs[i].rows, subs[i].nrows,
+                                     lrc_cover, nf);
+        int any = 0;
+        for (int i = 0; i < nsub; i++)
+            any |= keep[i];
+        use_lrc = any;
+    }
+    if (use_lrc) {
+        /* Still run the L2 signal to verify buildability; drop local
+         * subsets that fail to build. If none remain, fall back to
+         * the generic shortlist. */
+        survivor_l2_signal(subs, nsub, cpu, o);
+        int any_valid = 0;
+        for (int i = 0; i < nsub; i++) {
+            if (keep[i] && !subs[i].l2_valid)
+                keep[i] = 0;
+            any_valid |= keep[i];
+        }
+        if (!any_valid) {
+            survivor_shortlist(subs, nsub, keep);
+            use_lrc = 0;
+        }
+    } else {
+        /* L2 static signal (exactly one canonical version per subset),
+         * then the shortlist. Only shortlisted subsets pay the full
+         * candidate build + pooled bench below. */
+        survivor_l2_signal(subs, nsub, cpu, o);
+        survivor_shortlist(subs, nsub, keep);
+    }
     int nkeep = 0;
     int today_si = -1;
     for (int i = 0; i < nsub; i++) {

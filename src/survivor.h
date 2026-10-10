@@ -136,6 +136,29 @@ int survivor_significance_gate(const version_t *pool, const int *pool_sub,
                                int npool, int today_si, int winner,
                                double window);
 
+/* LRC locality-aware recovery (planner rule).
+ *
+ * Detects LRC-shaped topologies by matrix structure (pure-XOR disjoint
+ * rows partitioning the data disks) and computes pure-local covers for
+ * failure patterns, so the planner selects the local recovery path
+ * explicitly rather than via cost-model accident. See
+ * hidden_files/lrc_locality_SPEC.md.
+ *
+ * survivor_lrc_detect: returns 1 if ti's matrix has identifiable local
+ * rows; fills group_of[d] (0..ngroups-1) per data disk and local_row[g]
+ * (parity-row index) per group. Returns 0 if not LRC-shaped. Pure; no
+ * allocation.
+ *
+ * survivor_lrc_local_cover: returns 1 if F[0..nf) admits a pure-local
+ * solution (every failed disk covered by a distinct surviving local
+ * row); fills cover_rows[0..nf) with the covering local parity-row
+ * indices sorted ascending. Returns 0 otherwise. */
+int survivor_lrc_detect(const topo_int_t *ti, int *group_of,
+                        int *local_row, int *ngroups_out);
+int survivor_lrc_local_cover(const topo_int_t *ti, const int *F, int nf,
+                             const int *group_of, const int *local_row,
+                             int ngroups, int *cover_rows);
+
 /* Full plan-time selection for a recover op: enumerate, L2 static
  * signal + shortlist (at most SURVIVOR_SHORTLIST_CAP subsets), build +
  * A1-prune versions per kept subset, benchmark the pooled versions with
