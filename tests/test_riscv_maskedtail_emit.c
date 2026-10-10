@@ -276,7 +276,7 @@ static void test_field_decode(void)
             em_init(&e, buf, sizeof(buf));
             em_srai(&e, vd, rs, sh);
             w = word_at(buf);
-            CHECK(((w >> 25) & 0x7fu) == 0x20u, "srai imm[11:5]!=0100000");
+            CHECK(((w >> 26) & 0x3fu) == 0x10u, "srai imm[11:6]!=010000");
             CHECK(((w >> 20) & 63u) == sh, "srai shamt");
             CHECK(((w >> 15) & 31u) == (unsigned)rs, "srai rs1");
             CHECK(((w >> 12) & 7u) == 0x5u, "srai funct3!=101");
