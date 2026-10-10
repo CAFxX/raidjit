@@ -1398,21 +1398,23 @@ static void unit_uarch_detect(void)
  *   B: MUL_NIBBLE, 1.20 uops/B
  * Published throughputs (uops.info; per-value sources in the weights
  * table in src/plan.c):
- *   Ice Lake: GFNI ops cost 1.0 cyc (p5-bound) while the nibble
- *     kernel's shuffles also hit p5 but its loads/xors spread to
- *     p2/p3 and p0/p1; the port-pressure max gives nibble the lower
- *     bottleneck, so cost(B) < cost(A): the uarch model keeps B.
+ *   Ice Lake: GFNI ops cost 1.0 cyc/uop (p0-bound per uops.info;
+ *     both VGF2P8AFFINEQB and VGF2P8MULB are 1*p0) while the nibble
+ *     kernel's ternlog/xor spread across p0/p5 and its shuffles hit
+ *     p5; the port-pressure max gives nibble the lower bottleneck,
+ *     so cost(B) < cost(A): the uarch model keeps B.
  *   Zen4: The port-pressure model predicts nibble wins here too
- *     (0.30 vs 0.42). Reason: nibble's 2 table loads issue on AGU
+ *     (0.60 vs 0.83). Reason: nibble's 2 table loads issue on AGU
  *     ports independent of the FP pipes, spreading 6 uops across
- *     6 ports (bottleneck 1.5 uops on fp2/fp3 = 0.25 cyc/uop), while
- *     GFNI's 3 uops concentrate on fp2/fp3 (bottleneck 1.25 uops =
- *     0.42 cyc/uop). The old weighted-average model tied them at
- *     0.83 cyc/uop (it assumed loads contend with FP ops, which is
- *     wrong — AGUs are independent). The port model is more
- *     principled; the Zen4/5 expectation is updated accordingly.
- *     If benchmarks later show GFNI winning on Zen4, the port
- *     assignments (not the max-over-ports structure) need revisiting.
+ *     6 ports (bottleneck 3.0 uops on fp1/fp2 = 0.50 cyc/uop after
+ *     the 2x double-pump correction), while GFNI's 3 uops
+ *     concentrate on fp0/fp1 (bottleneck 2.5 uops = 0.83 cyc/uop).
+ *     The old weighted-average model tied them at 0.83 cyc/uop
+ *     (it assumed loads contend with FP ops, which is wrong —
+ *     AGUs are independent). The port model is more principled;
+ *     the Zen4/5 expectation is updated accordingly. If benchmarks
+ *     later show GFNI winning on Zen4, the port assignments (not
+ *     the max-over-ports structure) need revisiting.
  *   Zen5: same as Zen4 (nibble wins on port spreading).
  * The SAME pair ranks B-first on Intel AND AMD under port pressure:
  * what matters is the bottleneck port, not the uop count. All figures

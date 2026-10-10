@@ -67,6 +67,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
+        $(BUILDDIR)/test_ports \
         $(BUILDDIR)/test_recover_closedform \
         $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_crc_fast $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
         $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc \
@@ -357,6 +358,7 @@ endif
 	./$(BUILDDIR)/test_prefetch_calib
 	./$(BUILDDIR)/test_traps
 	./$(BUILDDIR)/test_planner_fuzz
+	./$(BUILDDIR)/test_ports
 	./$(BUILDDIR)/test_recover_closedform
 	./$(BUILDDIR)/test_pipe
 	./$(BUILDDIR)/test_crc
@@ -557,6 +559,9 @@ $(BUILDDIR)/test_notail_xorsched: tests/test_notail_xorsched.c $(BUILDDIR)/libra
 
 $(BUILDDIR)/test_planner_fuzz: tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_planner_fuzz.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_ports: tests/test_ports.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_ports.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
