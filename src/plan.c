@@ -1258,14 +1258,15 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
      *    and the combine adds 6 multiplies.
      * Never combined with xorbit/xorsched/permi2b/remat/mshift/pipe
      * (different bodies). Benchmark-gated per ISA; the twin is only
-     * enumerated when the static model predicts a win, so the generic
-     * path can never be dominated. The NT/prefetch twin loops below see
+     * enumerated when the win-condition flags hold (cinv_cheap for e=1,
+     * row_is_01 for e=2), and the prune pin prevents generic-domination.
+     * The NT/prefetch twin loops below see
      * these and twin them automatically. Pinned in prune.c's
      * twin_dominates like every other axis. */
     if (pl->rec_cf && pl->kind == P_MULACC) {
         struct rec_cf_data *cfd = pl->rec_cf;
         int win = 0;
-        if (cfd->nf == 1 && cfd->cinv_cheap)
+        if (cfd->nf == 1 && cfd->cinv_cheap && cfd->cinv != 1)
             win = 1;
         else if (cfd->nf == 2 && (cfd->row1_is_01 || cfd->row2_is_01))
             win = 1;

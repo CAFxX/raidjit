@@ -233,7 +233,12 @@ static void redgreen_case(const plan_t *pl, const cand_t *twin,
         return;
     }
     int ns = pl->n_in;
-    size_t len = 1000;
+    /* Scale len with group_bytes so the vector body executes (fixed len=1000
+     * runs only the scalar tail on large-VL SVE where group_bytes > 1000,
+     * making the red-green flip vacuous). */
+    size_t len = v0.group_bytes * 3;
+    if (len < 1000)
+        len = 1000;
     uint8_t **in = malloc(sizeof(*in) * (size_t)ns);
     uint8_t **o0 = malloc(sizeof(*o0) * (size_t)nf);
     uint8_t **o1 = malloc(sizeof(*o1) * (size_t)nf);
@@ -404,6 +409,10 @@ int main(void)
     CHECK(n_e2 > 0, "no e=2 rec_cf twin tested (vacuous)");
     CHECK(n_e1_finalmul > 0,
           "e=1 final multiply (cinv != 1) never exercised (vacuous)");
+    CHECK(n_e2_b0 > 0,
+          "e=2 b==0 edge case never exercised (vacuous)");
+    CHECK(n_e2_c0 > 0,
+          "e=2 c==0 edge case never exercised (vacuous)");
     if (failures) {
         printf("%d FAILURES\n", failures);
         return 1;

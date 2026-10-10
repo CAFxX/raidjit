@@ -26,22 +26,22 @@ The generic path emits `x_f = sum_s R[s]*x_s` with `R[s] = E[r][s]*c_f^-1`.
   one by `c_f^-1`. **Same multiply count. No uop win.**
 
 **Conclusion for e=1:** The A4 planner-side closed form + `plan_select_strategy`
-is already optimal for uops. The phase-2 emitter has **no uop win** for e=1.
+is already optimal for uops. The phase-2 emitter has **no systematic uop win**
+for e=1.
 
-**Remaining e=1 value:**
-- **Code size**: The specialized emitter can generate a smaller loop body
-  (single syndrome reduction + one multiply vs per-coefficient multiply
-  setup). This addresses the code-size heuristic weakness.
-- **Strength reduction**: If `c_f^-1` is a "cheap" constant (power of 2 →
-  xtime instead of nibble-split), the final multiply is cheaper than a
-  generic nibble multiply. Win only when `c_f^-1` is cheap AND the
-  generic path wouldn't also benefit (it wouldn't — generic folds
-  `c_f^-1` into each coefficient).
+**Honest assessment of e=1:**
+- The twin is enumerated as a tie-breaker when `cinv` is a power of 2.
+- When `cinv==1`, the generated code is uop-identical to generic (pure overhead).
+- When `cinv` is a nontrivial power of 2, the twin adds a final multiply the
+  generic lacks (generic folds `cinv` into each coefficient; the per-coefficient
+  cost is identical since folding preserves power-of-2-ness).
+- Expected outcome: tie or marginal loss (±2%). The twin exists to prove the
+  framework handles e=1, not because it wins.
+- The implementation uses hoisted nibble tables, not xtime chains (the hoisted
+  tables dominate xtime on uop count for all cheap cinv values).
 
-**Decision:** Implement e=1 specialized emitter as a **code-size/strength-
-reduction twin**, benchmark-gated. Expected win: small (5-15%) and only
-when `c_f^-1` admits strength reduction. Document as such; do not claim
-40-60%.
+**Decision:** Keep e=1 twin enumerated (benchmark-gated; cannot regress selection).
+Document as tie-breaker, not a win.
 
 ### e=2: shared syndromes
 
