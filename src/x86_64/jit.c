@@ -3149,6 +3149,19 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     em_resolve(&cg.em);
     size_t total = cg.em.len;
 
+    /* Phantom twin check (BUG_t1_80): if ternlog was requested but zero
+     * VPTERNLOGD instructions were emitted, the pin was a no-op. Reject
+     * with a clean error instead of recording a false twin label.
+     * Placed before the mem install so the fail path doesn't leak the
+     * mmap'd page. */
+    if (cand->ternlog && cg.vpternlogd_emitted == 0) {
+        if (err && errlen > 0)
+            snprintf(err, errlen,
+                     "ternlog twin requested but no VPTERNLOGD emitted "
+                     "(plan has no foldable triples)");
+        goto fail;
+    }
+
     long ps = sysconf(_SC_PAGESIZE);
     size_t memsz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
 #ifdef RJ_WASM
@@ -3225,17 +3238,6 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  cand->mshift ? "+mshift" : "",
                  cand->pipe ? "+pipe" : "",
                  cand->rec_cf ? "+reccf" : "");
-
-    /* Phantom twin check (BUG_t1_80): if ternlog was requested but zero
-     * VPTERNLOGD instructions were emitted, the pin was a no-op. Reject
-     * with a clean error instead of recording a false twin label. */
-    if (cand->ternlog && cg.vpternlogd_emitted == 0) {
-        if (err && errlen > 0)
-            snprintf(err, errlen,
-                     "ternlog twin requested but no VPTERNLOGD emitted "
-                     "(plan has no foldable triples)");
-        goto fail;
-    }
 
     free(buf);
     free(cg.pool);
