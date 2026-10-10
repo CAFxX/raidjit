@@ -384,3 +384,28 @@ Decisions needed before Lane 5 implementation:
 - `hidden_files/FEATURES_CONSOLIDATED.md` §2, item 9 — catalogue entry.
 - `hidden_files/EXECUTION_QUEUE.md` — Lane 2 item 7 (this design), Lane 5
   (#9 implementation after design review).
+
+---
+
+## 13. Decisions (Carlo, 2026-10-06)
+
+Standing note: the project is unreleased — all decisions are revisitable.
+
+1. **Q1 — S per call.** No compile-time-S variant in v1.
+2. **Q2 — void-only for v1.** Ship `rj_fn_batched` / `rj_get_fn_batched`
+   only. The checked wrapper (`rj_batch_call`) is a later todo, not v1
+   scope.
+3. **Q3 — flat row-major pointer layout for v1.** Array-of-arrays stays a
+   possible later option once Tier-2 codegen exists.
+4. **Q4 — Tier-1 driver only in Lane 5.** Tier-2 deep kernel gated on
+   Tier-1 measurements showing the driver loop is the bottleneck.
+5. **Q5 — no S enforcement in code; documented guidance only.**
+   Unbounded-but-sane S; internal chunking bounds auxiliary memory. Doc
+   notes the ~10^4 (no further amortization) / 2^20 (likely caller bug)
+   heuristics.
+6. **Q6 — batch-aware benchmarking deferred** until Tier-1 data exists.
+   v1 inherits the single-stripe benchmark winner.
+7. **Q7 — no `nt_used` field.** Fencing stays entirely the caller's
+   responsibility, unconditional. No machine-readable NT signal.
+8. **Q8 — naming: `rj_fn_batched` / `rj_get_fn_batched`.** Mirrors the
+   existing `rj_fn` / `rj_get_fn` pair.

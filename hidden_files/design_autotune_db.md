@@ -1,6 +1,11 @@
 # Persistent autotune DB ("wisdom") — design
 
-**Status:** DESIGN ONLY — no implementation. Item #29 (PARKED), strongest
+> **SUPERSEDED 2026-10-06** by `hidden_files/design_stable_plan_ids.md`.
+> Carlo rejected the library-managed persistent DB in favor of stable plan
+> IDs + variant enumeration (no library-side state; persistence is the
+> caller's responsibility). Retained for history only. OQ-1..OQ-7 are moot.
+
+**Status:** SUPERSEDED — no implementation. Item #29 (PARKED), strongest
 promotion candidate from the SOTA batch. Implementation requires Carlo's
 decision; the open questions in §12 are the decision points.
 
