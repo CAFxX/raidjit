@@ -1508,17 +1508,18 @@ static void compute_regs(cg_t *cg)
      * isa_nregs) enforces the same bound in the planner filter. */
     if (cg->is_sve)
         assert(cg->vmax < 24);
-    /* Single source of truth: the planner's filter must agree exactly
-     * with this assignment, or candidates could be wrongly dropped or
-     * (worse) admitted past the regfile. The xorsched twin has its own
-     * pressure formula (extra temp). */
+    /* Single source of truth: the planner's filter must agree with this
+     * assignment, or candidates could be wrongly dropped or (worse)
+     * admitted past the regfile. The xorsched twin has its own pressure
+     * formula (extra temp; +1 for nested-CSE live range, conservative).
+     * The assertion allows <= (prediction may overestimate). */
     int want_regs = cg->cand.xorsched
                         ? xorsched_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                              pl, U)
                         : plan_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                          MUL_NIBBLE, pl, U, cg->cand.remat,
                                          cg->cand.pipe);
-    assert(cg->vmax + 1 == want_regs);
+    assert(cg->vmax + 1 <= want_regs);
 }
 
 int jit_build_version(const plan_t *pl, const cand_t *cand,

@@ -2430,10 +2430,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
         }
     }
-    /* Single source of truth: the planner's filter must agree exactly
-     * with this assignment. A drift here once admitted candidates past
-     * the regfile, and the emitter wraps reg 32 to 0 silently. The
-     * xorsched twin has its own pressure formula (extra temp on SSE).
+    /* Single source of truth: the planner's filter must agree with this
+     * assignment. A drift here once admitted candidates past the regfile,
+     * and the emitter wraps reg 32 to 0 silently. The xorsched/xorbit
+     * twins have their own pressure formulas (extra temp on SSE; +1 for
+     * nested-CSE live range, conservative). The assertion allows <=
+     * (prediction may overestimate when nesting doesn't occur; the
+     * dangerous case is under-prediction, which this catches).
      * The mshift twin's control register (cg.msh, 0 when unallocated)
      * adds one: plan_need_regs has no mshift dimension because the
      * planner never enumerates the twin (I2 gate closed) -- if the gate
@@ -2444,7 +2447,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                                      : plan_need_regs(cand->isa, cand->mul, pl,
                                                      U, cand->remat, cand->pipe) +
                                        (cg.msh != 0 ? 1 : 0);
-    assert(vmax + 1 == want_regs);
+    assert(vmax + 1 <= want_regs);
     /* Over-pressure must fail cleanly (return -1), not abort or emit
      * code that overruns the regfile. The planner's filter normally
      * prevents this, but force-built candidates (tests, future twins)

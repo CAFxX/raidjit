@@ -600,11 +600,9 @@ int xorsched_need_regs(isa_t isa, const plan_t *pl, int U)
     /* AVX folds the temp formation into a memory XOR (one live temp);
      * SSE/AArch64/RVV need a second temp register.
      * Nested CSE (track A3): temps can be operands of other temps,
-     * so the live temp set can exceed the flat-case bound of 2.
-     * Conservative +1 for temp-of-temp chains (a temp live while
-     * forming its parent). The planner's need > nregs filter remains
-     * sound (may reject a few feasible candidates, never accepts an
-     * infeasible one). */
+     * so the live temp set can exceed the flat-case bound. Conservative
+     * +1 (planner calls this before the schedule exists, so we assume
+     * nesting may occur; the backend assertion allows <=). */
     if (isa == ISA_AVX2 || isa == ISA_AVX512)
         return base + 1;
     return base + 2;
