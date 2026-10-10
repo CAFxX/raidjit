@@ -114,6 +114,9 @@ typedef struct {
      * Dn holds column 0 of the next iteration. -1 when pipe is off. */
     int pipe_dn;
     int tlo, thi, r1, r2, tbl_lo, tbl_hi, mask;
+    /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
+     * regs (mask via vand.vi immediate, no mask reg needed). */
+    int xbt_in, xbt_r1, xbt_r2;
     int r3;    /* Zvbc path 3rd carryless temp (q needs lo/hi live) */
     int cvec;  /* Zvbc path: broadcast GF coefficient (per row for
                 * HORNER via hreg[2j]; per column for MULACC/DELTA) */
@@ -295,6 +298,250 @@ static void c_vrg(cg_t *cg, int vd, int vtab, int vidx)
 {
     em_vrgather_vv(&cg->em, vd, vtab, vidx);
     cg->uops += 1;
+}
+
+/* ---- Bit-program (xorbit) twin helpers ----
+ * Mirror the x86 c_srlw/c_and/c_sllw trio for the bit-program body.
+ * RVV has 3-operand shifts via immediate forms; no mask register needed
+ * for the &1 (vand.vi takes an immediate). */
+
+/* d = s >> k, k in 1..7. Caller skips k=0 (no shift needed). */
+static void c_xbt_srl(cg_t *cg, int vd, int vs, unsigned k)
+{
+    assert(k >= 1 && k <= 7);
+    em_vsrl_vi(&cg->em, vd, vs, k);
+    cg->uops += 1;
+}
+
+/* d = s & 0x01 via vand.vi immediate (no mask reg). */
+static void c_xbt_and1(cg_t *cg, int vd, int vs)
+{
+    em_vand_vi(&cg->em, vd, vs, 1);
+    cg->uops += 1;
+}
+
+/* d = s << b, b in 1..7. Caller uses c_vmv for b=0. */
+static void c_xbt_sll(cg_t *cg, int vd, int vs, unsigned b)
+{
+    assert(b >= 1 && b <= 7);
+    em_vsll_vi(&cg->em, vd, vs, b);
+    cg->uops += 1;
+}
+
+
+/* Forward declarations (defined below, used by xorbit code) */
+static void c_ldptr(cg_t *cg, int dst, int base, int idx);
+
+static void gen_body_xorbit(cg_t *cg, int nu)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    const xorbit_t *s = pl->bit_sched;
+    assert(s && s->ntemps > 0);
+    assert(s->kind == pl->kind);
+    int n_out = pl->n_out, U = cg->U, lmul = cg->lmul;
+    int ni_sched = s->n_in_sched;
+    int is_delta = (pl->kind == P_DELTA);
+    int inreg = cg->xbt_in * lmul, r1 = cg->xbt_r1 * lmul, r2 = cg->xbt_r2 * lmul;
+
+    if (!is_delta) {
+        /* zero dead output bytes (no atoms in any of their 8 bits) */
+        for (int j = 0; j < n_out; j++) {
+            int live = 0;
+            for (int b = 0; b < 8; b++)
+                if (s->bit_natoms[8 * j + b] > 0) {
+                    live = 1;
+                    break;
+                }
+            if (!live)
+                for (int u = 0; u < nu; u++)
+                    c_vzero(cg, (j * U + u) * lmul);
+        }
+    } else {
+        /* seed accumulators from oldpar */
+        int nc = pl->nchanged;
+        for (int j = 0; j < n_out; j++) {
+            c_ldptr(cg, T2, A0, 2 * nc + j);
+            em_add(e, T2, T2, T1); /* T1 = x11 offset */
+            for (int u = 0; u < nu; u++) {
+                c_vle(cg, (j * U + u) * lmul, T2);
+                if (u < nu - 1)
+                    em_add(e, T2, T2, T0); /* T0 = VLMAX stride */
+            }
+        }
+    }
+
+    int pf_done[RJ_MAX_DISKS];
+    for (int i = 0; i < ni_sched; i++)
+        pf_done[i] = 0;
+    int touched[RJ_MAX_DISKS];
+
+    for (int u = 0; u < nu; u++) {
+        for (int j = 0; j < n_out; j++)
+            touched[j] = 0;
+        int cur_in = -1;
+        /* phase 1: form each temp, fan out immediately */
+        for (int m = 0; m < s->ntemps; m++) {
+            int a = s->temps[m].a, b = s->temps[m].b;
+            int ia = a >> 3, ka = a & 7;
+            int ib = b >> 3, kb = b & 7;
+            if (cur_in != ia) {
+                c_ldptr(cg, T2, A0, ia);
+                em_add(e, T2, T2, T1);
+                if (!pf_done[ia]) {
+                    c_prefetch_in(cg, T2);
+                    pf_done[ia] = 1;
+                }
+                /* advance T2 by u*VLMAX */
+                for (int uu = 0; uu < u; uu++)
+                    em_add(e, T2, T2, T0);
+                c_vle(cg, inreg, T2);
+                cur_in = ia;
+            }
+            if (ka == 0) {
+                c_vmv(cg, r1, inreg);
+                c_xbt_and1(cg, r1, r1);
+            } else {
+                c_xbt_srl(cg, r1, inreg, (unsigned)ka);
+                c_xbt_and1(cg, r1, r1);
+            }
+            if (cur_in != ib) {
+                c_ldptr(cg, T2, A0, ib);
+                em_add(e, T2, T2, T1);
+                if (!pf_done[ib]) {
+                    c_prefetch_in(cg, T2);
+                    pf_done[ib] = 1;
+                }
+                for (int uu = 0; uu < u; uu++)
+                    em_add(e, T2, T2, T0);
+                c_vle(cg, inreg, T2);
+                cur_in = ib;
+            }
+            if (kb == 0) {
+                c_vmv(cg, r2, inreg);
+                c_xbt_and1(cg, r2, r2);
+            } else {
+                c_xbt_srl(cg, r2, inreg, (unsigned)kb);
+                c_xbt_and1(cg, r2, r2);
+            }
+            c_vxor(cg, r1, r1, r2);
+            /* fanout with lmul-scaled acc indices */
+            {
+                int Uloc = U, w = 0;
+                int *users = s->temps[m].users, nusers = s->temps[m].nusers;
+                while (w < nusers) {
+                    int b = users[w] & 7;
+                    int w1 = w;
+                    while (w1 < nusers && (users[w1] & 7) == b)
+                        w1++;
+                    int nj = w1 - w;
+                    int j0 = users[w] >> 3;
+                    int acc0 = (j0 * Uloc + u) * lmul;
+                    if (nj == 1 && !is_delta && !touched[j0]) {
+                        if (b == 0)
+                            c_vmv(cg, acc0, r1);
+                        else
+                            c_xbt_sll(cg, acc0, r1, (unsigned)b);
+                        touched[j0] = 1;
+                    } else if (b == 0) {
+                        for (int x = w; x < w1; x++) {
+                            int j = users[x] >> 3;
+                            int acc = (j * Uloc + u) * lmul;
+                            if (!is_delta && !touched[j]) {
+                                c_vmv(cg, acc, r1);
+                                touched[j] = 1;
+                            } else {
+                                c_vxor(cg, acc, acc, r1);
+                            }
+                        }
+                    } else {
+                        c_xbt_sll(cg, r2, r1, (unsigned)b);
+                        for (int x = w; x < w1; x++) {
+                            int j = users[x] >> 3;
+                            int acc = (j * Uloc + u) * lmul;
+                            if (!is_delta && !touched[j]) {
+                                c_vmv(cg, acc, r2);
+                                touched[j] = 1;
+                            } else {
+                                c_vxor(cg, acc, acc, r2);
+                            }
+                        }
+                    }
+                    w = w1;
+                }
+            }
+        }
+        /* phase 2: surviving input bits, fanned out directly */
+        for (int q = 0; q < 8 * ni_sched; q++) {
+            if (!s->inbit_nusers[q])
+                continue;
+            int i = q >> 3, k = q & 7;
+            if (cur_in != i) {
+                c_ldptr(cg, T2, A0, i);
+                em_add(e, T2, T2, T1);
+                if (!pf_done[i]) {
+                    c_prefetch_in(cg, T2);
+                    pf_done[i] = 1;
+                }
+                for (int uu = 0; uu < u; uu++)
+                    em_add(e, T2, T2, T0);
+                c_vle(cg, inreg, T2);
+                cur_in = i;
+            }
+            if (k == 0) {
+                c_vmv(cg, r1, inreg);
+                c_xbt_and1(cg, r1, r1);
+            } else {
+                c_xbt_srl(cg, r1, inreg, (unsigned)k);
+                c_xbt_and1(cg, r1, r1);
+            }
+            /* fanout (same as above, using r1 as vsrc) */
+            {
+                int Uloc = U, w = 0;
+                int *users = s->inbit_users[q], nusers = s->inbit_nusers[q];
+                while (w < nusers) {
+                    int b = users[w] & 7;
+                    int w1 = w;
+                    while (w1 < nusers && (users[w1] & 7) == b)
+                        w1++;
+                    int nj = w1 - w;
+                    int j0 = users[w] >> 3;
+                    int acc0 = (j0 * Uloc + u) * lmul;
+                    if (nj == 1 && !is_delta && !touched[j0]) {
+                        if (b == 0)
+                            c_vmv(cg, acc0, r1);
+                        else
+                            c_xbt_sll(cg, acc0, r1, (unsigned)b);
+                        touched[j0] = 1;
+                    } else if (b == 0) {
+                        for (int x = w; x < w1; x++) {
+                            int j = users[x] >> 3;
+                            int acc = (j * Uloc + u) * lmul;
+                            if (!is_delta && !touched[j]) {
+                                c_vmv(cg, acc, r1);
+                                touched[j] = 1;
+                            } else {
+                                c_vxor(cg, acc, acc, r1);
+                            }
+                        }
+                    } else {
+                        c_xbt_sll(cg, r2, r1, (unsigned)b);
+                        for (int x = w; x < w1; x++) {
+                            int j = users[x] >> 3;
+                            int acc = (j * Uloc + u) * lmul;
+                            if (!is_delta && !touched[j]) {
+                                c_vmv(cg, acc, r2);
+                                touched[j] = 1;
+                            } else {
+                                c_vxor(cg, acc, acc, r2);
+                            }
+                        }
+                    }
+                    w = w1;
+                }
+            }
+        }
+    }
 }
 
 /* Zvbc carryless multiplies (MUL_ZVBC twin only; the backend gate in
@@ -668,6 +915,15 @@ static void gen_const_setup(cg_t *cg)
 {
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: no nibble tables, no 0x0F mask, no kvec,
+         * no per-row HORNER coefficient slots (hreg is not allocated
+         * on this path). The body is pure bit logic (vand.vi takes an
+         * immediate) and runs under the vl=VLMAX that gen_function
+         * establishes. Prologue setup is not per-iteration work:
+         * uncounted, by the same convention as the nibble path. */
+        return;
+    }
     /* vl = VLMAX (LMUL-scaled), held in T5 for the table loads below:
      * the replicated pool entries (see pool_get) are exactly VLMAX
      * bytes, so the loads need no narrowing. */
@@ -809,7 +1065,12 @@ static void gen_body(cg_t *cg, int nu, int win)
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U;
     assert(nu >= 1 && nu <= U);
 
-    if (pl->kind == P_XOR) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: the body follows pl->bit_sched instead of
+         * the naive emitter. gen_body_xorbit handles its own
+         * accumulator seeding/zeroing; stores below are shared. */
+        gen_body_xorbit(cg, nu);
+    } else if (pl->kind == P_XOR) {
         if (cg->cand.xorsched) {
         /* XOR-schedule twin: the body follows pl->xor_sched (cross-row
          * CSE). Phase 1 forms each temp t_k = in_a ^ in_b into
@@ -1284,6 +1545,11 @@ static void gen_function(cg_t *cg)
          * computation, strip-mining loop and single-chunk tail are
          * not emitted at all. */
         if (!cg->notail) {
+            /* Remainder loop: steady-state-excluded from the uops/mem
+             * model, exactly like the scalar tail and AArch64's
+             * predicated tail (twins compare on the identical vector
+             * body). */
+            double save_uops = cg->uops, save_mem = cg->mem;
             em_sub(e, A2, A2, T1);            /* A2 = remaining */
             /* Remainder: remaining < U * VLMAX.
              * Process in chunks of up to VLMAX bytes using the
@@ -1301,6 +1567,8 @@ static void gen_function(cg_t *cg)
             em_add(e, T1, T1, T0);             /* offset += vl */
             em_sub(e, A2, A2, T0);            /* remaining -= vl */
             em_jal(e, X0, loop_lab);          /* loop while remaining > 0 */
+            cg->uops = save_uops;
+            cg->mem = save_mem;
         }
     }
     em_bind(e, done_lab);
@@ -1456,7 +1724,25 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
      * to r*L, so every head is L-aligned as LMUL>1 requires. */
     int n_out = pl->n_out, U = cand->U;
     const int L = cg.lmul;
-    if (pl->kind == P_XOR) {
+    if (cand->xorbit) {
+        /* Bit-program twin: n_out*U accumulators + input-byte reg +
+         * two bit temps. No mask reg needed (vand.vi takes immediate).
+         * Must stay in lockstep with xorbit_need_regs. */
+        assert(pl->bit_sched && pl->bit_sched->ntemps > 0);
+        assert(pl->kind == P_MULACC || pl->kind == P_DELTA ||
+               pl->kind == P_HORNER);
+        cg.xbt_in = n_out * U;
+        cg.xbt_r1 = n_out * U + 1;
+        cg.xbt_r2 = n_out * U + 2;
+        int vneed = (n_out * U + 3) * L;
+        if (vneed > 32) {
+            snprintf(err, errlen, "riscv backend: register pressure "
+                                  "(xorbit needs %d regs)", vneed);
+            return -1;
+        }
+        int want_regs = xorbit_need_regs(ISA_RVV, pl, U);
+        assert(vneed == want_regs * L);
+    } else if (pl->kind == P_XOR) {
         cg.vd0 = n_out * U * L; /* single temp */
         int vneed = cg.vd0 + L;
         if (cand->xorsched) {

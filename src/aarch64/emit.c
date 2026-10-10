@@ -387,6 +387,16 @@ void em_neon_ushr(em_t *e, int vd, int vn, unsigned sh) /* .16b */
     em_word(e, 0x6F000400u | ((((16u - sh) & 63u) << 16) |
                      (((uint32_t)vn & 31u) << 5) | ((uint32_t)vd & 31u)));
 }
+void em_neon_shl(em_t *e, int vd, int vn, unsigned sh) /* .16b */
+{
+    /* SHL immh:immb = 8+sh for .16b (like SVE byte shifts); U=0 (bit 29)
+     * vs USHR's U=1. GAS-verified 2026-10-10 (base 0x4F005400):
+     *   shl v16.16b,v17.16b,#1 -> 0x4f095630 (imm=0x09)
+     *   shl v16.16b,v17.16b,#7 -> 0x4f0f5630 (imm=0x0f) */
+    assert(sh >= 1 && sh <= 7);
+    em_word(e, 0x4F005400u | ((((8u + sh) & 63u) << 16) |
+                     (((uint32_t)vn & 31u) << 5) | ((uint32_t)vd & 31u)));
+}
 void em_neon_tbl(em_t *e, int vd, int vn, int vm) /* vd = tbl({vn}, vm) */
 {
     em_word(e, 0x4E000000u | (((uint32_t)vm & 31u) << 16) |
@@ -549,10 +559,26 @@ void em_sve_lsr(em_t *e, int zdn, int pg, unsigned sh) /* .b, destructive */
  * (bits 19:16 = 16-sh). Base 0x04209400 is the GAS word with zd/zn/imm
  * fields cleared; do NOT derive it by clearing only imm (that leaves
  * zd/zn bits set and corrupts other operands -- see test regression). */
+/* LSL (unpredicated, immediate): lsl zd.b, zn.b, #sh. Base SVE, single
+ * uop, no predicate register involved.
+ * ENCODING: base 0x04209C00, bits 19:16 = 8+sh (see em_sve_lsl_unpred).
+ * GAS-verified 2026-10-10. */
 void em_sve_lsr_unpred(em_t *e, int zd, int zn, unsigned sh) /* sh in 1..7 */
 {
     assert(sh >= 1 && sh <= 7);
     em_word(e, 0x04209400u | ((((16u - sh) & 15u) << 16) |
+                     (((uint32_t)zn & 31u) << 5) | ((uint32_t)zd & 31u)));
+}
+void em_sve_lsl_unpred(em_t *e, int zd, int zn, unsigned sh) /* sh in 1..7 */
+{
+    assert(sh >= 1 && sh <= 7);
+    /* GAS-verified 2026-10-10: base 0x04209C00, bits 19:16 = 8+sh.
+     *   lsl z16.b,z17.b,#1 -> 0x04299e30
+     *   lsl z16.b,z17.b,#7 -> 0x042f9e30
+     * The 8-bias in the immediate comes from the tszh:tszl:imm3 format
+     * for byte elements (ARM ARM DDI 0487, LSL_Z_ZI). A naive "LSR base
+     * + bit 13" derivation gets both the base and the immediate wrong. */
+    em_word(e, 0x04209C00u | ((((8u + sh) & 15u) << 16) |
                      (((uint32_t)zn & 31u) << 5) | ((uint32_t)zd & 31u)));
 }
 void em_sve_tbl(em_t *e, int zd, int zn, int zm) /* zd = tbl({zn}, zm) */

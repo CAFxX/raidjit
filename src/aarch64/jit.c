@@ -54,6 +54,9 @@ typedef struct {
     int U, group;    /* group = U*vl bytes per vector-loop iteration */
     int t, tlo, thi, r1, r2, tbl_lo, tbl_hi, mask; /* logical vector regs */
     int t2; /* XOR-schedule 2nd temp (P_XOR xorsched twin only) */
+    /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
+     * regs, and the 0x01 mask reg (see xorbit_need_regs). */
+    int xbt_in, xbt_r1, xbt_r2, xbt_mask;
     /* Software-pipelined loop twin (track I8, cand->pipe): base logical
      * regs of the per-column double-buffered datasets D (pipe_d, U
      * regs) and Dn (pipe_dn, U regs). In pipe mode the single input
@@ -309,6 +312,245 @@ static void c_lsr4(cg_t *cg, int d, int s)
     cg->uops += 1;
 }
 
+/* ---- Bit-program (xorbit) twin helpers ----
+ * Mirror the x86 c_srlw/c_and/c_sllw trio for the bit-program body.
+ * All forms are 1 uop (no SSE-style mov+shift penalty: NEON has
+ * 3-operand shifts via the new emitters, SVE uses unpredicated forms).
+ * The xorbit body is lane-independent, so unpredicated is sound (same
+ * argument as c_and3/c_lsr4). */
+
+/* d = s >> k, k in 1..7. Caller skips k=0 (no shift needed). */
+static void c_xbt_srl(cg_t *cg, int d, int s, unsigned k)
+{
+    em_t *e = &cg->em;
+    assert(k >= 1 && k <= 7);
+    if (cg->is_sve) {
+        em_sve_lsr_unpred(e, V(cg, d), V(cg, s), k);
+    } else {
+        assert(!cg->pred);
+        em_neon_ushr(e, d, s, k);
+    }
+    cg->uops += 1;
+}
+
+/* d = s & 0x01, using the xorbit 0x01 mask register (xbt_mask). */
+static void c_xbt_and1(cg_t *cg, int d, int s)
+{
+    em_t *e = &cg->em;
+    if (cg->is_sve) {
+        em_sve_and_unpred(e, V(cg, d), V(cg, s), V(cg, cg->xbt_mask));
+    } else {
+        assert(!cg->pred);
+        em_neon_and(e, d, s, cg->xbt_mask);
+    }
+    cg->uops += 1;
+}
+
+/* d = s << b, b in 1..7. Caller uses c_copy for b=0. */
+static void c_xbt_sll(cg_t *cg, int d, int s, unsigned b)
+{
+    em_t *e = &cg->em;
+    assert(b >= 1 && b <= 7);
+    if (cg->is_sve) {
+        em_sve_lsl_unpred(e, V(cg, d), V(cg, s), b);
+    } else {
+        assert(!cg->pred);
+        em_neon_shl(e, d, s, b);
+    }
+    cg->uops += 1;
+}
+
+/* ---- Bit-program (xorbit) body ---- */
+
+/* Zero a vector register (for xorbit dead-byte zeroing). */
+static void c_xbt_zero(cg_t *cg, int r)
+{
+    em_t *e = &cg->em;
+    if (cg->is_sve)
+        em_sve_dup(e, V(cg, r), 0);
+    else {
+        assert(!cg->pred);
+        em_neon_movi(e, r, 0);
+    }
+    cg->uops += 1;
+}
+
+/* Forward declarations (defined below, used by xorbit code) */
+static void c_inptr(cg_t *cg, int dst, int idx);
+static void c_inptr_np(cg_t *cg, int dst, int idx);
+
+/* Fan out one bit-0-normalized value (vsrc) to a temp's / input bit's
+ * user output bits, grouped by bit position b (users sorted ascending
+ * by output-bit id). Mirrors x86 xorbit_fanout exactly. */
+static void xorbit_fanout(cg_t *cg, const int *users, int nusers, int vsrc,
+                          int vtmp, int u, int *touched, int is_delta)
+{
+    int U = cg->U;
+    int w = 0;
+    while (w < nusers) {
+        int b = users[w] & 7;
+        int w1 = w;
+        while (w1 < nusers && (users[w1] & 7) == b)
+            w1++;
+        int nj = w1 - w;
+        int j0 = users[w] >> 3;
+        int acc0 = j0 * U + u;
+        if (nj == 1 && !is_delta && !touched[j0]) {
+            /* single first-touch user: shift/place directly into acc */
+            if (b == 0)
+                c_copy(cg, acc0, vsrc);
+            else
+                c_xbt_sll(cg, acc0, vsrc, (unsigned)b);
+            touched[j0] = 1;
+        } else if (b == 0) {
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                int acc = j * U + u;
+                if (!is_delta && !touched[j]) {
+                    c_copy(cg, acc, vsrc);
+                    touched[j] = 1;
+                } else {
+                    c_xor(cg, acc, vsrc);
+                }
+            }
+        } else {
+            c_xbt_sll(cg, vtmp, vsrc, (unsigned)b);
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                int acc = j * U + u;
+                if (!is_delta && !touched[j]) {
+                    c_copy(cg, acc, vtmp);
+                    touched[j] = 1;
+                } else {
+                    c_xor(cg, acc, vtmp);
+                }
+            }
+        }
+        w = w1;
+    }
+}
+
+static void gen_body_xorbit(cg_t *cg)
+{
+    const plan_t *pl = cg->pl;
+    const xorbit_t *s = pl->bit_sched;
+    assert(s && s->ntemps > 0);
+    assert(s->kind == pl->kind);
+    int n_out = pl->n_out, U = cg->U, vl = cg->vl;
+    int ni_sched = s->n_in_sched;
+    int is_delta = (pl->kind == P_DELTA);
+    int inreg = cg->xbt_in, r1 = cg->xbt_r1, r2 = cg->xbt_r2;
+    (void)vl; /* vl used via c_ld_to's u parameter */
+    /* Predicated-tail mode processes one lane per chunk (the u=0
+     * slice); the chunk loop re-enters gen_body per VL-sized chunk.
+     * Computing the other lanes would be dead work: gen_stores only
+     * stores the u=0 slice in pred mode. */
+    int ulanes = cg->pred ? 1 : U;
+
+    if (!is_delta) {
+        /* zero dead output bytes (no atoms in any of their 8 bits) */
+        for (int j = 0; j < n_out; j++) {
+            int live = 0;
+            for (int b = 0; b < 8; b++)
+                if (s->bit_natoms[8 * j + b] > 0) {
+                    live = 1;
+                    break;
+                }
+            if (!live)
+                for (int u = 0; u < ulanes; u++)
+                    c_xbt_zero(cg, j * U + u);
+        }
+    } else {
+        /* seed accumulators from oldpar (like the naive DELTA body) */
+        int nc = pl->nchanged;
+        for (int j = 0; j < n_out; j++) {
+            c_inptr(cg, X10, 2 * nc + j);
+            for (int u = 0; u < ulanes; u++)
+                c_ld_to(cg, j * U + u, u, X10);
+        }
+    }
+
+    int pf_done[RJ_MAX_DISKS];
+    for (int i = 0; i < ni_sched; i++)
+        pf_done[i] = 0;
+    int touched[RJ_MAX_DISKS];
+
+    for (int u = 0; u < ulanes; u++) {
+        for (int j = 0; j < n_out; j++)
+            touched[j] = 0;
+        int cur_in = -1;
+        /* phase 1: form each temp, fan out immediately */
+        for (int m = 0; m < s->ntemps; m++) {
+            int a = s->temps[m].a, b = s->temps[m].b;
+            int ia = a >> 3, ka = a & 7;
+            int ib = b >> 3, kb = b & 7;
+            if (cur_in != ia) {
+                if (!pf_done[ia]) {
+                    c_inptr(cg, X10, ia);
+                    pf_done[ia] = 1;
+                } else {
+                    c_inptr_np(cg, X10, ia);
+                }
+                c_ld_to(cg, inreg, u, X10);
+                cur_in = ia;
+            }
+            /* Note: always shift+and, even for ka=0, to stay in lockstep
+             * with xorbit_version_uops (which counts 2 uops here for
+             * non-SSE). A shift-by-0 is a legal no-op. */
+            if (ka == 0)
+                c_copy(cg, r1, inreg);
+            else
+                c_xbt_srl(cg, r1, inreg, (unsigned)ka);
+            c_xbt_and1(cg, r1, r1);
+            if (cur_in != ib) {
+                if (!pf_done[ib]) {
+                    c_inptr(cg, X10, ib);
+                    pf_done[ib] = 1;
+                } else {
+                    c_inptr_np(cg, X10, ib);
+                }
+                c_ld_to(cg, inreg, u, X10);
+                cur_in = ib;
+            }
+            if (kb == 0) {
+                c_copy(cg, r2, inreg);
+                c_xbt_and1(cg, r2, r2);
+            } else {
+                c_xbt_srl(cg, r2, inreg, (unsigned)kb);
+                c_xbt_and1(cg, r2, r2);
+            }
+            c_xor(cg, r1, r2);
+            xorbit_fanout(cg, s->temps[m].users, s->temps[m].nusers, r1,
+                          r2, u, touched, is_delta);
+        }
+        /* phase 2: surviving input bits, fanned out directly */
+        for (int q = 0; q < 8 * ni_sched; q++) {
+            if (!s->inbit_nusers[q])
+                continue;
+            int i = q >> 3, k = q & 7;
+            if (cur_in != i) {
+                if (!pf_done[i]) {
+                    c_inptr(cg, X10, i);
+                    pf_done[i] = 1;
+                } else {
+                    c_inptr_np(cg, X10, i);
+                }
+                c_ld_to(cg, inreg, u, X10);
+                cur_in = i;
+            }
+            if (k == 0) {
+                c_copy(cg, r1, inreg);
+                c_xbt_and1(cg, r1, r1);
+            } else {
+                c_xbt_srl(cg, r1, inreg, (unsigned)k);
+                c_xbt_and1(cg, r1, r1);
+            }
+            xorbit_fanout(cg, s->inbit_users[q], s->inbit_nusers[q], r1,
+                          r2, u, touched, is_delta);
+        }
+    }
+}
+
 /* d = table[idx]; table is the logical reg tblr */
 static void c_tbl_into(cg_t *cg, int d, int tblr, int idx)
 {
@@ -357,7 +599,16 @@ static void gen_const_setup(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
     em_t *e = &cg->em;
-    if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && cg->need_mask) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: set up the 0x01 mask register. Prologue
+         * const setup is not per-iteration work: uncounted, by the
+         * same convention as the nibble mask/table setup (and x86's
+         * mask load). */
+        if (cg->is_sve)
+            em_sve_dup(e, V(cg, cg->xbt_mask), 1);
+        else
+            em_neon_movi(e, cg->xbt_mask, 1);
+    } else if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && cg->need_mask) {
         if (cg->is_sve)
             em_sve_dup(e, V(cg, cg->mask), 15);
         else
@@ -526,7 +777,12 @@ static void gen_body(cg_t *cg)
     /* Accumulator seeding. Every live accumulator is overwritten before
      * its first read (see x86 backend for the argument); dead rows are
      * zeroed here. */
-    if (pl->kind == P_HORNER && n_in == 0) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: the body follows pl->bit_sched instead of
+         * the naive emitter. gen_body_xorbit handles its own
+         * accumulator seeding/zeroing; stores below are shared. */
+        gen_body_xorbit(cg);
+    } else if (pl->kind == P_HORNER && n_in == 0) {
         for (int j = 0; j < n_out; j++)
             for (int u = 0; u < ulanes; u++) {
                 int r = j * U + u;
@@ -1379,7 +1635,19 @@ static void compute_regs(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
     int n_out = pl->n_out, U = cg->U;
-    if (cg->cand.pipe) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: n_out*U accumulators + input-byte reg +
+         * two bit temps + 0x01 mask. The nibble tables are dead.
+         * Must stay in lockstep with xorbit_need_regs. */
+        assert(pl->bit_sched && pl->bit_sched->ntemps > 0);
+        assert(pl->kind == P_MULACC || pl->kind == P_DELTA ||
+               pl->kind == P_HORNER);
+        cg->xbt_in = n_out * U;
+        cg->xbt_r1 = n_out * U + 1;
+        cg->xbt_r2 = n_out * U + 2;
+        cg->xbt_mask = n_out * U + 3;
+        cg->vmax = cg->xbt_mask;
+    } else if (cg->cand.pipe) {
         /* Software-pipelined shape (track I8): the D/Dn datasets
          * (U regs each) replace the single input temp t (dead: -1).
          * jit_build_version rejects unsupported (kind, mul, remat)
@@ -1512,7 +1780,10 @@ static void compute_regs(cg_t *cg)
      * with this assignment, or candidates could be wrongly dropped or
      * (worse) admitted past the regfile. The xorsched twin has its own
      * pressure formula (extra temp). */
-    int want_regs = cg->cand.xorsched
+    int want_regs = cg->cand.xorbit
+                        ? xorbit_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
+                                           pl, U)
+                        : cg->cand.xorsched
                         ? xorsched_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                              pl, U)
                         : plan_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
@@ -1709,11 +1980,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 
     /* Over-pressure must fail cleanly (return -1), not abort. The
      * planner's filter normally prevents this, but force-built
-     * candidates (tests) must also be safe. */
+     * candidates (tests) must also be safe. The xorbit twin has its
+     * own (smaller) register footprint; checking it against the naive
+     * plan_need_regs would wrongly reject valid xorbit candidates
+     * (e.g. P_HORNER, whose naive body needs hregs the xorbit body
+     * never touches). */
     {
-        int need = plan_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON,
-                                  MUL_NIBBLE, pl, cand->U, cand->remat,
-                                  cand->pipe);
+        int need = cand->xorbit
+            ? xorbit_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON, pl, cand->U)
+            : plan_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON,
+                             MUL_NIBBLE, pl, cand->U, cand->remat,
+                             cand->pipe);
         int nregs = isa_nregs(cg.is_sve ? ISA_SVE : ISA_NEON);
         if (need > nregs) {
             snprintf(err, errlen,

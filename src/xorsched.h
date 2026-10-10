@@ -187,11 +187,16 @@ void xorbit_test_oom_at(int n);
 
 /* Static cost model for the bit-program twin (plan_candidates gate).
  * sched=0 models the naive nibble body, sched=1 the bit-program body,
- * under the x86_64 emitter's counting convention (body + stores per
+ * under the emitter's counting convention (body + stores per
  * group; prologue const setup uncounted; prefetch excluded -- the gate
  * always passes prefetch_dist=0). nt selects non-temporal store
- * accounting (x86: one uop per vector either way). Only x86 ISAs are
- * modeled (the twin is x86-only for now); returns -1 otherwise.
+ * accounting (x86: one uop per vector either way). x86 ISAs mirror the
+ * x86_64 emitter exactly; NEON/SVE mirror the AArch64 emitter
+ * (src/aarch64/jit.c); RVV mirrors the RISC-V emitter (src/riscv/jit.c).
+ * For SVE the model assumes SVE2 EOR3 is available, making it a LOWER
+ * BOUND on the true naive cost (on non-SVE2 hardware the true naive is
+ * costlier); the gate (u_sched < u_naive) therefore stays sound -- it
+ * may miss wins on non-SVE2, but never admits a losing twin.
  * Used by the plan_candidates gate (strict <) and by tests to check
  * the emitter against the model. */
 long xorbit_version_uops(const xorbit_t *s, const plan_t *pl,

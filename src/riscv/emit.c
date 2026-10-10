@@ -398,6 +398,12 @@ void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm)
     em_opv(e, 0x28 /*101000*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
 }
 
+void em_vsll_vi(em_t *e, int vd, int vs2, unsigned uimm)
+{
+    assert(uimm < 32);
+    em_opv(e, 0x25 /*100101*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
+}
+
 /* Zvbb vector bitmanip. OPIVV class (funct3=000); operand placement
  * follows the standard convention (first assembly source in
  * bits[19:15], second in bits[24:20]), like em_vand_vv above.
