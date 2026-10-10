@@ -20,3 +20,8 @@
  * RDI=in, RSI=out, RDX=len, RCX=fold_state. */
 void rj_crc_fold_finalize_x86(const void *fold_state, int nstreams,
                               size_t total_len, uint32_t *crc);
+
+/* Advance one 128-bit fold state by tail_len (0..15) bytes at p.
+ * s: 16-byte little-endian state (updated in place).
+ * Used driver-side for the final partial chunk (len % 16 bytes). */
+void rj_crc_fold_tail(uint8_t s[16], const uint8_t *p, size_t tail_len);

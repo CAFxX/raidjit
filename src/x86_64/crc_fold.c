@@ -26,6 +26,10 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+
+/* For rj_crc_fold_tail: scalar CRC update for tail bytes. */
+#include "../crc.h"
 
 /* QREF = 0x1DB710641 (the reflected CRC-32 polynomial, degree 32). */
 #define CRC_FOLD_QREF ((__uint128_t)0x1DB710641ULL)
@@ -66,4 +70,33 @@ void rj_crc_fold_finalize_x86(const void *fold_state, int nstreams,
             S |= (__uint128_t)st[s * 16 + i] << (8 * i);
         crc[s] = crc_fold_red128(S) ^ 0xFFFFFFFFu;
     }
+}
+
+/* Advance one 128-bit fold state by tail_len (0..15) bytes at p.
+ * s: 16-byte little-endian state (updated in place).
+ *
+ * Semantics: R = red128(S); R = crc32_update_scalar(R, p, tail_len);
+ * S = le128(R) (zero-extended). This converts the fold state to a
+ * "reduced" form where the CRC is directly in the low 32 bits, then
+ * advances it with the scalar CRC. The finalize (red128 ^ 0xFFFFFFFF)
+ * remains correct because red128 of a <2^32 value is the identity.
+ */
+void rj_crc_fold_tail(uint8_t s[16], const uint8_t *p, size_t tail_len)
+{
+    if (tail_len == 0)
+        return;
+    /* Load little-endian 128-bit state. */
+    __uint128_t S = 0;
+    for (int i = 0; i < 16; i++)
+        S |= (__uint128_t)s[i] << (8 * i);
+    /* Reduce to 32-bit CRC (of bytes folded so far). */
+    uint32_t R = crc_fold_red128(S);
+    /* Advance with scalar CRC over tail bytes. */
+    R = rj_crc32_update_scalar(R, p, tail_len);
+    /* Store back as little-endian 128-bit (R in low 32 bits, rest zero). */
+    memset(s, 0, 16);
+    s[0] = (uint8_t)R;
+    s[1] = (uint8_t)(R >> 8);
+    s[2] = (uint8_t)(R >> 16);
+    s[3] = (uint8_t)(R >> 24);
 }

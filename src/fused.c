@@ -362,10 +362,26 @@ static void fused_driver_call(const struct rj_fused *f,
 
     if (crc && t >= 0) {
         if (f->crc_fold) {
-            /* Phase 2 v2 (lanes = streams): finalize each stream's 128-bit
-             * state to CRC-32 via per-stream Barrett reduction. No cross-
-             * lane combination (lanes are independent streams). */
+            /* Phase 2 v2: handle tail bytes (len % 16) driver-side, then
+             * finalize each stream's 128-bit state to CRC-32 via per-stream
+             * Barrett reduction. No cross-lane combination (lanes are
+             * independent streams). */
 #ifdef __x86_64__
+            size_t tail_len = len % 16;
+            if (tail_len > 0) {
+                size_t bii = f->base_in[t], boo = f->base_out[t];
+                /* Tail bytes are at the end of each stream. */
+                for (int i = 0; i < tn; i++) {
+                    const uint8_t *p =
+                        (const uint8_t *)in[bii + (size_t)i] + len - tail_len;
+                    rj_crc_fold_tail(&fold_state[i * 16], p, tail_len);
+                }
+                for (int j = 0; j < tno; j++) {
+                    const uint8_t *p =
+                        (const uint8_t *)out[boo + (size_t)j] + len - tail_len;
+                    rj_crc_fold_tail(&fold_state[(tn + j) * 16], p, tail_len);
+                }
+            }
             rj_crc_fold_finalize_x86(fold_state, nstreams, len, crc);
 #else
             /* AArch64/RISC-V gates are closed; this is unreachable. */
