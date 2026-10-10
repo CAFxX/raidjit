@@ -189,10 +189,11 @@ static void shape_one(const plan_t *pl, const cand_t *c,
     /* v0 reservation: the only vector instruction writing v0 is
      * vmsltu.vx; every other vector register operand is nonzero and
      * lmul-aligned. Vector/scalar field classification per funct3:
-     * OPIVV/OPFVV/OPMVV (0-2): vd/vs1/vs2 vector; OPIVI (3): vd vector,
-     * vs1 field is imm/selector (not a reg), vs2 vector except vid.v's
-     * reserved-0 field; OPIVX/OPMVX (4/6): vd/vs2 vector, vs1 field is
-     * a GPR. */
+     * OPIVV/OPFVV (0-1): vd/vs1/vs2 vector; OPMVV (2): vd/vs1/vs2 vector
+     * except vid.v (vs1 field is the 10001 selector, vs2 field is the
+     * reserved-0 encoding, neither a register); OPIVI (3): vd vector,
+     * vs1 field is imm/selector (not a reg), vs2 vector;
+     * OPIVX/OPMVX (4/6): vd/vs2 vector, vs1 field is a GPR. */
     int nvec = 0;
     for (size_t i = 0; i < nm; i++) {
         uint32_t w = wm[i];
@@ -230,17 +231,19 @@ static void shape_one(const plan_t *pl, const cand_t *c,
                 CHECK(vd % lmul == 0, "%s: vd=v%d at +%zu not %d-aligned",
                       tag, vd, i, lmul);
             }
-            /* vs1 is a vector reg only for f3=0,1,2 */
-            if (f3 <= 0x2u) {
+            /* vs1 is a vector reg only for f3=0,1,2, except vid.v (vs1
+             * field is the 10001 selector, not a register). */
+            if (!is_vid && f3 <= 0x2u) {
                 CHECK(vs1 != 0, "%s: vector vs1=v0 at +%zu", tag, i);
                 CHECK(vs1 % lmul == 0,
                       "%s: vs1=v%d at +%zu not %d-aligned", tag, vs1, i,
                       lmul);
             }
-            /* vs2 is a vector reg for f3=0,1,2,4,6 and OPIVI non-vid,
-             * except vmv (vs2 field unused). */
-            if (!is_vmv && (f3 <= 0x2u || f3 == 0x4u || f3 == 0x6u ||
-                            (f3 == 0x3u && !is_vid))) {
+            /* vs2 is a vector reg for f3=0,1,2,4,6 and OPIVI,
+             * except vmv (vs2 field unused) and vid.v (vs2 field is
+             * the reserved-0 encoding, not a register read). */
+            if (!is_vmv && !is_vid &&
+                (f3 <= 0x2u || f3 == 0x4u || f3 == 0x6u || f3 == 0x3u)) {
                 CHECK(vs2 != 0, "%s: vector vs2=v0 at +%zu", tag, i);
                 CHECK(vs2 % lmul == 0,
                       "%s: vs2=v%d at +%zu not %d-aligned", tag, vs2, i,

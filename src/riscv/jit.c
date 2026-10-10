@@ -1551,8 +1551,11 @@ static void c_bne_long(cg_t *cg, int rs1, int rs2, int lab)
  *   A3 = A2                               # chunk-0 remaining
  *   for u in 0..U-1 (unrolled at JIT time):
  *       blez A3 -> next                   # skip chunks fully past the end
+ *       T2 = min(A3, T0)                  # clamp the bound at VLMAX:
+ *                                         # A3 reaches U*VLMAX-1, but the
+ *                                         # SEW=8 scalar truncates to 8 bits
  *       vid.v vd0                         # vd0[i] = i
- *       vmsltu.vx v0, vd0, A3             # v0[i] = (i <u A3)
+ *       vmsltu.vx v0, vd0, T2             # v0[i] = (i <u T2)
  *       <gen_body(cg,1,0), data mem masked by v0>
  *   next:
  *       add T1, T1, T0                    # offset += VLMAX (even if skipped)
@@ -1592,12 +1595,26 @@ static void gen_tail_masked(cg_t *cg)
     for (int u = 0; u < U; u++) {
         int next_lab = em_label(e);
         c_blez_long(cg, A3, next_lab); /* A3 <= 0: skip the chunk */
+        /* Clamp the compare bound at VLMAX: A3 (remaining for this
+         * chunk) reaches U*VLMAX-1 on non-final chunks, but the SEW=8
+         * scalar operand of vmsltu.vx truncates to 8 bits (V spec
+         * §11.1) -- an unclamped A3 >= 256 would wrap the bound and
+         * deactivate lanes that are really in range. T2 = min(A3, T0)
+         * branchless: T2 = T0 + min(0, A3 - T0). T2/T3 are scratch:
+         * gen_body clobbers them anyway, and the mask compare reads T2
+         * before the body runs. A3 > 0 here (the blez skip above), and
+         * T0 = VLMAX > 0, so the min is exact. */
+        em_sub(e, T2, A3, T0);  /* T2 = A3 - VLMAX */
+        em_srai(e, T3, T2, 63);  /* T3 = -1 if A3 < VLMAX else 0 */
+        em_and(e, T2, T2, T3);   /* T2 = min(0, A3 - VLMAX) */
+        em_add(e, T2, T0, T2);   /* T2 = min(A3, VLMAX) */
+        cg->uops += 4;
         em_vid_v(e, cg->vd0);          /* vd0[i] = i */
         cg->uops += 1;
-        /* v0[i] = (i <u A3): unsigned, exact for VLMAX <= 255 (the
-         * backend gate below rejects wider configs). A3 > 0 here
-         * (the blez skip above), so tmp = A3 mod 256 == A3. */
-        em_vmsltu_vx(e, 0, cg->vd0, A3);
+        /* v0[i] = (i <u T2): unsigned, exact -- T2 <= VLMAX <= 255
+         * (backend gate), so neither vid.v (indexes mod 256) nor the
+         * scalar truncation wraps. */
+        em_vmsltu_vx(e, 0, cg->vd0, T2);
         cg->uops += 1;
         cg->masked_mem = 1;
         gen_body(cg, 1, 0);

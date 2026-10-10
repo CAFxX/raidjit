@@ -6,6 +6,7 @@
  *   em_vid_v                   (vid.v: OPMVV, funct6=010100, vs1=10001)
  *   em_vmsltu_vx               (vmsltu.vx: OPIVX, funct6=011010, vd=v0)
  *   em_blt / em_bge            (B-type, funct3=100/101; the tail's blez)
+ *   em_srai / em_and           (the tail's min(A3, VLMAX) clamp)
  *
  * Checks:
  *  A. Literal-word pins: GAS-verified words (even/odd, low/high regs
@@ -33,6 +34,9 @@
  *   vmsltu.vx v0,v31,x31 -> 0x6bffc057
  *   vmsltu.vx v0,v1,x2   -> 0x6a114057
  *   vmsltu.vx v0,v16,x17 -> 0x6b08c057
+ *   srai t3,t2,63 -> 0x43f3de13    and t2,t2,t3 -> 0x01c3f3b3
+ *   srai x0,x1,0  -> 0x4000d013    and x0,x0,x1  -> 0x00107033
+ *   srai x31,x30,31 -> 0x41ff5f93  and x31,x30,x29 -> 0x01df7fb3
  * Note: vmsltu.vx is funct6=011010 (unsigned <). 011011 is vmslt.vx
  * (signed <, wrong for tmp >= 128 at SEW=8) and 011100 is vmsleu.vx
  * (unsigned <=, one extra lane); the GAS cross-check caught the 011100
@@ -150,6 +154,38 @@ static void test_literal_pins(void)
               cmpt[i].rs1, got, cmpt[i].want);
         em_free(&e);
     }
+    /* em_srai: (0100000<<25)|(sh<<20)|(rs1<<15)|(101<<12)|(rd<<7)|0x13 */
+    struct { int rd, rs1; unsigned sh; uint32_t want; } srait[] = {
+        { 28, 7, 63, 0x43f3de13u },
+        { 0, 1, 0, 0x4000d013u },
+        { 31, 30, 31, 0x41ff5f93u },
+    };
+    for (size_t i = 0; i < sizeof(srait) / sizeof(srait[0]); i++) {
+        uint8_t buf[8];
+        em_t e;
+        em_init(&e, buf, sizeof(buf));
+        em_srai(&e, srait[i].rd, srait[i].rs1, srait[i].sh);
+        uint32_t got = word_at(buf);
+        CHECK(got == srait[i].want, "srai x%d,x%d,%u: got 0x%08x want 0x%08x",
+              srait[i].rd, srait[i].rs1, srait[i].sh, got, srait[i].want);
+        em_free(&e);
+    }
+    /* em_and: (rs2<<20)|(rs1<<15)|(111<<12)|(rd<<7)|0x33 */
+    struct { int rd, rs1, rs2; uint32_t want; } andt[] = {
+        { 7, 7, 28, 0x01c3f3b3u },
+        { 0, 0, 1, 0x00107033u },
+        { 31, 30, 29, 0x01df7fb3u },
+    };
+    for (size_t i = 0; i < sizeof(andt) / sizeof(andt[0]); i++) {
+        uint8_t buf[8];
+        em_t e;
+        em_init(&e, buf, sizeof(buf));
+        em_and(&e, andt[i].rd, andt[i].rs1, andt[i].rs2);
+        uint32_t got = word_at(buf);
+        CHECK(got == andt[i].want, "and x%d,x%d,x%d: got 0x%08x want 0x%08x",
+              andt[i].rd, andt[i].rs1, andt[i].rs2, got, andt[i].want);
+        em_free(&e);
+    }
     /* em_blt / em_bge: B-type skeleton, funct3 100/101, opcode 0x63.
      * Bind the label before emitting for a true zero offset. */
     {
@@ -233,6 +269,32 @@ static void test_field_decode(void)
         CHECK(((w >> 7) & 31u) == 0, "vmsltu.vx vd!=v0");
         CHECK((w & 0x7fu) == 0x57u, "vmsltu.vx opcode");
         em_free(&e);
+
+        /* srai/and: randomized field decode of the min-clamp emitters. */
+        {
+            unsigned sh = (unsigned)(xrng() & 63);
+            em_init(&e, buf, sizeof(buf));
+            em_srai(&e, vd, rs, sh);
+            w = word_at(buf);
+            CHECK(((w >> 25) & 0x7fu) == 0x20u, "srai imm[11:5]!=0100000");
+            CHECK(((w >> 20) & 63u) == sh, "srai shamt");
+            CHECK(((w >> 15) & 31u) == (unsigned)rs, "srai rs1");
+            CHECK(((w >> 12) & 7u) == 0x5u, "srai funct3!=101");
+            CHECK(((w >> 7) & 31u) == (unsigned)vd, "srai rd");
+            CHECK((w & 0x7fu) == 0x13u, "srai opcode");
+            em_free(&e);
+
+            em_init(&e, buf, sizeof(buf));
+            em_and(&e, vd, rs, vs);
+            w = word_at(buf);
+            CHECK(((w >> 25) & 0x7fu) == 0x00u, "and funct7!=0000000");
+            CHECK(((w >> 20) & 31u) == (unsigned)vs, "and rs2");
+            CHECK(((w >> 15) & 31u) == (unsigned)rs, "and rs1");
+            CHECK(((w >> 12) & 7u) == 0x7u, "and funct3!=111");
+            CHECK(((w >> 7) & 31u) == (unsigned)vd, "and rd");
+            CHECK((w & 0x7fu) == 0x33u, "and opcode");
+            em_free(&e);
+        }
 
         em_init(&e, buf, sizeof(buf));
         int lab = em_label(&e);

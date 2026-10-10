@@ -68,6 +68,8 @@ void em_divu(em_t *e, int rd, int rs1, int rs2);  /* M extension */
 void em_addi(em_t *e, int rd, int rs1, int imm12); /* -2048..2047 */
 void em_slli(em_t *e, int rd, int rs1, unsigned sh); /* 0..63 */
 void em_srli(em_t *e, int rd, int rs1, unsigned sh); /* 0..63 */
+void em_srai(em_t *e, int rd, int rs1, unsigned sh); /* 0..63, arithmetic */
+void em_and(em_t *e, int rd, int rs1, int rs2);
 void em_ld(em_t *e, int rd, int rs1, int off12);   /* rd = [rs1+off] */
 void em_sd(em_t *e, int rs2, int rs1, int off12);  /* [rs1+off] = rs2 */
 void em_beq(em_t *e, int rs1, int rs2, int lab);   /* rel, label fixup */

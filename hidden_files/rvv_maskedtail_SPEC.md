@@ -32,10 +32,12 @@ for u in 0..U-1 (unrolled at JIT time):
     # chunk u covers bytes [u*VLMAX, (u+1)*VLMAX)
     sub  tmp, A2, u*VLMAX             # tmp = remaining bytes for this chunk
     blez tmp -> next_chunk            # skip if chunk fully past the end
-    vmsltu.vx v0, vd_tmp, tmp         # v0[i] = (i <u tmp); unsigned:
-                                     # exact for VLMAX <= 255 (SEW=8
-                                     # scalar truncates to 8 bits, V §11.1;
-                                     # backend gate rejects wider configs)
+    T2 = min(tmp, VLMAX)              # clamp the bound: tmp reaches
+                                     # U*VLMAX-1 but the SEW=8 scalar
+                                     # truncates to 8 bits (V §11.1)
+    vmsltu.vx v0, vd_tmp, T2         # v0[i] = (i <u T2); unsigned:
+                                     # exact for VLMAX <= 255 (backend gate
+                                     # rejects wider configs)
     <body for u=1 with MASKED data loads/stores, v0.t, win=0>
 next_chunk:
 ```

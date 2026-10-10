@@ -237,6 +237,25 @@ void em_srli(em_t *e, int rd, int rs1, unsigned sh)
                   ((uint32_t)(rd & 31) << 7) | 0x13u);
 }
 
+/* srai: arithmetic right shift; imm[11:5] = 0100000 distinguishes it
+ * from srli. GAS-verified (srai t3,t2,63 -> 0x43f3de13). */
+void em_srai(em_t *e, int rd, int rs1, unsigned sh)
+{
+    assert(sh < 64);
+    emit32(e, (0x20u << 25) | ((sh & 0x3fu) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x5u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x13u);
+}
+
+/* and: OP, funct3=111, funct7=0000000.
+ * GAS-verified (and t2,t2,t3 -> 0x01c3f3b3). */
+void em_and(em_t *e, int rd, int rs1, int rs2)
+{
+    emit32(e, (0x00u << 25) | ((uint32_t)(rs2 & 31) << 20) |
+                  ((uint32_t)(rs1 & 31) << 15) | (0x7u << 12) |
+                  ((uint32_t)(rd & 31) << 7) | 0x33u);
+}
+
 void em_ld(em_t *e, int rd, int rs1, int off12)
 {
     assert(off12 >= -2048 && off12 < 2048);
