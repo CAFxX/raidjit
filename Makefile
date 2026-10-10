@@ -63,7 +63,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_pdelta_edge \
         $(BUILDDIR)/test_boundaries $(BUILDDIR)/test_aarch64_shape \
         $(BUILDDIR)/test_prune $(BUILDDIR)/test_dispatch \
-        $(BUILDDIR)/test_xorsched $(BUILDDIR)/test_xorsched_e2e \
+        $(BUILDDIR)/test_xorsched $(BUILDDIR)/test_xorsched_e2e $(BUILDDIR)/test_xorbit \
         $(BUILDDIR)/test_matrix_search $(BUILDDIR)/test_xorcode \
         $(BUILDDIR)/test_notail_xorsched $(BUILDDIR)/test_survivor \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
