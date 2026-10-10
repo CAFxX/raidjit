@@ -153,10 +153,15 @@ xorsched_t *xorsched_build(const plan_t *pl)
         }
     }
 
-    /* 2. init rows: atoms + input bitsets + pair counts */
+    /* 2. init rows: atoms + bitsets + pair counts.
+     * Nested CSE (track A3): atoms are inputs (0..n_in-1) plus temps
+     * (n_in..n_in+ntemps-1). The has[] bitset and counts[] table cover
+     * the full atom namespace so temps can pair with inputs or other
+     * temps in later greedy rounds. */
+    int astride = n_in + XS_MAX_TEMPS; /* atom namespace stride */
     xs_row_t *rows = XS_CALLOC((size_t)nunique, sizeof(xs_row_t));
-    uint8_t *has = XS_CALLOC((size_t)nunique * (size_t)n_in, 1);
-    int *counts = XS_CALLOC((size_t)n_in * (size_t)n_in, sizeof(int));
+    uint8_t *has = XS_CALLOC((size_t)nunique * (size_t)astride, 1);
+    int *counts = XS_CALLOC((size_t)astride * (size_t)astride, sizeof(int));
     int *ta = XS_MALLOC(XS_MAX_TEMPS * sizeof(int));
     int *tb = XS_MALLOC(XS_MAX_TEMPS * sizeof(int));
     if (!rows || !has || !counts || !ta || !tb) {
@@ -178,23 +183,28 @@ xorsched_t *xorsched_build(const plan_t *pl)
                 oom = 1;
                 break;
             }
-            has[(size_t)u * (size_t)n_in + (size_t)i] = 1;
+            has[(size_t)u * (size_t)astride + (size_t)i] = 1;
         }
         for (int x = 0; x < rows[u].n; x++)
             for (int y = x + 1; y < rows[u].n; y++) {
                 int a = rows[u].atoms[x], b = rows[u].atoms[y];
-                counts[a * n_in + b]++;
+                int p = a < b ? a : b, q = a < b ? b : a;
+                counts[(size_t)p * (size_t)astride + (size_t)q]++;
             }
     }
     if (oom)
         goto done;
 
-    /* 3. greedy extraction (flat input pairs only) */
+    /* 3. greedy extraction (nested: temps can pair with inputs or
+     * other temps). Each round picks the best co-occurring atom pair
+     * (X,Y) with count >= 2, extracts t_new = X^Y, and replaces the
+     * pair in every row containing both. */
     for (;;) {
         int ba = -1, bb = -1, best = 0;
-        for (int a = 0; a < n_in; a++)
-            for (int b = a + 1; b < n_in; b++) {
-                int c = counts[a * n_in + b];
+        int natoms = n_in + ntemps;
+        for (int a = 0; a < natoms; a++)
+            for (int b = a + 1; b < natoms; b++) {
+                int c = counts[(size_t)a * (size_t)astride + (size_t)b];
                 if (c > best) {
                     best = c;
                     ba = a;
@@ -208,18 +218,21 @@ xorsched_t *xorsched_build(const plan_t *pl)
         int tatom = n_in + ntemps;
         ntemps++;
         for (int u = 0; u < nunique; u++) {
-            uint8_t *h = has + (size_t)u * (size_t)n_in;
+            uint8_t *h = has + (size_t)u * (size_t)astride;
             if (!h[ba] || !h[bb])
                 continue;
-            /* the row loses pairs (ba,bb), (ba,x), (bb,x) */
-            counts[ba * n_in + bb]--;
-            for (int x = 0; x < n_in; x++) {
-                if (!h[x] || x == ba || x == bb)
+            /* the row loses pairs (ba,bb), (ba,x), (bb,x) for all
+             * atoms x in the row */
+            int p0 = ba < bb ? ba : bb, q0 = ba < bb ? bb : ba;
+            counts[(size_t)p0 * (size_t)astride + (size_t)q0]--;
+            int natoms_now = n_in + ntemps; /* includes tatom just added */
+            for (int x = 0; x < natoms_now; x++) {
+                if (!h[x] || x == ba || x == bb || x == tatom)
                     continue;
                 int p = x < ba ? x : ba, q = x < ba ? ba : x;
-                counts[p * n_in + q]--;
+                counts[(size_t)p * (size_t)astride + (size_t)q]--;
                 p = x < bb ? x : bb, q = x < bb ? bb : x;
-                counts[p * n_in + q]--;
+                counts[(size_t)p * (size_t)astride + (size_t)q]--;
             }
             h[ba] = h[bb] = 0;
             xs_row_remove(&rows[u], ba);
@@ -227,6 +240,15 @@ xorsched_t *xorsched_build(const plan_t *pl)
             if (xs_row_add(&rows[u], tatom) != 0) {
                 oom = 1;
                 break;
+            }
+            h[tatom] = 1;
+            /* the row gains pairs (tatom,x) for all other atoms x:
+             * this is what enables nesting in later rounds */
+            for (int x = 0; x < natoms_now; x++) {
+                if (!h[x] || x == tatom)
+                    continue;
+                int p = x < tatom ? x : tatom, q = x < tatom ? tatom : x;
+                counts[(size_t)p * (size_t)astride + (size_t)q]++;
             }
         }
         if (oom)
@@ -300,7 +322,7 @@ xorsched_t *xorsched_build(const plan_t *pl)
                 if (xs_row_has_atom(&rows[u], n_in + k))
                     s->row_atoms[u][w++] = k; /* temp k -> atom k */
             for (int i = 0; i < n_in; i++)
-                if (has[(size_t)u * (size_t)n_in + (size_t)i])
+                if (has[(size_t)u * (size_t)astride + (size_t)i])
                     s->row_atoms[u][w++] = ntemps + i;
             assert(w == nt + ni);
             s->row_first[u] = w > 0 ? s->row_atoms[u][0] : -1;
@@ -309,7 +331,7 @@ xorsched_t *xorsched_build(const plan_t *pl)
         for (int i = 0; i < n_in; i++) {
             int nu = 0;
             for (int u = 0; u < nunique; u++)
-                if (has[(size_t)u * (size_t)n_in + (size_t)i])
+                if (has[(size_t)u * (size_t)astride + (size_t)i])
                     nu++;
             s->in_nusers[i] = nu;
             s->in_users[i] = XS_MALLOC((size_t)nu * sizeof(int));
@@ -319,7 +341,7 @@ xorsched_t *xorsched_build(const plan_t *pl)
             }
             nu = 0;
             for (int u = 0; u < nunique; u++)
-                if (has[(size_t)u * (size_t)n_in + (size_t)i])
+                if (has[(size_t)u * (size_t)astride + (size_t)i])
                     s->in_users[i][nu++] = u;
         }
         /* dead plan rows and live duplicates */
@@ -576,10 +598,16 @@ int xorsched_need_regs(isa_t isa, const plan_t *pl, int U)
     if (pl->kind != P_XOR)
         return base;
     /* AVX folds the temp formation into a memory XOR (one live temp);
-     * SSE/AArch64/RVV need a second temp register. */
+     * SSE/AArch64/RVV need a second temp register.
+     * Nested CSE (track A3): temps can be operands of other temps,
+     * so the live temp set can exceed the flat-case bound of 2.
+     * Conservative +1 for temp-of-temp chains (a temp live while
+     * forming its parent). The planner's need > nregs filter remains
+     * sound (may reject a few feasible candidates, never accepts an
+     * infeasible one). */
     if (isa == ISA_AVX2 || isa == ISA_AVX512)
-        return base;
-    return base + 1;
+        return base + 1;
+    return base + 2;
 }
 
 /* ---- bit-level (gate-level) XOR scheduling for GF-multiply rows ----
@@ -735,12 +763,15 @@ xorbit_t *xorbit_build(const plan_t *pl)
     /* 1. incidence sets: for each output bit (j,b), the input bits
      * (i,k) with bitmatrix(C[j][i])[b][k] = 1. Column k of the
      * bitmatrix is gf_mul(C, 1<<k); bit b of that column feeds
-     * output bit b. */
+     * output bit b.
+     * Nested CSE (track A3): atoms are input bits (0..nbits_in-1)
+     * plus temps (nbits_in..nbits_in+ntemps-1). */
+    long bstride = nbits_in + XB_MAX_TEMPS; /* atom namespace stride */
     xb_row_t *rows = XB_CALLOC((size_t)nbits_out, sizeof(xb_row_t));
     uint8_t *has =
-        XB_CALLOC((size_t)nbits_out * (size_t)nbits_in, 1);
+        XB_CALLOC((size_t)nbits_out * (size_t)bstride, 1);
     int *counts =
-        XB_CALLOC((size_t)nbits_in * (size_t)nbits_in, sizeof(int));
+        XB_CALLOC((size_t)bstride * (size_t)bstride, sizeof(int));
     int *ta = XB_MALLOC(XB_MAX_TEMPS * sizeof(int));
     int *tb = XB_MALLOC(XB_MAX_TEMPS * sizeof(int));
     if (!rows || !has || !counts || !ta || !tb) {
@@ -769,28 +800,29 @@ xorbit_t *xorbit_build(const plan_t *pl)
                         oom = 1;
                         break;
                     }
-                    has[ob * nbits_in + q] = 1;
+                    has[ob * bstride + q] = 1;
                 }
             }
             for (int x = 0; x < rows[ob].n; x++)
                 for (int y = x + 1; y < rows[ob].n; y++) {
                     int qa = rows[ob].atoms[x], qb = rows[ob].atoms[y];
                     int p = qa < qb ? qa : qb, q = qa < qb ? qb : qa;
-                    counts[(size_t)p * (size_t)nbits_in + (size_t)q]++;
+                    counts[(size_t)p * (size_t)bstride + (size_t)q]++;
                 }
         }
     }
     if (oom)
         goto done;
 
-    /* 2. greedy flat pair extraction over input-bit pairs (never
-     * nested: temps are pairs of input bits only, like xorsched). */
+    /* 2. greedy extraction (nested: temps can pair with input bits
+     * or other temps). */
     for (;;) {
         long ba = -1, bb = -1;
         int best = 0;
-        for (long a = 0; a < nbits_in; a++)
-            for (long b = a + 1; b < nbits_in; b++) {
-                int cc = counts[a * nbits_in + b];
+        long natoms = nbits_in + ntemps;
+        for (long a = 0; a < natoms; a++)
+            for (long b = a + 1; b < natoms; b++) {
+                int cc = counts[a * bstride + b];
                 if (cc > best) {
                     best = cc;
                     ba = a;
@@ -804,18 +836,21 @@ xorbit_t *xorbit_build(const plan_t *pl)
         int tatom = (int)nbits_in + ntemps;
         ntemps++;
         for (long ob = 0; ob < nbits_out; ob++) {
-            uint8_t *h = has + ob * nbits_in;
+            uint8_t *h = has + ob * bstride;
             if (!h[ba] || !h[bb])
                 continue;
-            /* the row loses pairs (ba,bb), (ba,x), (bb,x) */
-            counts[ba * nbits_in + bb]--;
-            for (long x = 0; x < nbits_in; x++) {
-                if (!h[x] || x == ba || x == bb)
+            /* the row loses pairs (ba,bb), (ba,x), (bb,x) for all
+             * atoms x in the row */
+            long p0 = ba < bb ? ba : bb, q0 = ba < bb ? bb : ba;
+            counts[p0 * bstride + q0]--;
+            long natoms_now = nbits_in + ntemps; /* incl. tatom */
+            for (long x = 0; x < natoms_now; x++) {
+                if (!h[x] || x == ba || x == bb || x == tatom)
                     continue;
                 long p = x < ba ? x : ba, q = x < ba ? ba : x;
-                counts[p * nbits_in + q]--;
+                counts[p * bstride + q]--;
                 p = x < bb ? x : bb, q = x < bb ? bb : x;
-                counts[p * nbits_in + q]--;
+                counts[p * bstride + q]--;
             }
             h[ba] = h[bb] = 0;
             xb_row_remove(&rows[ob], (int)ba);
@@ -823,6 +858,14 @@ xorbit_t *xorbit_build(const plan_t *pl)
             if (xb_row_add(&rows[ob], tatom) != 0) {
                 oom = 1;
                 break;
+            }
+            h[tatom] = 1;
+            /* the row gains pairs (tatom,x): enables nesting */
+            for (long x = 0; x < natoms_now; x++) {
+                if (!h[x] || x == tatom)
+                    continue;
+                long p = x < tatom ? x : tatom, q = x < tatom ? tatom : x;
+                counts[p * bstride + q]++;
             }
         }
         if (oom)
@@ -893,7 +936,7 @@ xorbit_t *xorbit_build(const plan_t *pl)
                 if (xb_row_has_atom(&rows[ob], (int)nbits_in + m))
                     s->bit_atoms[ob][w++] = m; /* temp m -> atom m */
             for (long q = 0; q < nbits_in; q++)
-                if (has[ob * nbits_in + q])
+                if (has[ob * bstride + q])
                     s->bit_atoms[ob][w++] = ntemps + (int)q;
             assert(w == nt + nq);
         }
@@ -901,7 +944,7 @@ xorbit_t *xorbit_build(const plan_t *pl)
         for (long q = 0; q < nbits_in; q++) {
             int nu = 0;
             for (long ob = 0; ob < nbits_out; ob++)
-                if (has[ob * nbits_in + q])
+                if (has[ob * bstride + q])
                     nu++;
             s->inbit_nusers[q] = nu;
             s->inbit_users[q] = XB_MALLOC((size_t)nu * sizeof(int));
@@ -911,7 +954,7 @@ xorbit_t *xorbit_build(const plan_t *pl)
             }
             nu = 0;
             for (long ob = 0; ob < nbits_out; ob++)
-                if (has[ob * nbits_in + q])
+                if (has[ob * bstride + q])
                     s->inbit_users[q][nu++] = (int)ob;
             qsort(s->inbit_users[q], (size_t)nu, sizeof(int), xb_cmp_bj);
         }
@@ -985,8 +1028,10 @@ int xorbit_need_regs(isa_t isa, const plan_t *pl, int U)
 {
     (void)isa;
     /* n_out*U accumulators + inreg + r1 + r2 + mask1. The nibble
-     * tables are dead on this path. */
-    return pl->n_out * U + 4;
+     * tables are dead on this path.
+     * Nested CSE (track A3): +1 for temp-of-temp live range
+     * (conservative; see xorsched_need_regs). */
+    return pl->n_out * U + 5;
 }
 
 /* ---- static cost model for the bit-program twin ----

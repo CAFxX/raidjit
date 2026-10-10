@@ -6,14 +6,15 @@
  * three backends consume it. All CSE/scheduling happens here, at plan
  * time -- the emitters just walk the program.
  *
- * Algorithm (greedy flat pair-CSE):
+ * Algorithm (greedy pair-CSE with nesting, track A3):
  *  1. Deduplicate identical matrix rows (duplicates become vector moves).
- *  2. Repeatedly extract the most co-occurring unordered INPUT pair
- *     (a,b) across unique rows into a temp t_k = in_a ^ in_b, replacing
- *     the pair in every row containing both. Stops when the best pair
- *     occurs in < 2 rows or 1024 temps are reached. Temps are flat pairs
- *     of inputs only -- never nested (keeps the live temp set at 2 and
- *     the register-pressure formula exact).
+ *  2. Repeatedly extract the most co-occurring unordered atom pair
+ *     (X,Y) across unique rows into a temp t_k = X^Y, replacing
+ *     the pair in every row containing both. Atoms are inputs or
+ *     earlier temps, so t2 = t1^c nesting arises naturally when
+ *     (t1,c) co-occurs. Stops when the best pair occurs in < 2 rows
+ *     or 1024 temps are reached. The live temp set can exceed 2
+ *     with nesting; xorsched_need_regs adds a conservative +1.
  *  3. If no temp was extracted, there is no schedule (NULL).
  *
  * Each extracted temp provably replaces >= 1 XOR uop per user row, but
@@ -28,7 +29,10 @@
 extern "C" {
 #endif
 
-/* One extracted temp: t_k = in_a ^ in_b (a < b, input indices). */
+/* One extracted temp: t_k = X ^ Y where X, Y are atom ids (inputs
+ * or earlier temps; nested CSE, track A3). For xorsched: X,Y < n_in
+ * are inputs, X,Y >= n_in are temps. For xorbit: X,Y < nbits_in are
+ * input bits, X,Y >= nbits_in are temps. */
 typedef struct {
     int a, b;
     int nusers;
@@ -112,7 +116,7 @@ int xorsched_need_regs(isa_t isa, const plan_t *pl, int U);
  * turning the whole plan into a GF(2)-linear circuit: every output bit
  * is an XOR of input bits (bit k of input byte i). The scheduler runs
  * greedy pair-CSE at bit granularity over these incidence sets --
- * flat pairs of INPUT BITS only (never nested; A3 is the follow-on) --
+ * nested (temps can pair with input bits or other temps; track A3) --
  * deduplicating identical output-bit rows, and emits a straight-line
  * bit program (xorbit_t) with cross-row AND cross-coefficient sharing:
  * a pair of input bits shared between different coefficients'
