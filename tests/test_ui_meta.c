@@ -43,6 +43,10 @@ static int page_isa_ok(const char *twin, const char *isa)
         return !strcmp(isa, "neon") || !strcmp(isa, "sve") ||
                !strcmp(isa, "rvv");
     if (!strcmp(twin, "predtail")) return !strcmp(isa, "sve");
+    if (!strcmp(twin, "xorbit"))
+        /* BUG_t1_529: xorbit restricted to non-x86 (no fast vpshufb). */
+        return !strcmp(isa, "neon") || !strcmp(isa, "sve") ||
+               !strcmp(isa, "rvv");
     return 1; /* no ISA gate */
 }
 

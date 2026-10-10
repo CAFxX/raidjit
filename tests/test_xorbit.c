@@ -474,6 +474,12 @@ int main(void)
         for (int i = 0; i < nc; i++) {
             if (!cands[i].xorbit)
                 continue;
+            /* BUG_t1_529: xorbit must never be enumerated on x86
+             * (SSE/AVX2/AVX512) -- 5-8x worse than nibble there. */
+            CHECK(cands[i].isa != ISA_SSE && cands[i].isa != ISA_AVX2 &&
+                  cands[i].isa != ISA_AVX512,
+                  "gate: xorbit enumerated on x86 (isa=%d), BUG_t1_529",
+                  cands[i].isa);
             /* verify the gate: strict win required */
             long ps = xorbit_version_uops(pl.bit_sched, &pl,
                                           cands[i].isa, cands[i].U, 1,

@@ -1152,7 +1152,12 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
      * NOTE: prune.c's twin_dominates must pin the xorbit axis (like
      * xorsched/permi2b); that pin is a required follow-up (track A1
      * follow-up list) -- without it an xorbit twin could form a
-     * cross-axis pruning pair with a ternlog twin. */
+     * cross-axis pruning pair with a ternlog twin.
+     *
+     * BUG_t1_529: xorbit is 5-8x worse than the nibble path on x86
+     * (SSE/AVX2/AVX512) where vpshufb/pshufb is 1 uop. The twin is
+     * restricted to ISAs without a fast byte-shuffle (NEON/SVE/RVV)
+     * where bit-slicing may be competitive. */
     if ((pl->kind == P_MULACC || pl->kind == P_DELTA ||
          pl->kind == P_HORNER) &&
         pl->bit_sched) {
@@ -1162,8 +1167,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 out[i].xorsched)
                 continue;
             isa_t isa = out[i].isa;
-            if (isa != ISA_SSE && isa != ISA_AVX2 && isa != ISA_AVX512 &&
-                isa != ISA_NEON && isa != ISA_SVE && isa != ISA_RVV)
+            /* BUG_t1_529: xorbit is 5-8x worse than nibble on x86 where
+             * vpshufb/pshufb is 1 uop. Restrict to ISAs without fast
+             * byte-shuffle. */
+            if (isa != ISA_NEON && isa != ISA_SVE && isa != ISA_RVV)
                 continue;
             if (out[i].mul != MUL_NIBBLE)
                 continue;

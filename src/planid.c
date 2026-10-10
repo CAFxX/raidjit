@@ -821,6 +821,11 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
         if (cand->ternlog || cand->permi2b || cand->remat || cand->xorsched)
             SHAPE_BAD("unknown plan ID: xorbit combines with no other "
                       "body twin");
+        /* BUG_t1_529: xorbit is 5-8x worse than nibble on x86. */
+        if (cand->isa == ISA_SSE || cand->isa == ISA_AVX2 ||
+            cand->isa == ISA_AVX512)
+            SHAPE_BAD("unknown plan ID: xorbit not available on x86 "
+                      "(BUG_t1_529)");
     }
     if (cand->mshift) {
         if (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE)

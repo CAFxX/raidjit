@@ -132,8 +132,14 @@ int rj_ui_twin_valid(rj_twin_id_t twin, isa_t isa, plan_kind_t kind,
          * schedule (pl->xor_sched). */
         return xor_sched != 0;
     }
+    if (twin == RJ_TWIN_XORBIT) {
+        /* BUG_t1_529: xorbit is 5-8x worse than nibble on x86 where
+         * vpshufb/pshufb is 1 uop. plan.c restricts enumeration to
+         * NEON/SVE/RVV. */
+        return isa == ISA_NEON || isa == ISA_SVE || isa == ISA_RVV;
+    }
 
-    /* nt, remat, permi2b, xorbit, mshift, pipe: planid_cand_valid
+    /* nt, remat, permi2b, mshift, pipe: planid_cand_valid
      * covers their gates fully. */
     return 1;
 }
