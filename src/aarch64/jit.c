@@ -2119,6 +2119,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     cg.U = cand->U;
     cg.group = cg.U * cg.vl;
     cg.nt = cand->nt;
+    /* NEON nt pairs adjacent lanes with STNP, which needs U>=2. At U=1
+     * gen_stores() would silently fall through to temporal STR,
+     * violating the nt performance contract. The planner skips
+     * enumerating nt at U=1, but a pinned nt bypasses that guard:
+     * fail the build cleanly instead of degrading silently. */
+    if (cand->nt && !cg.is_sve && cand->U < 2) {
+        snprintf(err, errlen,
+                 "aarch64 backend: nt twin needs U>=2 on NEON "
+                 "(STNP pairs adjacent lanes)");
+        return -1;
+    }
     /* PRFM imm12 x 8: encodable distances are 0..32760, multiple of 8.
      * Fail the twin build cleanly on anything else (same rule as the
      * RVV Zicbop backend) -- never silently truncate the immediate
