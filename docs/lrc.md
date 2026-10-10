@@ -46,21 +46,26 @@ local rows (rows h..h+g−1). All three return NULL on bad parameters
   full rank), and at h ≥ 52 the global rows repeat with period 51.
   `lrc_new` rejects h > 50 for exactly this reason.
 
-## Local vs global recovery: the existing machinery already picks local
+## Local vs global recovery: explicit planner rule (2026-10-10)
 
-No planner/survivor change was needed (Step 2 verdict: **not needed**).
-For a recover op the A5 survivor path enumerates parity-row subsets and
-scores each with the **exact static signal** — the canonical version's
-real `(uops_per_byte, mem_per_byte)` from `jit_build_version`, no
-duplicated model. A single failure in a group offers the h global-row
-subsets (GF-multiply plans over ~k streams) against the one local-row
-subset (pure-XOR plan over r streams). The local subset strictly
-dominates on both axes, so the pareto shortlist keeps it and the
-static pick (`heuristic_select`, benchmarking off) prefers it. The
-measured pick is expected to prefer it as well, but benchmarks are
-postponed per the A6 brief, so that preference is unverified. The
-`is_today` anchor (a global row) stays shortlisted
-as the no-regression anchor; it only loses genuinely.
+The A5 survivor machinery *happened* to pick the local subset via
+cost-model dominance (the local row strictly dominates on both static
+axes). As of 2026-10-10, this is now an **explicit planner rule**, not
+a cost-model accident: `survivor_lrc_detect()` identifies LRC-shaped
+topologies by matrix structure, `survivor_lrc_local_cover()` computes
+the pure-local cover, and `survivor_select()` restricts to local
+subsets directly (bypassing the pareto shortlist), with fallback to
+the generic path if local subsets can't be built.
+
+Rationale: the emergent preference was fragile to benchmark noise,
+significance-gate fallback, and cost-model drift. The rule is robust
+to all three. See `hidden_files/lrc_locality_SPEC.md`.
+
+Note: the rule also fires for RAID6 single-data-failure (structural
+1-group detection: the P row is a pure-XOR row covering all disks).
+This is intended — P+XOR is structurally cheaper than Q+GF-multiply —
+but means benchmark mode can no longer select the Q-row subset for
+RAID6.
 
 Static cost (canonical version, single failure of disk 0; from
 `tests/test_lrc.c`, benchmark-off — benchmarks are postponed per the

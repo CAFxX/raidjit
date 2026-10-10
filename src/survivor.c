@@ -672,7 +672,7 @@ int survivor_lrc_local_cover(const topo_int_t *ti, const int *F, int nf,
             /* Failed data disk: its group's local row, which must
              * survive (not itself failed). */
             int g = group_of[d];
-            if (g < 0)
+            if (g < 0 || g >= ngroups)
                 return 0;
             row = local_row[g];
             needs_survive = 1;
