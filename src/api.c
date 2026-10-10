@@ -1110,15 +1110,18 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
         eff_pred = 1;
     }
     if (spec.tail.maskedtail) {
-        /* Same eligibility as rj_compile's install gate. */
+        /* Same eligibility as rj_compile's install gate: x86-64 AVX-512
+         * (P_XOR plain or GFNI) or RVV (base V; the backend enforces
+         * VLMAX <= 255). */
         int mt_ok =
-            build_cand.isa == ISA_AVX512 && !build_cand.nt &&
-            cpu.avx512f && cpu.avx512bw &&
-            ((pl.kind == P_XOR && !build_cand.ternlog &&
-              !build_cand.xorsched) ||
-             (build_cand.mul == MUL_GFNI && cpu.gfni &&
-              (pl.kind == P_MULACC || pl.kind == P_DELTA ||
-               pl.kind == P_HORNER)));
+            (build_cand.isa == ISA_AVX512 && !build_cand.nt &&
+             cpu.avx512f && cpu.avx512bw &&
+             ((pl.kind == P_XOR && !build_cand.ternlog &&
+               !build_cand.xorsched) ||
+              (build_cand.mul == MUL_GFNI && cpu.gfni &&
+               (pl.kind == P_MULACC || pl.kind == P_DELTA ||
+                pl.kind == P_HORNER)))) ||
+            (build_cand.isa == ISA_RVV);
         if (!mt_ok) {
             if (err && errlen)
                 snprintf(err, errlen,
