@@ -20,12 +20,12 @@ ports: p0=1.0 p1=1.0 p2=1.0 p3=1.0 p4=1.0 p5=1.0 p6=1.0 p7=1.0
 # with effective throughput captured by port contention.)
 # SIMPLIFICATION: use p0/p1 (0.5 each) to match the 2/cycle throughput.
 # The p5 sharing is second-order for our mixes.
-class ternlog uops=1.0: p0=0.5 p1=0.5
-class xor uops=1.0: p0=0.5 p1=0.5
+class ternlog uops=1.0: p0=0.5 p5=0.5
+class xor uops=1.0: p0=0.5 p5=0.5
 # VPSHUFB zmm: 1 uop, p5 (throughput 1.0)
 class shuffle uops=1.0: p5=1.0
 # No GFNI on SKX; class defined but unused (fallback)
-class gfni uops=1.0: p5=1.0
+class gfni uops=1.0: p0=1.0
 # VPCLMULQDQ zmm: 1 uop, p5 (throughput 1.0)
 class pclmul uops=1.0: p5=1.0
 class load uops=1.0: p2=0.5 p3=0.5

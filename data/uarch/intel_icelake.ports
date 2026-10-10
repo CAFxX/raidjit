@@ -17,14 +17,14 @@ ports: p0=1.0 p1=1.0 p2=1.0 p3=1.0 p4=1.0 p5=1.0 p6=1.0 p7=1.0
 
 # Instruction classes: port distribution (fractions sum to 1.0)
 # VPTERNLOGD zmm: 1 uop, p0/p1 (uops.info: throughput 0.5)
-class ternlog uops=1.0: p0=0.5 p1=0.5
+class ternlog uops=1.0: p0=0.5 p5=0.5
 # VPXORD zmm: 1 uop, p0/p1 (weight t_xor=0.50 => 2/cycle; p015 would be 3/cycle)
-class xor uops=1.0: p0=0.5 p1=0.5
+class xor uops=1.0: p0=0.5 p5=0.5
 # VPSHUFB zmm: 1 uop, p5 (uops.info: throughput 1.0)
 class shuffle uops=1.0: p5=1.0
 # VGF2P8AFFINEQB zmm: 1 uop, p5 (uops.info: throughput 1.0)
 # VGF2P8MULB zmm: 1 uop, p5 (uops.info: throughput 1.0)
-class gfni uops=1.0: p5=1.0
+class gfni uops=1.0: p0=1.0
 # VPCLMULQDQ zmm: 1 uop, p5 (uops.info: throughput 1.0)
 class pclmul uops=1.0: p5=1.0
 # VMOVDQA64 zmm load: 1 uop, p2/p3 (uops.info: throughput 0.5)
