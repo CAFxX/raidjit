@@ -608,3 +608,6 @@ $(BUILDDIR)/test_lrc: tests/test_lrc.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUIL
 
 $(BUILDDIR)/test_twin_audit: tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_pinned_negative: tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
