@@ -132,6 +132,13 @@ void em_vpternlog_mem(em_t *e, int vd, int s1, int b, int x, int sc, int disp,
                       unsigned imm, int vl);
 void em_vzero(em_t *e, int vd, int vl); /* vd ^= vd */
 void em_vzeroupper(em_t *e); /* VEX.128.0F 77: clear upper vector state */
+/* VPCLMULQDQ: zmm1 = per-128-bit-lane carryless multiply (EVEX.66.0F3A.W1
+ * 44 /r ib). imm selects the 64-bit halves (0x00 = lo*lo, 0x11 = hi*hi).
+ * Requires AVX512F + VPCLMULQDQ. */
+void em_vpclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm);
+/* VEXTRACTI32X4: xmm1 = 128-bit lane imm of zmm2 (EVEX.66.0F3A.W0 39 /r
+ * ib), zero-extended. Requires AVX512F. */
+void em_vextracti32x4(em_t *e, int vd, int vs, unsigned imm);
 
 /* --- legacy SSE encodings (no VEX; for the SSE ISA level) --- */
 void em_movdqa_ld_sse(em_t *e, int vd, int b, int x, int sc, int disp);
