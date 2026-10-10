@@ -61,7 +61,8 @@ double rj_ports_bottleneck(const rj_port_model_t *m,
         pressure[p] = 0.0;
 
     /* Accumulate port pressure: for each class, distribute its uops
-     * across ports per the class's distribution. */
+     * across ports per the class's distribution. mix[i] is in
+     * instructions/byte; multiply by uops_per_instr to get uops/byte. */
     for (i = 0; i < n; i++) {
         const rj_pm_class_t *c = classes[i];
         double w = mix[i];
@@ -69,6 +70,7 @@ double rj_ports_bottleneck(const rj_port_model_t *m,
 
         if (!c || w <= 0.0)
             continue;
+        w *= c->uops_per_instr; /* instr/byte -> uops/byte */
         for (q = 0; q < m->n_ports; q++)
             pressure[q] += w * c->dist[q];
     }

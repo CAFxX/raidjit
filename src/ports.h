@@ -21,11 +21,13 @@ typedef struct {
     double throughput;        /* uops/cycle (sustained) */
 } rj_pm_port_t;
 
-/* An instruction class: port distribution for one uop. */
+/* An instruction class: port distribution for one instruction. */
 typedef struct {
     char name[RJ_PM_MAX_NAME]; /* e.g. "ternlog", "shuffle" */
-    double dist[RJ_PM_MAX_PORTS]; /* fraction of uop on each port;
-                                  * sums to 1.0 */
+    double uops_per_instr;    /* uops per instruction (e.g. 2.0 for Zen4
+                               * 512-bit double-pumped, 1.0 for Intel) */
+    double dist[RJ_PM_MAX_PORTS]; /* fraction of the instruction's uops
+                                  * on each port; sums to 1.0 */
 } rj_pm_class_t;
 
 /* Complete port model for one microarchitecture. */
@@ -56,8 +58,10 @@ const rj_pm_class_t *rj_ports_find_class(const rj_port_model_t *m,
 /* Compute the port-pressure bottleneck (cycles/byte) for an
  * instruction mix.
  *
- * mix[i] = uops/byte of class classes[i] (parallel arrays, n entries).
- * Returns max_p ( sum_i mix[i] * dist_i[p] ) / throughput[p].
+ * mix[i] = instructions/byte of class classes[i] (parallel arrays, n
+ * entries). Each class's uops_per_instr converts to uops/byte.
+ * Returns max_p ( sum_i mix[i] * uops_per_instr[i] * dist_i[p] ) /
+ * throughput[p].
  *
  * This is the throughput-bound estimate: it assumes perfect OoO
  * scheduling and no frontend/memory bottlenecks (memory is handled

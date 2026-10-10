@@ -16,12 +16,27 @@ import re
 
 def parse_ports_file(path):
     """Parse a .ports file. Returns dict with uarch, ports, classes, scalars."""
+    # Limits (must match src/ports.h RJ_PM_MAX_*)
+    MAX_PORTS = 10
+    MAX_CLASSES = 16
+    MAX_NAME = 31
+    IDENT_RE = re.compile(r'^[A-Za-z0-9_]+$')
+
+    def check_name(name, what, lineno):
+        if len(name) > MAX_NAME:
+            raise ValueError(
+                f"{path}:{lineno}: {what} name '{name}' exceeds {MAX_NAME} chars")
+        if not IDENT_RE.match(name):
+            raise ValueError(
+                f"{path}:{lineno}: {what} name '{name}' must match [A-Za-z0-9_]+")
+
     uarch = None
     version = None
     ports = []  # list of (name, throughput)
-    classes = []  # list of (name, [(port, frac), ...])
+    classes = []  # list of (name, uops_per_instr, [(port_idx, frac), ...])
     scalars = {}  # name -> value
     port_index = {}  # name -> idx
+    seen_uarch = set()
 
     with open(path) as f:
         for lineno, line in enumerate(f, 1):
@@ -30,35 +45,81 @@ def parse_ports_file(path):
                 continue
             if line.startswith('uarch:'):
                 uarch = line.split(':', 1)[1].strip()
+                check_name(uarch, 'uarch', lineno)
             elif line.startswith('version:'):
                 version = int(line.split(':', 1)[1].strip())
             elif line.startswith('ports:'):
                 for tok in line.split(':', 1)[1].strip().split():
                     name, val = tok.split('=')
+                    check_name(name, 'port', lineno)
+                    if name in port_index:
+                        raise ValueError(
+                            f"{path}:{lineno}: duplicate port '{name}'")
+                    tput = float(val)
+                    if tput <= 0.0:
+                        raise ValueError(
+                            f"{path}:{lineno}: port '{name}' throughput "
+                            f"must be > 0 (got {tput})")
+                    if len(ports) >= MAX_PORTS:
+                        raise ValueError(
+                            f"{path}:{lineno}: too many ports "
+                            f"(max {MAX_PORTS})")
                     port_index[name] = len(ports)
-                    ports.append((name, float(val)))
+                    ports.append((name, tput))
             elif line.startswith('class '):
                 rest = line[len('class '):].strip()
-                name, distrs = rest.split(':', 1)
-                name = name.strip()
+                # Format: class <name> [uops=<n>]: <port>=<frac> ...
+                if ':' not in rest:
+                    raise ValueError(
+                        f"{path}:{lineno}: class line missing ':'")
+                head, distrs = rest.split(':', 1)
+                head = head.strip()
+                # Parse optional uops=<n> from head
+                uops_per_instr = 1.0
+                name_parts = []
+                for tok in head.split():
+                    if tok.startswith('uops='):
+                        uops_per_instr = float(tok[5:])
+                        if uops_per_instr <= 0.0:
+                            raise ValueError(
+                                f"{path}:{lineno}: uops must be > 0")
+                    else:
+                        name_parts.append(tok)
+                name = ' '.join(name_parts).strip()
+                check_name(name, 'class', lineno)
+                # Check duplicate class names
+                if any(c[0] == name for c in classes):
+                    raise ValueError(
+                        f"{path}:{lineno}: duplicate class '{name}'")
+                if len(classes) >= MAX_CLASSES:
+                    raise ValueError(
+                        f"{path}:{lineno}: too many classes "
+                        f"(max {MAX_CLASSES})")
                 dist = []
                 for tok in distrs.strip().split():
                     pname, frac = tok.split('=')
                     if pname not in port_index:
                         raise ValueError(
                             f"{path}:{lineno}: unknown port '{pname}'")
-                    dist.append((port_index[pname], float(frac)))
+                    fval = float(frac)
+                    if fval < 0.0 or fval > 1.0:
+                        raise ValueError(
+                            f"{path}:{lineno}: fraction for '{pname}' "
+                            f"must be in [0,1] (got {fval})")
+                    dist.append((port_index[pname], fval))
                 # Validate fractions sum to 1.0
                 total = sum(f for _, f in dist)
                 if abs(total - 1.0) > 1e-6:
                     raise ValueError(
                         f"{path}:{lineno}: class '{name}' fractions sum to "
                         f"{total}, not 1.0")
-                classes.append((name, dist))
+                classes.append((name, uops_per_instr, dist))
             elif line.startswith('scalar '):
                 rest = line[len('scalar '):].strip()
                 name, val = rest.split('=')
-                scalars[name.strip()] = float(val)
+                name = name.strip()
+                check_name(name, 'scalar', lineno)
+                scalars[name] = float(val)
             else:
                 raise ValueError(f"{path}:{lineno}: unrecognized line: {line}")
 
@@ -68,7 +129,6 @@ def parse_ports_file(path):
         raise ValueError(f"{path}: unsupported version {version}")
     if not ports:
         raise ValueError(f"{path}: no ports defined")
-    # Validate all classes reference valid port indices (done above)
     return {
         'uarch': uarch,
         'ports': ports,
@@ -97,15 +157,15 @@ def generate(models, out_path):
             for name, tput in m['ports']:
                 out.write(f'    {{"{name}", {tput}}},\n')
             out.write("};\n")
-            # Classes
+            # Classes (with uops_per_instr)
             out.write(f"static const rj_pm_class_t pm_classes_{ident}[] = {{\n")
-            for cname, dist in m['classes']:
-                # Build dist array in port order
-                darr = [0.0] * len(m['ports'])
+            for cname, uops, dist in m['classes']:
+                # Build dist array in port order (RJ_PM_MAX_PORTS=10)
+                darr = [0.0] * 10
                 for pidx, frac in dist:
                     darr[pidx] = frac
                 dstr = ", ".join(f"{v:.4f}" for v in darr)
-                out.write(f'    {{"{cname}", {{{dstr}}}}},\n')
+                out.write(f'    {{"{cname}", {uops:.1f}, {{{dstr}}}}},\n')
             out.write("};\n")
             # Model struct
             n_ports = len(m['ports'])
@@ -118,20 +178,20 @@ def generate(models, out_path):
             out.write("    {\n")
             for name, tput in m['ports']:
                 out.write(f'        {{"{name}", {tput}}},\n')
-            # Pad to RJ_PM_MAX_PORTS
+            # Pad to RJ_PM_MAX_PORTS (10)
             for _ in range(10 - n_ports):
                 out.write('        {"", 0.0},\n')
             out.write("    },\n")
             out.write(f"    {n_classes},  /* n_classes */\n")
             out.write("    {\n")
-            for cname, dist in m['classes']:
-                darr = [0.0] * 8
+            for cname, uops, dist in m['classes']:
+                darr = [0.0] * 10
                 for pidx, frac in dist:
                     darr[pidx] = frac
                 dstr = ", ".join(f"{v:.4f}" for v in darr)
-                out.write(f'        {{"{cname}", {{{dstr}}}}},\n')
+                out.write(f'        {{"{cname}", {uops:.1f}, {{{dstr}}}}},\n')
             for _ in range(16 - n_classes):
-                out.write('        {"", {0}},\n')
+                out.write('        {"", 0.0, {0}},\n')
             out.write("    },\n")
             out.write(f"    {s.get('vec_bw', 3.5)},  /* vec_bw */\n")
             out.write(f"    {s.get('mem_cpb', 0.015625)},  /* mem_cpb */\n")

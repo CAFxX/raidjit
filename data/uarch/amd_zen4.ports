@@ -18,21 +18,21 @@ ports: fp0=1.0 fp1=1.0 fp2=1.0 fp3=1.0 agu0=1.0 agu1=1.0
 
 # VPTERNLOGD zmm: 2 uops, all FP pipes (weight 0.50 => 2 instr/cycle =
 # 4 uops/cycle on 4 pipes)
-class ternlog: fp0=0.25 fp1=0.25 fp2=0.25 fp3=0.25
+class ternlog uops=2.0: fp0=0.25 fp1=0.25 fp2=0.25 fp3=0.25
 # VPXORD zmm: 2 uops, all FP pipes
-class xor: fp0=0.25 fp1=0.25 fp2=0.25 fp3=0.25
+class xor uops=2.0: fp0=0.25 fp1=0.25 fp2=0.25 fp3=0.25
 # VPSHUFB zmm: 2 uops, shuffle pipes only (FP2/FP3) => 1 instr/cycle
 # (weight 1.00)
-class shuffle: fp2=0.5 fp3=0.5
+class shuffle uops=2.0: fp2=0.5 fp3=0.5
 # VGF2P8AFFINEQB/MULB zmm: 2 uops, FP2/FP3 (weight 1.00 => 1 instr/cycle)
-class gfni: fp2=0.5 fp3=0.5
+class gfni uops=2.0: fp2=0.5 fp3=0.5
 # VPCLMULQDQ zmm: 2 uops, FP2/FP3 (est.; weight n/a — new class)
-class pclmul: fp2=0.5 fp3=0.5
+class pclmul uops=2.0: fp2=0.5 fp3=0.5
 # 64B load: 2 uops (2x32B), AGU pipes (weight 1.00 => 1 instr/cycle)
-class load: agu0=0.5 agu1=0.5
+class load uops=2.0: agu0=0.5 agu1=0.5
 # 64B store: 2 uops + addr
-class store: agu0=0.5 agu1=0.5
-class gpr: fp0=1.0
+class store uops=2.0: agu0=0.5 agu1=0.5
+class gpr uops=2.0: fp0=1.0
 
 scalar vec_bw=6.0
 scalar mem_cpb=0.015625

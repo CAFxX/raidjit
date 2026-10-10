@@ -8,14 +8,14 @@ version: 1
 
 ports: any=3.5
 
-class ternlog: any=1.0
-class xor: any=1.0
-class shuffle: any=1.0
-class gfni: any=1.0
-class pclmul: any=1.0
-class load: any=1.0
-class store: any=1.0
-class gpr: any=1.0
+class ternlog uops=1.0: any=1.0
+class xor uops=1.0: any=1.0
+class shuffle uops=1.0: any=1.0
+class gfni uops=1.0: any=1.0
+class pclmul uops=1.0: any=1.0
+class load uops=1.0: any=1.0
+class store uops=1.0: any=1.0
+class gpr uops=1.0: any=1.0
 
 scalar vec_bw=3.5
 scalar mem_cpb=0.015625

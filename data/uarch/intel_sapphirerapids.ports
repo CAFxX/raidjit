@@ -14,17 +14,17 @@ ports: p0=1.0 p1=1.0 p2=1.0 p3=1.0 p4=1.0 p5=1.0 p6=1.0 p7=1.0 p8=1.0 p9=1.0
 
 # SPR has 10 ports (added p8/p9 for AMX, not used here)
 # VPTERNLOGD zmm: p0/p1 (throughput 0.5)
-class ternlog: p0=0.5 p1=0.5
-class xor: p0=0.5 p1=0.5
+class ternlog uops=1.0: p0=0.5 p1=0.5
+class xor uops=1.0: p0=0.5 p1=0.5
 # VPSHUFB zmm: p5 (throughput 1.0)
-class shuffle: p5=1.0
+class shuffle uops=1.0: p5=1.0
 # VGF2P8AFFINEQB/MULB zmm: p5 (throughput 1.0)
-class gfni: p5=1.0
+class gfni uops=1.0: p5=1.0
 # VPCLMULQDQ zmm: p5 (throughput 1.0; SPR may do 2/cycle — conservative 1.0)
-class pclmul: p5=1.0
-class load: p2=0.5 p3=0.5
-class store: p4=0.5 p7=0.5
-class gpr: p6=1.0
+class pclmul uops=1.0: p5=1.0
+class load uops=1.0: p2=0.5 p3=0.5
+class store uops=1.0: p4=0.5 p7=0.5
+class gpr uops=1.0: p6=1.0
 
 scalar vec_bw=4.0
 scalar mem_cpb=0.0078125
