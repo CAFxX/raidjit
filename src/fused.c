@@ -292,6 +292,11 @@ static void fused_driver_call(const struct rj_fused *f,
     assert(len >= 1);
     int nops = f->nops;
     size_t tile = f->tile;
+    /* REDUX crc_fold invariant: tile is a multiple of 16, so per-tile
+     * partial chunks only occur at the final len%16 bytes (handled
+     * driver-side after the loop). rj_tile_select guarantees this
+     * (power of two >= 4096); assert the coupling. */
+    assert(!f->crc_fold || tile % 16 == 0);
 
     const void *ftin[RJ_FUSED_MAX_FLAT];
     void *ftout[RJ_FUSED_MAX_FLAT];

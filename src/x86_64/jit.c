@@ -2639,6 +2639,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                      "x86_64 backend: crc_fold=1 requires ISA_AVX512");
             return -1;
         }
+        /* Noop plans have no vector body to fold into; the exit
+         * state-stores would write uninitialized registers. */
+        if (pl->noop) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 incompatible with noop");
+            return -1;
+        }
         if (cand->mul != MUL_NIBBLE && cand->mul != MUL_GFNI) {
             snprintf(err, errlen,
                      "x86_64 backend: crc_fold=1 requires MUL_NIBBLE or "

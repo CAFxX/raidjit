@@ -381,7 +381,8 @@ static void test_enumeration(void)
                 if (lmul <= 8)
                     seen[lmul] = 1;
                 int need = plan_need_regs(ISA_RVV, out[i].mul, &pl,
-                                          out[i].U, out[i].remat, 0, 0) *
+                                          out[i].U, out[i].remat,
+                                          out[i].pipe, 0, out[i].crc_fold) *
                            lmul;
                 CHECK(need <= 32, "cand %d: U=%d lmul=%d needs %d regs",
                       i, out[i].U, lmul, need);
@@ -421,7 +422,8 @@ static void test_enumeration(void)
                 if (lmul > 1)
                     seen_lmul = 1;
                 int need = plan_need_regs(ISA_RVV, out[i].mul, &pl,
-                                          out[i].U, out[i].remat, 0, 0) *
+                                          out[i].U, out[i].remat,
+                                          out[i].pipe, 0, out[i].crc_fold) *
                            lmul;
                 CHECK(need <= 32, "cand %d: U=%d lmul=%d needs %d regs",
                       i, out[i].U, lmul, need);
