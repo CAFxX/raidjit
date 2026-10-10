@@ -667,18 +667,22 @@ int survivor_lrc_local_cover(const topo_int_t *ti, const int *F, int nf,
     for (int f = 0; f < nf; f++) {
         int d = F[f];
         int row = -1;
+        int needs_survive = 0;
         if (d < nd) {
-            /* Failed data disk: its group's local row. */
+            /* Failed data disk: its group's local row, which must
+             * survive (not itself failed). */
             int g = group_of[d];
             if (g < 0)
                 return 0;
             row = local_row[g];
+            needs_survive = 1;
         } else if (d < nd + np) {
             /* Failed parity disk: if it's a local row, recompute from
              * its group (local, pure XOR); if it's a global row,
              * recompute from data (generic, not local). The failed
              * row itself is forced into the cover (survivor_enumerate
-             * forces failed parity rows). */
+             * forces failed parity rows); it needs no survival check
+             * -- it is the recompute target, not an equation source. */
             int pj = d - nd;
             int is_local_row = 0;
             for (int gg = 0; gg < ngroups; gg++)
@@ -687,20 +691,20 @@ int survivor_lrc_local_cover(const topo_int_t *ti, const int *F, int nf,
             if (!is_local_row)
                 return 0; /* global parity: generic path */
             row = pj;
+            needs_survive = 0;
         } else {
             return 0; /* out of range (shouldn't happen post-validation) */
         }
-        /* The covering row must survive (not itself failed) and be
-         * distinct (one row per failure). */
-        int failed = 0;
-        for (int k = 0; k < nf; k++)
-            if (F[k] == nd + row)
-                failed = 1;
-        if (failed)
-            return 0;
+        /* Distinctness: one row per failure. */
         for (int k = 0; k < ncover; k++)
             if (cover_rows[k] == row)
                 return 0; /* two failures, one local row */
+        /* Survival: data-failure covering rows must not be failed. */
+        if (needs_survive) {
+            for (int k = 0; k < nf; k++)
+                if (F[k] == nd + row)
+                    return 0;
+        }
         cover_rows[ncover++] = row;
     }
     /* Sort ascending (insertion; ncover <= nf, tiny). */
