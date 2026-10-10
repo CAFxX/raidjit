@@ -164,9 +164,9 @@ static void test_remat_case(const char *name, rj_topology *t, int U,
     if (expect_ntriv >= 0)
         CHECK(ntriv == expect_ntriv, "%s: ntriv=%d, expected %d", name,
               ntriv, expect_ntriv);
-    int need = plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1, 0);
+    int need = plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1, 0, 0);
     CHECK(need <= 32, "%s: remat needs %d regs > 32", name, need);
-    int need_persist = plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0, 0);
+    int need_persist = plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0, 0, 0);
     printf("info %s: persistent needs %d regs, remat needs %d regs\n",
            name, need_persist, need);
 
@@ -292,9 +292,9 @@ static void test_planner_twin(void)
             for (int li = 0; li < 4; li++) {
                 int lmul = lmuls[li];
                 int need_p =
-                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0, 0) * lmul;
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0, 0, 0) * lmul;
                 int need_r =
-                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1, 0) * lmul;
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1, 0, 0) * lmul;
                 int want = (need_p > 32 && need_r <= 32);
                 int found = 0;
                 for (int i = 0; i < n; i++)
@@ -337,9 +337,9 @@ static void test_planner_twin(void)
             for (int li = 0; li < 4; li++) {
                 int U = Us63[ui], lmul = lmuls63[li];
                 int need_p =
-                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0, 0) * lmul;
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 0, 0, 0) * lmul;
                 int need_r =
-                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1, 0) * lmul;
+                    plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, U, 1, 0, 0) * lmul;
                 int want = (need_p > 32 && need_r <= 32);
                 int found = 0;
                 for (int i = 0; i < n; i++)
@@ -387,9 +387,9 @@ static void test_build_rejected(void)
         rj_topo_free(t);
         return;
     }
-    CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 1, 0) == 38,
+    CHECK(plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 1, 0, 0) == 38,
           "remat U=8 need=%d, want 38",
-          plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 1, 0));
+          plan_need_regs(ISA_RVV, MUL_NIBBLE, &pl, 8, 1, 0, 0));
     rj_cpu_info cpu;
     rj_cpu_detect(&cpu);
     rj_options o;

@@ -81,8 +81,8 @@ int plan_any_nontrivial(const plan_t *pl)
     return 0; /* P_XOR: all-{0,1} by construction */
 }
 
-int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
-                   int pipe)
+static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
+                                int U, int remat, int pipe)
 {
     int n_out = pl->n_out;
     if (isa == ISA_PEXT) {
@@ -249,6 +249,23 @@ int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
      * separate t temp, RVV stages inputs into vd0..vd0+U-1, already
      * counted in (n_out+1)*U, so no extra register is needed. */
     return (n_out + 1) * U;
+}
+
+int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
+                   int pipe, int maskedtail)
+{
+    int n = plan_need_regs_inner(isa, mul, pl, U, remat, pipe);
+    if (maskedtail) {
+        /* RVV masked-tail twin (built by api.c from the winning
+         * candidate, never enumerated by plan_candidates): v0 is
+         * reserved as the dedicated mask register, shifting the whole
+         * vector map up by one LMUL-group. Only ISA_RVV builds
+         * maskedtail twins on this map; any other ISA here is a caller
+         * bug. */
+        assert(isa == ISA_RVV);
+        n += 1;
+    }
+    return n;
 }
 
 int isa_vl(isa_t isa)
@@ -818,7 +835,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int nU = 8;
             for (int ui = 0; ui < nU && n < maxout; ui++) {
                 int U = Us[ui];
-                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0);
+                int need = plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
                 if (need > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
@@ -832,9 +849,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int ui = 0; ui < nU && n < maxout; ui++) {
                     int U = Us[ui];
                     int need_normal =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0);
                     int need_remat =
-                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0);
+                        plan_need_regs(isa, MUL_NIBBLE, pl, U, 1, 0, 0);
                     if (need_normal <= nregs)
                         continue;
                     if (need_remat > nregs)
@@ -885,7 +902,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 for (int li = 0; li < 4 && n < maxout; li++) {
                     int U = Us[ui];
                     int lmul = lmuls[li];
-                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0) *
+                    int need = plan_need_regs(ISA_RVV, muls[mi], pl, U, 0, 0, 0) *
                                lmul;
                     if (need > nregs)
                         continue;
@@ -908,10 +925,10 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                         int U = Us[ui];
                         int lmul = lmuls[li];
                         int need_normal =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 0, 0, 0) *
                             lmul;
                         int need_remat =
-                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0) *
+                            plan_need_regs(ISA_RVV, MUL_NIBBLE, pl, U, 1, 0, 0) *
                             lmul;
                         if (need_normal <= nregs)
                             continue;
@@ -950,7 +967,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
         if (pl->kind == P_XOR) {
             for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                 int U = Us[ui];
-                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0) > nregs)
+                if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0) > nregs)
                     continue;
                 out[n++] = (cand_t){.isa = isa, .mul = MUL_NIBBLE, .U = U};
             }
@@ -974,7 +991,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     /* Exact backend register need (accumulators n_out*U
                      * plus the backend's temp/table registers); see
                      * plan_need_regs. */
-                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0);
+                    int need = plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0);
                     if (need > nregs)
                         continue;
                     out[n++] = (cand_t){.isa = isa, .mul = muls[mi], .U = U};
@@ -996,9 +1013,9 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     for (unsigned ui = 0; ui < 8 && n < maxout; ui++) {
                         int U = Us[ui];
                         int need_normal =
-                            plan_need_regs(isa, muls[mi], pl, U, 0, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 0, 0, 0);
                         int need_remat =
-                            plan_need_regs(isa, muls[mi], pl, U, 1, 0);
+                            plan_need_regs(isa, muls[mi], pl, U, 1, 0, 0);
                         if (need_normal <= nregs)
                             continue; /* normal already fits; remat pointless */
                         if (need_remat > nregs)
@@ -1165,7 +1182,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             /* Pressure filter: the twin needs one more live register
              * (the multishift control) than plan_need_regs models; keep
              * the +1 in lockstep with jit_build_version's want_regs. */
-            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0) + 1 >
+            if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, pl, U, 0, 0, 0) + 1 >
                 isa_nregs(ISA_AVX512))
                 continue;
             /* Static uop gate (per (i,u) split): the multishift split
@@ -1234,7 +1251,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             int lmul = 1;
             if (isa == ISA_RVV && out[i].lmul)
                 lmul = out[i].lmul;
-            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1) *
+            if (plan_need_regs(isa, out[i].mul, pl, out[i].U, 0, 1, 0) *
                     lmul >
                 isa_nregs(isa))
                 continue;

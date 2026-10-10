@@ -82,15 +82,17 @@ typedef struct {
                    * compile-time benchmark decides between tail variants
                    * empirically. */
     int maskedtail; /* 1 = length-dispatch twin: replace the scalar tail
-                   * with a masked AVX-512 vector tail (x86-64 only, via
-                   * opmask k1; track B1x86, SOTA item 14). Serves tail
-                   * lengths only (TAIL_MASKED, dispatch.h); the scalar
-                   * general variant defers to it when it is installed.
-                   * Disjoint from notail/predtail: a version is never
-                   * both. Never set by plan_candidates: api.c builds the
-                   * twin from the winning AVX-512 candidate after
-                   * selection, gated by its own tail-duel benchmark
-                   * (bench_tail_duel, src/bench.c). */
+                   * with a masked vector tail -- x86-64 via opmask k1
+                   * (track B1x86, SOTA item 14), RISC-V via v0-masked
+                   * loads/stores (unrolled full-VL tail; the backend
+                   * reserves v0 by shifting the vector map up one
+                   * LMUL-group). Serves tail lengths only (TAIL_MASKED,
+                   * dispatch.h); the scalar general variant defers to it
+                   * when it is installed. Disjoint from notail/predtail:
+                   * a version is never both. Never set by
+                   * plan_candidates: api.c builds the twin from the
+                   * winning candidate after selection, gated by its own
+                   * tail-duel benchmark (bench_tail_duel, src/bench.c). */
     int permi2b; /* 1 = P_MULACC/P_DELTA nibble twin: look the nibbles up
                    * with VPERMI2B (AVX512_VBMI) instead of the two-load
                    * VPSHUFB ping-pong (track B2, SOTA item 15). The two
@@ -315,9 +317,15 @@ int isa_vl(isa_t isa); /* vector length in bytes */
  * input temp, so pipe shapes need more registers than their plain
  * twins; pipe=1 with an unsupported (kind, mul, remat) combination
  * returns INT_MAX (the backend rejects those builds cleanly, and the
- * planner's filter drops them). */
+ * planner's filter drops them). maskedtail adds one logical register
+ * for the RVV masked-tail twin's v0 mask reservation (the backend
+ * shifts the whole vector map up one LMUL-group); it is only
+ * meaningful with isa == ISA_RVV (any other ISA with maskedtail=1 is
+ * a caller bug, caught by assert). The api.c twin builder passes the
+ * winner's maskedtail flag so the backend's exactness asserts
+ * (vneed == plan_need_regs(...)*lmul) hold for the twin. */
 int plan_need_regs(isa_t isa, mul_t mul, const plan_t *pl, int U, int remat,
-                   int pipe);
+                   int pipe, int maskedtail);
 
 /* Per-microarchitecture port-pressure weights for the static cost
  * model (I3). Each t_* is cycles per instruction -- the reciprocal

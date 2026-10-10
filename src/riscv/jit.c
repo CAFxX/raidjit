@@ -140,6 +140,16 @@ typedef struct {
     int notail;      /* length-dispatch twin: omit the strip-mining /
                     * single-chunk remainder tail entirely; only valid
                     * for len % group == 0 (see docs/length_dispatch.md) */
+    int maskedtail;  /* length-dispatch twin: replace the strip-mining
+                    * remainder loop with an unrolled full-VL masked tail
+                    * (TAIL_MASKED). v0 is reserved as the dedicated mask
+                    * register: the whole vector map shifts up by one
+                    * LMUL-group (see vreg()). Disjoint from notail (and
+                    * from the SVE-only predtail, rejected at build). */
+    int masked_mem;  /* in-tail flag: data loads/stores go through the
+                    * vm=0 masked forms (v0.t). Table loads (c_ldtab/
+                    * c_ldtab1) stay unmasked: pool entries are replicated
+                    * to full VLMAX and vl == VLMAX in the tail. */
     size_t vlenb;    /* VLEN in bytes on this machine (vlenb CSR), read
                     * once at build time; sizes the replicated
                     * constant-pool table entries (see pool_get) */
@@ -208,9 +218,27 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
 
 /* ---------------- cost-counting emit wrappers ---------------- */
 
+/* Logical-to-physical vector register map. Logical register r (as
+ * counted by plan_need_regs) maps to the lmul-aligned physical group
+ * head r*lmul; the maskedtail twin shifts the whole map up by one
+ * LMUL-group to reserve v0 as the dedicated mask register. Every
+ * vector register reference in the backend must go through this
+ * helper -- raw r*lmul arithmetic would silently alias v0 under
+ * maskedtail, and a masked load/store with vd == v0 under ma
+ * (mask-agnostic) lets hardware overwrite masked-off lanes of v0 with
+ * 1s, destroying the mask mid-chunk. When maskedtail == 0 this is the
+ * identity map (r*lmul), so non-maskedtail codegen is byte-identical. */
+static int vreg(cg_t *cg, int r)
+{
+    return r * cg->lmul + (cg->maskedtail ? cg->lmul : 0);
+}
+
 static void c_vle(cg_t *cg, int vd, int rs1)
 {
-    em_vle8(&cg->em, vd, rs1);
+    if (cg->masked_mem)
+        em_vle8_v_m(&cg->em, vd, rs1); /* v0.t: inactive lanes don't fault */
+    else
+        em_vle8(&cg->em, vd, rs1);
     cg->uops += 1;
     /* Nominal data movement scales with LMUL: one vector load moves a
      * full vl=VLMAX strip (lmul x NOMVL nominal bytes). Table loads
@@ -229,7 +257,10 @@ static void c_vse(cg_t *cg, int vs, int rs1)
      * ignore the hint it executes as zero uops. */
     if (cg->cand.nt)
         em_ntl_all(&cg->em);
-    em_vse8(&cg->em, vs, rs1);
+    if (cg->masked_mem)
+        em_vse8_v_m(&cg->em, vs, rs1); /* v0.t: inactive lanes not stored */
+    else
+        em_vse8(&cg->em, vs, rs1);
     cg->uops += 1;
     /* As c_vle: nominal data movement scales with LMUL. */
     cg->mem += NOMVL * cg->lmul;
@@ -538,14 +569,14 @@ static void pipe_horner_compute(cg_t *cg, int col, int nu)
         /* acc = d0: plain moves from the staged dataset */
         for (int j = 0; j < n_out; j++)
             for (int u = 0; u < nu; u++)
-                c_vmv(cg, (j * U + u) * cg->lmul,
+                c_vmv(cg, vreg(cg, j * U + u),
                       cg->vd0 + u * cg->lmul);
         return;
     }
     for (int j = 0; j < n_out; j++) {
         uint8_t c = pl->horner_c[j];
         for (int u = 0; u < nu; u++) {
-            int acc = (j * U + u) * cg->lmul, vd = cg->vd0 + u * cg->lmul;
+            int acc = vreg(cg, j * U + u), vd = cg->vd0 + u * cg->lmul;
             if (c == 1) {
                 c_vxor(cg, acc, acc, vd);
             } else if (c == 0) {
@@ -609,7 +640,7 @@ static void gen_body_pipe(cg_t *cg)
                 }
             if (first_col[j] < 0)
                 for (int u = 0; u < U; u++)
-                    c_vzero(cg, (j * U + u) * cg->lmul);
+                    c_vzero(cg, vreg(cg, j * U + u));
         }
     }
 
@@ -655,7 +686,7 @@ static void gen_body_pipe(cg_t *cg)
         c_ldptr(cg, T2, A1, j);
         em_add(e, T2, T2, T1);
         for (int u = 0; u < U; u++) {
-            c_vse(cg, (j * U + u) * cg->lmul, T2);
+            c_vse(cg, vreg(cg, j * U + u), T2);
             if (u < U - 1)
                 em_add(e, T2, T2, T0);
         }
@@ -769,7 +800,7 @@ static void mulacc_rows_c(cg_t *cg, int col, int ncols, const int *first_col,
             continue;
         int first = first_col && col == first_col[j];
         for (int u = 0; u < nu; u++) {
-            int acc = (j * U + u) * cg->lmul;
+            int acc = vreg(cg, j * U + u);
             int vd = cg->vd0 + u * cg->lmul;
             if (c == 1) {
                 if (first)
@@ -833,7 +864,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                     if (xs->urow_of[j] != uw)
                         continue;
                     for (int u = 0; u < nu; u++)
-                        c_vzero(cg, (j * U + u) * cg->lmul);
+                        c_vzero(cg, vreg(cg, j * U + u));
                 }
             }
             /* phase 1: temp formation + fan-out */
@@ -857,7 +888,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                     c_vxor(cg, cg->vd0, cg->vd0, cg->vd1);
                     for (int wi = 0; wi < xs->temps[k].nusers; wi++) {
                         int uw = xs->temps[k].users[wi];
-                        int acc = (xs->first_row[uw] * U + u) * cg->lmul;
+                        int acc = vreg(cg, xs->first_row[uw] * U + u);
                         if (xs->row_first[uw] == k)
                             c_vmv(cg, acc, cg->vd0);
                         else
@@ -885,13 +916,13 @@ static void gen_body(cg_t *cg, int nu, int win)
                     (nusers == 1 && xs->row_first[uw0] == xs->ntemps + i);
                 for (int u = 0; u < nu; u++) {
                     if (is_first) {
-                        int acc = (xs->first_row[uw0] * U + u) * cg->lmul;
+                        int acc = vreg(cg, xs->first_row[uw0] * U + u);
                         c_vle(cg, acc, T2);
                     } else {
                         c_vle(cg, cg->vd0, T2);
                         for (int wi = 0; wi < nusers; wi++) {
                             int uw = xs->in_users[i][wi];
-                            int acc = (xs->first_row[uw] * U + u) * cg->lmul;
+                            int acc = vreg(cg, xs->first_row[uw] * U + u);
                             if (xs->row_first[uw] == xs->ntemps + i)
                                 c_vmv(cg, acc, cg->vd0);
                             else
@@ -908,7 +939,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 if (j == xs->first_row[uw] || xs->row_first[uw] < 0)
                     continue;
                 for (int u = 0; u < nu; u++)
-                    c_vmv(cg, (j * U + u) * cg->lmul, (xs->first_row[uw] * U + u) * cg->lmul);
+                    c_vmv(cg, vreg(cg, j * U + u), vreg(cg, xs->first_row[uw] * U + u));
             }
         }
         } else {
@@ -924,7 +955,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 }
             if (first_in[j] < 0)
                 for (int u = 0; u < nu; u++)
-                    c_vzero(cg, (j * U + u) * cg->lmul);
+                    c_vzero(cg, vreg(cg, j * U + u));
         }
         for (int i = 0; i < n_in; i++) {
             int users[RJ_MAX_DISKS], nusers = 0;
@@ -939,11 +970,11 @@ static void gen_body(cg_t *cg, int nu, int win)
             for (int u = 0; u < nu; u++) {
                 if (nusers == 1 && i == first_in[users[0]]) {
                     /* first touch, single user: load straight into acc */
-                    c_vle(cg, (users[0] * U + u) * cg->lmul, T2);
+                    c_vle(cg, vreg(cg, users[0] * U + u), T2);
                 } else {
                     c_vle(cg, cg->vd0, T2);
                     for (int k = 0; k < nusers; k++) {
-                        int acc = (users[k] * U + u) * cg->lmul;
+                        int acc = vreg(cg, users[k] * U + u);
                         if (i == first_in[users[k]])
                             c_vmv(cg, acc, cg->vd0);
                         else
@@ -966,7 +997,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                 }
             if (first_col[j] < 0)
                 for (int u = 0; u < nu; u++)
-                    c_vzero(cg, (j * U + u) * cg->lmul);
+                    c_vzero(cg, vreg(cg, j * U + u));
         }
         for (int i = 0; i < n_in; i++) {
             int any = 0;
@@ -1012,7 +1043,7 @@ static void gen_body(cg_t *cg, int nu, int win)
             em_add(e, T2, T2, T1);
             c_prefetch_in(cg, T2);
             for (int u = 0; u < nu; u++) {
-                c_vle(cg, (j * U + u) * cg->lmul, T2);
+                c_vle(cg, vreg(cg, j * U + u), T2);
                 if (u < nu - 1)
                     em_add(e, T2, T2, T0);
             }
@@ -1062,7 +1093,7 @@ static void gen_body(cg_t *cg, int nu, int win)
             /* Degenerate: no inputs; accumulators stay zero. */
             for (int j = 0; j < n_out; j++)
                 for (int u = 0; u < nu; u++)
-                    c_vzero(cg, (j * U + u) * cg->lmul);
+                    c_vzero(cg, vreg(cg, j * U + u));
         }
         for (int i = 0; i < n_in; i++) {
             c_ldptr(cg, T2, A0, i);
@@ -1079,7 +1110,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                  * multiply-add. */
                 for (int j = 0; j < n_out; j++)
                     for (int u = 0; u < nu; u++)
-                        c_vmv(cg, (j * U + u) * cg->lmul, cg->vd0 + u * cg->lmul);
+                        c_vmv(cg, vreg(cg, j * U + u), cg->vd0 + u * cg->lmul);
                 continue;
             }
             for (int j = 0; j < n_out; j++) {
@@ -1101,7 +1132,7 @@ static void gen_body(cg_t *cg, int nu, int win)
                     c_ldtab1(cg, cg->mask, CK_NIBHI, c, win);
                 }
                 for (int u = 0; u < nu; u++) {
-                    int acc = (j * U + u) * cg->lmul, vd = cg->vd0 + u * cg->lmul;
+                    int acc = vreg(cg, j * U + u), vd = cg->vd0 + u * cg->lmul;
                     if (c == 1) {
                         c_vxor(cg, acc, acc, vd);
                     } else if (c == 0) {
@@ -1161,7 +1192,7 @@ static void gen_body(cg_t *cg, int nu, int win)
         c_ldptr(cg, T2, A1, j);
         em_add(e, T2, T2, T1);
         for (int u = 0; u < nu; u++) {
-            c_vse(cg, (j * U + u) * cg->lmul, T2);
+            c_vse(cg, vreg(cg, j * U + u), T2);
             if (u < nu - 1)
                 em_add(e, T2, T2, T0);
         }
@@ -1464,6 +1495,21 @@ static void c_beq_long(cg_t *cg, int rs1, int rs2, int lab)
     em_bind(e, skip);
 }
 
+/* Branch to lab if rs <= 0 (signed). The maskedtail twin's per-chunk
+ * skip spans the unrolled single-chunk body, which can exceed the
+ * B-type +-4 KiB range, so this is unconditionally the long form:
+ * blt x0, rs, skip falls through into the chunk when rs > 0, else
+ * jal x0, lab skips it. (blez is a pseudo-instruction for bge x0, rs;
+ * the blt-over-jal shape keeps one branch on the fall-through path.) */
+static void c_blez_long(cg_t *cg, int rs, int lab)
+{
+    em_t *e = &cg->em;
+    int skip = em_label(e);
+    em_blt(e, X0, rs, skip);
+    em_jal(e, X0, lab);
+    em_bind(e, skip);
+}
+
 /* Conditional branch to lab if rs1 != rs2. When the target label is
  * already bound (the counted loop's backward edge: cnt_lab is bound
  * before the body is emitted) and lies within the B-type +-4 KiB
@@ -1489,6 +1535,66 @@ static void c_bne_long(cg_t *cg, int rs1, int rs2, int lab)
     em_beq(e, rs1, rs2, skip);
     em_jal(e, X0, lab);
     em_bind(e, skip);
+}
+
+/* Masked tail twin (TAIL_MASKED): unrolled full-VL masked tail replacing
+ * the strip-mining remainder loop. Entered with A2 = remaining
+ * (0..U*VLMAX-1; the counted loop guarantees < U*VLMAX, and 0 when len
+ * is an exact multiple) and T1 = byte offset of the tail region.
+ *
+ *   vsetvli T0, x0, e8, m<lmul>, ta, ma   # T0 = vl = VLMAX (once)
+ *   A3 = A2                               # chunk-0 remaining
+ *   for u in 0..U-1 (unrolled at JIT time):
+ *       blez A3 -> next                   # skip chunks fully past the end
+ *       vid.v vd0                         # vd0[i] = i
+ *       vmslt.vx v0, vd0, A3              # v0[i] = (i < A3)
+ *       <gen_body(cg,1,0), data mem masked by v0>
+ *   next:
+ *       add T1, T1, T0                    # offset += VLMAX (even if skipped)
+ *       sub A3, A3, T0                    # remaining -= VLMAX
+ *
+ * vl stays VLMAX throughout (no vl reduction); the mask selects active
+ * lanes. Table loads stay unmasked at win=0: vl is provably VLMAX and
+ * the pool entries are replicated to full VLMAX, so the vsetivli-16
+ * window is unnecessary. Only DATA loads/stores are masked
+ * (cg->masked_mem). Compute on masked-off lanes is don't-care;
+ * fully-masked chunks execute no memory ops, so nothing past the tail
+ * is ever touched (no fault, no over-write).
+ *
+ * vid.v targets vd0, never v0: V spec §16.9 raises illegal-insn when a
+ * vid.v destination group overlaps the mask register (v0) at LMUL > 1.
+ * vd0 is safe as the temp: every body writes it (data staging load)
+ * before any read, or leaves it untouched (P_XOR direct-accumulator
+ * path) -- it is never live-in to the body. vmslt.vx itself is
+ * unmasked (vm=1), so reading vd0 there is a pure
+ * read-before-body-clobber.
+ *
+ * A3/A4 are free caller-saved temps across gen_body (it clobbers
+ * T2-T5; T0 = vl, T1 = offset, T6 = pool base stay live). T0 still
+ * holds VLMAX after each gen_body (win=0 never reseeds vl). */
+static void gen_tail_masked(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    int U = cg->U;
+    em_vsetvli(e, T0, X0, VSEW8, cg->vlmul, 1, 1); /* T0 = vl = VLMAX */
+    cg->uops += 1;
+    em_addi(e, A3, A2, 0); /* A3 = remaining for chunk 0 */
+    cg->uops += 1;
+    for (int u = 0; u < U; u++) {
+        int next_lab = em_label(e);
+        c_blez_long(cg, A3, next_lab); /* A3 <= 0: skip the chunk */
+        em_vid_v(e, cg->vd0);          /* vd0[i] = i */
+        cg->uops += 1;
+        em_vmslt_vx(e, 0, cg->vd0, A3); /* v0[i] = (i < A3) */
+        cg->uops += 1;
+        cg->masked_mem = 1;
+        gen_body(cg, 1, 0);
+        cg->masked_mem = 0;
+        em_bind(e, next_lab);
+        em_add(e, T1, T1, T0); /* offset += VLMAX (even when skipped) */
+        em_sub(e, A3, A3, T0); /* remaining -= VLMAX */
+        cg->uops += 2;
+    }
 }
 
 static void gen_function(cg_t *cg)
@@ -1567,29 +1673,32 @@ static void gen_function(cg_t *cg)
         c_bne_long(cg, A4, X0, cnt_lab);  /* spans the body */
         /* notail twin: the counted loop consumed exactly len bytes
          * (dispatcher guarantees len % group == 0), so the remainder
-         * computation, strip-mining loop and single-chunk tail are
-         * not emitted at all. */
+         * computation and any tail are not emitted at all. */
         if (!cg->notail) {
             em_sub(e, A2, A2, T1);            /* A2 = remaining */
-            /* Remainder: remaining < U * VLMAX.
-             * Process in chunks of up to VLMAX bytes using the
-             * single-unroll body. vsetvli computes vl =
-             * min(VLMAX, remaining) in hardware, so no division is
-             * needed (the old strip-mining approach used divu for
-             * non-power-of-two U, and ran at degraded vl =
-             * remaining / U). vl can be < 16 here, so table loads
-             * keep their vsetivli-16 window (gen_body win=1). */
-            em_bind(e, loop_lab);
-            em_vsetvli(e, T0, A2, VSEW8, cg->vlmul, 1, 1); /* T0 = vl */
-            cg->uops += 1;
-            c_beq_long(cg, T0, X0, done_lab); /* vl == 0 => done */
-            if (cg->cand.rec_cf)
-                gen_body_rec_cf(cg, 1, 1);
-            else
-                gen_body(cg, 1, 1);
-            em_add(e, T1, T1, T0);             /* offset += vl */
-            em_sub(e, A2, A2, T0);            /* remaining -= vl */
-            em_jal(e, X0, loop_lab);          /* loop while remaining > 0 */
+            if (cg->maskedtail)
+                gen_tail_masked(cg);
+            else {
+                /* Remainder: remaining < U * VLMAX.
+                 * Process in chunks of up to VLMAX bytes using the
+                 * single-unroll body. vsetvli computes vl =
+                 * min(VLMAX, remaining) in hardware, so no division is
+                 * needed (the old strip-mining approach used divu for
+                 * non-power-of-two U, and ran at degraded vl =
+                 * remaining / U). vl can be < 16 here, so table loads
+                 * keep their vsetivli-16 window (gen_body win=1). */
+                em_bind(e, loop_lab);
+                em_vsetvli(e, T0, A2, VSEW8, cg->vlmul, 1, 1); /* T0 = vl */
+                cg->uops += 1;
+                c_beq_long(cg, T0, X0, done_lab); /* vl == 0 => done */
+                if (cg->cand.rec_cf)
+                    gen_body_rec_cf(cg, 1, 1);
+                else
+                    gen_body(cg, 1, 1);
+                em_add(e, T1, T1, T0);             /* offset += vl */
+                em_sub(e, A2, A2, T0);            /* remaining -= vl */
+                em_jal(e, X0, loop_lab);          /* loop while remaining > 0 */
+            }
         }
     }
     em_bind(e, done_lab);
@@ -1614,6 +1723,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     v->gbps = -1;
     v->gbps_measured = 0;
     v->notail = cand->notail;
+    v->maskedtail = cand->maskedtail;
 
     /* This backend implements the RVV nibble path and the Zvbc carryless
      * path; the planner never offers anything else for ISA_RVV. */
@@ -1710,6 +1820,18 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "predtail twin requires SVE (not implemented for RISC-V)");
         return -1;
     }
+    /* maskedtail twin (RVV TAIL_MASKED): disjoint from notail/predtail
+     * -- a version is never both. The v0 mask reservation is applied
+     * to the register map below (vreg()); the backend's register
+     * pressure checks then reject unencodable twins cleanly (defense
+     * in depth: the planner never enumerates maskedtail, so api.c only
+     * builds it from a winner that already fit without the reservation). */
+    if (cand->maskedtail && (cand->notail || cand->predtail)) {
+        snprintf(err, errlen, "riscv backend: maskedtail is disjoint from "
+                              "notail/predtail");
+        return -1;
+    }
+    cg.maskedtail = cand->maskedtail;
     cg.zvbc = (cand->mul == MUL_ZVBC);
     /* True full-group size for the length dispatcher: U * VLMAX * lmul.
      * vlenb is a hardware constant, so reading it once at build time is
@@ -1766,7 +1888,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     int n_out = pl->n_out, U = cand->U;
     const int L = cg.lmul;
     if (pl->kind == P_XOR) {
-        cg.vd0 = n_out * U * L; /* single temp */
+        cg.vd0 = vreg(&cg, n_out * U); /* single temp */
         int vneed = cg.vd0 + L;
         if (cand->xorsched) {
             /* XOR-schedule twin: temp formation needs two live vector
@@ -1782,10 +1904,14 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         }
         int want_regs = cand->xorsched ? xorsched_need_regs(ISA_RVV, pl, U)
                                        : plan_need_regs(ISA_RVV, cand->mul,
-                                                       pl, U, cand->remat, cand->pipe);
+                                                       pl, U, cand->remat, cand->pipe,
+                                                       0);
+        /* The maskedtail twin reserves v0 on top of the base map, for
+         * either body shape. */
+        want_regs += cand->maskedtail ? 1 : 0;
         assert(vneed == want_regs * L);
     } else if (pl->kind == P_HORNER) {
-        cg.vd0 = n_out * U * L; /* U data group heads */
+        cg.vd0 = vreg(&cg, n_out * U); /* U data group heads */
         cg.hreg = calloc((size_t)n_out * 2, sizeof(int));
         if (!cg.hreg) {
             snprintf(err, errlen, "out of memory");
@@ -1875,9 +2001,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             free(cg.hreg);
             return -1;
         }
-        assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) * L);
+        assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
+                                       cand->maskedtail) * L);
     } else { /* P_MULACC / P_DELTA */
-        cg.vd0 = n_out * U * L; /* U data group heads */
+        cg.vd0 = vreg(&cg, n_out * U); /* U data group heads */
         if (cg.zvbc && plan_any_nontrivial(pl)) {
             /* Zvbc carryless path: r1/r2/r3 temps, one cvec coefficient
              * broadcast, kvec (0x1B reduction constant). P_DELTA
@@ -1902,7 +2029,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(vneed ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
+                                       cand->maskedtail) *
                        L);
         } else if (cg.zvbc) {
             /* All-trivial coefficients: no multiplies, no kvec/cvec.
@@ -1921,7 +2049,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(vneed ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
+                                       cand->maskedtail) *
                        L);
         } else if (cg.need_mask) {
             /* Pipe twin (track I8): the Dn dataset (U group heads)
@@ -1970,7 +2099,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(cg.mask + L ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
+                                       cand->maskedtail) *
                        L);
         } else if (pl->kind == P_DELTA) {
             /* All-{0,1} delta matrix: the nibble tables, r1/r2 and the
@@ -1986,7 +2116,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(cg.thi + L ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
+                                       cand->maskedtail) *
                        L);
         } else {
             /* P_MULACC with all-{0,1} coefficients is unreachable from
@@ -1999,7 +2130,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 return -1;
             }
             assert(cg.vd0 + U * L ==
-                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe) *
+                   plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
+                                       cand->maskedtail) *
                        L);
         }
     }
@@ -2096,20 +2228,22 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
      * 127B since the A5 "[rows ...]" suffix). The old name[64]
      * already truncated names at 63B, so this preserves strictly
      * more, never less. */
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s",
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s U=%d%s%s%s%s%s%s",
                  pl->name, strat, isa_name(cand->isa), cand->U, lmuls,
                  cand->xorsched ? "+xsched" : "",
                  cand->nt ? "+nt" : "", cg.emit_pf ? "+pf" : "",
-                 cand->notail ? " notail" : "");
+                 cand->notail ? " notail" : "",
+                 cand->maskedtail ? " maskedtail" : "");
     else
-        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+%s U=%d%s%s%s%s%s%s%s",
+        snprintf(v->desc, sizeof(v->desc), "%.65s %s %s+%s U=%d%s%s%s%s%s%s%s%s",
                  pl->name, strat, isa_name(cand->isa),
                  cg.zvbc ? "zbc" : "nibble", cand->U, lmuls,
                  cand->remat ? "+remat" : "", cand->nt ? "+nt" : "",
                  cg.emit_pf ? "+pf" : "",
                  cand->pipe ? "+pipe" : "",
                  cand->rec_cf ? "+reccf" : "",
-                 cand->notail ? " notail" : "");
+                 cand->notail ? " notail" : "",
+                 cand->maskedtail ? " maskedtail" : "");
 
     free(buf);
     free(cg.pool);

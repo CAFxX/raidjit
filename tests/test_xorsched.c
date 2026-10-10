@@ -109,7 +109,7 @@ static void check_one(const rj_cpu_info *cpu, isa_t isa, int U,
     cn.U = U;
 
     /* register fit (mirrors plan_candidates filtering) */
-    if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0) > isa_nregs(isa)) {
+    if (plan_need_regs(isa, MUL_NIBBLE, pl, U, 0, 0, 0) > isa_nregs(isa)) {
         n_nofit++;
         return;
     }
@@ -474,7 +474,7 @@ int main(void)
         /* Use AVX2 U=2 if available, else first available ISA. */
         isa_t isa = isas[0];
         int U = 2;
-        if (plan_need_regs(isa, MUL_NIBBLE, &pl, U, 0, 0) > isa_nregs(isa))
+        if (plan_need_regs(isa, MUL_NIBBLE, &pl, U, 0, 0, 0) > isa_nregs(isa))
             U = 1;
         size_t len = 1000;
         uint8_t *in[20], *out[4], *ref[4];

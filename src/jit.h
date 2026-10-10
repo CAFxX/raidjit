@@ -20,11 +20,11 @@ typedef struct {
     int predtail;         /* 1 = fully predicated vector tail (SVE whilelt
                            * twin, TAIL_MASKED): serves tail lengths only
                            * (dispatch.h). Disjoint from notail. */
-    int maskedtail;       /* 1 = masked AVX-512 vector tail (x86-64 k1 twin,
-                           * TAIL_MASKED): serves tail lengths only
-                           * (dispatch.h). Disjoint from notail/predtail.
-                           * Set only by api.c from the winning candidate
-                           * (never by plan_candidates). */
+    int maskedtail;       /* 1 = masked vector tail (x86-64 k1 twin,
+                           * RVV v0-masked twin; TAIL_MASKED): serves tail
+                           * lengths only (dispatch.h). Disjoint from
+                           * notail/predtail. Set only by api.c from the
+                           * winning candidate (never by plan_candidates). */
     size_t group_bytes;   /* true full-iteration group bytes (U*VL; on
                            * RISC-V U*vlenb*lmul read at build time) */
     char desc[192];
