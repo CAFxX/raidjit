@@ -36,6 +36,7 @@
 #include "bench.h"
 #include "planid.h"
 #include "cpu.h"
+#include "ui_meta.h"
 #include "rjw_wasm.h"
 #include "vendor/cJSON.h"
 
@@ -1155,4 +1156,255 @@ const uint8_t *rjw_const_bytes(size_t *len_out)
 void rjw_free_string(char *s)
 {
     free(s);
+}
+
+/* ---------------- UI metadata API ----------------
+ *
+ * The WASM page must NOT duplicate validation logic. These functions
+ * expose the library's validation metadata so the page can query it.
+ * Single source of truth: the C library (ui_meta.c).
+ */
+
+/* Module ISA name for the schema. */
+static const char *rjw_module_isa(void)
+{
+#if defined(RJW_X86)
+    return "x86";
+#elif defined(RJW_AARCH64)
+    return "aarch64";
+#elif defined(RJW_RISCV)
+    return "riscv";
+#else
+    return "unknown";
+#endif
+}
+
+/* Target presets for this module (from preset_fill). */
+static const char *const *rjw_module_targets(int *n_out)
+{
+#if defined(RJW_X86)
+    static const char *const t[] = {"avx512-gfni", "avx2", "sse"};
+#elif defined(RJW_AARCH64)
+    static const char *const t[] = {"sve2", "neon"};
+#elif defined(RJW_RISCV)
+    static const char *const t[] = {"rvv", "rvv-zvbc32e", "rvv-zicbop"};
+#endif
+    *n_out = sizeof(t) / sizeof(t[0]);
+    return t;
+}
+
+/* isaVer options for this module (the pinned ISA versions). */
+static const char *const *rjw_module_isavers(int *n_out)
+{
+#if defined(RJW_X86)
+    static const char *const t[] = {"avx512", "avx2", "sse"};
+#elif defined(RJW_AARCH64)
+    static const char *const t[] = {"sve", "neon"};
+#elif defined(RJW_RISCV)
+    static const char *const t[] = {NULL};
+#endif
+#if defined(RJW_RISCV)
+    *n_out = 0;
+    return t;
+#else
+    *n_out = sizeof(t) / sizeof(t[0]);
+    return t;
+#endif
+}
+
+/* Static form schema. Returned string is owned by the module (use
+ * rjw_free_string). */
+char *rjw_meta_schema(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *twins = cJSON_CreateArray();
+    cJSON *fields = cJSON_CreateObject();
+    int i, n;
+
+    cJSON_AddStringToObject(root, "module_isa", rjw_module_isa());
+
+    {
+        const char *const *targets = rjw_module_targets(&n);
+        cJSON *jt = cJSON_CreateArray();
+        for (i = 0; i < n; i++)
+            cJSON_AddItemToArray(jt, cJSON_CreateString(targets[i]));
+        cJSON_AddItemToObject(root, "targets", jt);
+    }
+    {
+        const char *const *isavers = rjw_module_isavers(&n);
+        cJSON *jv = cJSON_CreateArray();
+        for (i = 0; i < n; i++)
+            cJSON_AddItemToArray(jv, cJSON_CreateString(isavers[i]));
+        cJSON_AddItemToObject(root, "isaVers", jv);
+    }
+
+    for (i = 0; i < RJ_TWIN_COUNT; i++) {
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddStringToObject(t, "id", rj_ui_twin_name((rj_twin_id_t)i));
+        cJSON_AddNumberToObject(t, "group", rj_ui_twin_group((rj_twin_id_t)i));
+        cJSON_AddItemToArray(twins, t);
+    }
+    cJSON_AddItemToObject(root, "twins", twins);
+
+    {
+        cJSON *u = cJSON_CreateObject();
+        cJSON_AddNumberToObject(u, "min", rj_ui_u_min());
+        cJSON_AddNumberToObject(u, "max", rj_ui_u_max());
+        cJSON_AddItemToObject(fields, "U", u);
+    }
+    {
+        cJSON *lmul = cJSON_CreateObject();
+        cJSON *opts = cJSON_CreateArray();
+        for (i = 1; i <= 8; i *= 2)
+            if (rj_ui_lmul_valid(i))
+                cJSON_AddItemToArray(opts, cJSON_CreateNumber(i));
+        cJSON_AddItemToObject(lmul, "options", opts);
+        cJSON_AddItemToObject(fields, "lmul", lmul);
+    }
+    {
+        /* mul options: the full list; rjw_meta_valid filters by target. */
+        cJSON *mul = cJSON_CreateObject();
+        cJSON *opts = cJSON_CreateArray();
+        cJSON_AddItemToArray(opts, cJSON_CreateString("auto"));
+        cJSON_AddItemToArray(opts, cJSON_CreateString("nibble"));
+        cJSON_AddItemToArray(opts, cJSON_CreateString("gfni"));
+        cJSON_AddItemToArray(opts, cJSON_CreateString("zvbc"));
+        cJSON_AddItemToObject(mul, "options", opts);
+        cJSON_AddItemToObject(fields, "mul", mul);
+    }
+    {
+        cJSON *pf = cJSON_CreateObject();
+        cJSON_AddNumberToObject(pf, "min", rj_ui_prefetch_min());
+        cJSON_AddItemToObject(fields, "prefetch_dist", pf);
+    }
+    cJSON_AddItemToObject(root, "fields", fields);
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return out;
+}
+
+/* Map a page isaVer string to isa_t. Returns -1 on unknown. */
+static int isaver_to_isa(const char *s)
+{
+    if (!s) return -1;
+    if (!strcmp(s, "avx512")) return ISA_AVX512;
+    if (!strcmp(s, "avx2")) return ISA_AVX2;
+    if (!strcmp(s, "sse")) return ISA_SSE;
+    if (!strcmp(s, "neon")) return ISA_NEON;
+    if (!strcmp(s, "sve")) return ISA_SVE;
+    if (!strcmp(s, "rvv")) return ISA_RVV;
+    return -1;
+}
+
+/* Map a page strategy string to plan_kind_t. Returns -1 on unknown. */
+static int strategy_to_kind(const char *s)
+{
+    if (!s) return -1;
+    if (!strcmp(s, "xor")) return P_XOR;
+    if (!strcmp(s, "mulacc")) return P_MULACC;
+    if (!strcmp(s, "horner")) return P_HORNER;
+    if (!strcmp(s, "delta")) return P_DELTA;
+    return -1;
+}
+
+/* Dynamic validity for the current UI state. Input is a JSON object:
+ * {"isaVer":"avx512","target":"avx512-gfni","strategy":"mulacc",
+ *  "n_out":4,"xor_sched":0,"isRecover":false}
+ * Returns a JSON object with per-twin enabled flags and per-field
+ * metadata. The twin validity comes from rj_ui_twin_valid (the
+ * library's single source of truth). Returned string is owned by the
+ * module (use rjw_free_string).
+ */
+char *rjw_meta_valid(const char *state_json)
+{
+    cJSON *state = cJSON_Parse(state_json);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *twins = cJSON_CreateObject();
+    cJSON *fields = cJSON_CreateObject();
+    char *out;
+    int i;
+
+    const char *isaVer = NULL;
+    const char *target = NULL;
+    const char *strategy = NULL;
+    int n_out = 0, xor_sched = 0, isRecover = 0;
+    cJSON *j;
+
+    if (state) {
+        j = cJSON_GetObjectItem(state, "isaVer");
+        if (cJSON_IsString(j)) isaVer = j->valuestring;
+        j = cJSON_GetObjectItem(state, "target");
+        if (cJSON_IsString(j)) target = j->valuestring;
+        j = cJSON_GetObjectItem(state, "strategy");
+        if (cJSON_IsString(j)) strategy = j->valuestring;
+        j = cJSON_GetObjectItem(state, "n_out");
+        if (cJSON_IsNumber(j)) n_out = j->valueint;
+        j = cJSON_GetObjectItem(state, "xor_sched");
+        if (cJSON_IsNumber(j)) xor_sched = j->valueint;
+        j = cJSON_GetObjectItem(state, "isRecover");
+        if (cJSON_IsBool(j)) isRecover = cJSON_IsTrue(j);
+    }
+
+    /* Default the effective ISA from the target if isaVer is not
+     * pinned (mirrors the page's effIsa). */
+    int isa = isaver_to_isa(isaVer);
+    if (isa < 0 && target) {
+        if (!strcmp(target, "avx512-gfni")) isa = ISA_AVX512;
+        else if (!strcmp(target, "avx2")) isa = ISA_AVX2;
+        else if (!strcmp(target, "sse")) isa = ISA_SSE;
+        else if (!strcmp(target, "sve2")) isa = ISA_SVE;
+        else if (!strcmp(target, "neon")) isa = ISA_NEON;
+        else if (!strncmp(target, "rvv", 3)) isa = ISA_RVV;
+    }
+    int kind = strategy_to_kind(strategy);
+
+    /* Per-twin validity from the library. */
+    for (i = 0; i < RJ_TWIN_COUNT; i++) {
+        int valid = 0;
+        if (isa >= 0 && kind >= 0) {
+            valid = rj_ui_twin_valid((rj_twin_id_t)i, (isa_t)isa,
+                                     (plan_kind_t)kind, n_out, xor_sched,
+                                     isRecover);
+        }
+        /* If we can't determine (unknown isa/strategy), leave enabled;
+         * the backend validates at compile time. */
+        else {
+            valid = 1;
+        }
+        cJSON_AddBoolToObject(twins, rj_ui_twin_name((rj_twin_id_t)i), valid);
+    }
+    cJSON_AddItemToObject(root, "twins", twins);
+
+    /* Field metadata: mul options filtered by target's cpu features;
+     * lmul enabled for RVV only. */
+    {
+        rj_cpu_info cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        int have_cpu = target && preset_fill(target, &cpu) == 0;
+        cJSON *mul = cJSON_CreateObject();
+        cJSON *opts = cJSON_CreateArray();
+        cJSON_AddItemToArray(opts, cJSON_CreateString("auto"));
+        cJSON_AddItemToArray(opts, cJSON_CreateString("nibble"));
+        /* gfni needs the avx512-gfni target (cpu->gfni) at full AVX-512;
+         * zvbc needs rvv-zvbc32e (cpu->rvv_zvbc32e). Derived from the
+         * target's cpu features, not hardcoded target names. */
+        if (have_cpu && cpu.gfni && isa == ISA_AVX512)
+            cJSON_AddItemToArray(opts, cJSON_CreateString("gfni"));
+        if (have_cpu && cpu.rvv_zvbc32e && isa == ISA_RVV)
+            cJSON_AddItemToArray(opts, cJSON_CreateString("zvbc"));
+        cJSON_AddItemToObject(mul, "options", opts);
+        cJSON_AddItemToObject(fields, "mul", mul);
+    }
+    {
+        cJSON *lmul = cJSON_CreateObject();
+        cJSON_AddBoolToObject(lmul, "enabled", isa == ISA_RVV);
+        cJSON_AddItemToObject(fields, "lmul", lmul);
+    }
+    cJSON_AddItemToObject(root, "fields", fields);
+
+    out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (state) cJSON_Delete(state);
+    return out;
 }

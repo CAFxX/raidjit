@@ -112,13 +112,71 @@ function renderDisasm(insns) {
   return tbl;
 }
 
-/* ---- option model ---- */
-const TARGETS = {
-  x86:     ["avx512-gfni", "avx2", "sse"],
-  aarch64: ["sve2", "neon"],
-  riscv:   ["rvv", "rvv-zvbc32e", "rvv-zicbop"],
-};
+/* ---- option model ----
+ * All validation metadata comes from the library via the WASM API
+ * (rjw_meta_schema / rjw_meta_valid). The page queries; it does not
+ * reimplement. See src/ui_meta.c for the single source of truth. */
 const DISASM_ARCH = { x86: "x86_64", aarch64: "aarch64", riscv: "riscv64" };
+/* Metadata caches: schema per ISA module, validity per state key. The
+ * metadata doesn't change during a session. */
+const schemaCache = {};
+const validCache = {};
+function metaCall(mod, fn, arg) {
+  let p = 0, rp = 0;
+  try {
+    if (arg !== undefined) {
+      p = mod.stringToNewUTF8(arg);
+      rp = mod[fn](p);
+    } else {
+      rp = mod[fn]();
+    }
+    return mod.UTF8ToString(rp);
+  } finally {
+    if (rp) mod._rjw_free_string(rp);
+    if (p) mod._free(p);
+  }
+}
+/* Fetch the static schema for an ISA module (cached). */
+async function getSchema(isa) {
+  if (schemaCache[isa]) return schemaCache[isa];
+  const mod = await getModule(isa);
+  const s = JSON.parse(metaCall(mod, "_rjw_meta_schema"));
+  schemaCache[isa] = s;
+  return s;
+}
+/* Fetch dynamic validity for a pane state (cached by state key).
+ * Returns {twins: {id: bool}, fields: {mul: {options: [...]},
+ * lmul: {enabled: bool}}}. */
+async function getValid(P) {
+  const s = P.state;
+  const isaVer = (!s.candAuto && s.cand.isaVer) ? s.cand.isaVer : null;
+  const key = JSON.stringify([s.isa, s.target, isaVer,
+    s.lastPlan && s.lastPlan.strategy, s.lastPlan && s.lastPlan.n_out,
+    s.lastPlan && s.lastPlan.xor_sched,
+    s.op.kind === "recover"]);
+  if (validCache[key]) return validCache[key];
+  const mod = await getModule(s.isa);
+  const st = {
+    isaVer: isaVer,
+    target: s.target,
+    strategy: s.lastPlan && s.lastPlan.strategy,
+    n_out: s.lastPlan && s.lastPlan.n_out,
+    xor_sched: s.lastPlan && s.lastPlan.xor_sched,
+    isRecover: s.op.kind === "recover",
+  };
+  const v = JSON.parse(metaCall(mod, "_rjw_meta_valid", JSON.stringify(st)));
+  validCache[key] = v;
+  return v;
+}
+/* Twin list and exclusivity groups from the schema. Falls back to the
+ * schema of the pane's ISA module. */
+async function getTwins(isa) {
+  const s = await getSchema(isa);
+  return s.twins;
+}
+function twinGroupMembers(twins, group) {
+  return twins.filter(t => t.group === group).map(t => t.id);
+}
 const CTORS = {
   raid0: ["ndata"], raid1: [], raid5: ["ndata"], raid6: ["ndata"],
   raid6_rs: ["ndata"], rdp: ["p"], evenodd: ["p"], liberation: ["k"],
@@ -180,34 +238,9 @@ function sanitizeTopology(t) {
   if (par.includes("matrix_hex")) out.matrix_hex = t.matrix_hex;
   return out;
 }
-const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
-               "permi2b", "xorsched", "xorbit", "mshift", "pipe", "rec_cf"];
-/* pairwise-exclusive body twins */
-const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat", "rec_cf"];
-/* pairwise-exclusive tail twins (backend: "maskedtail and notail are disjoint",
- * predtail disjoint from notail) */
-const TAIL_TWINS = ["notail", "predtail", "maskedtail"];
-
-/* Plan-kind gates for twins. The strategy (plan kind) is cached per
- * (topology, operation); a probe compile with auto candidate populates it
- * when unknown. Only these plan-deterministic gates are greyed out.
- * s.lastPlan holds {strategy, xor_sched, n_out} from the last compile. */
-const TWIN_PLAN_OK = {
-  remat:    (p) => p.strategy === "horner",
-  xorbit:   (p) => p.strategy === "mulacc" || p.strategy === "delta" ||
-    p.strategy === "horner",
-  xorsched: (p) => p.strategy === "xor" && p.xor_sched === 1,
-  permi2b:  (p) => p.strategy === "mulacc" || p.strategy === "delta",
-  mshift:   (p) => p.strategy === "mulacc" || p.strategy === "delta" ||
-    p.strategy === "horner",
-  pipe:     (p) => p.strategy === "mulacc" || p.strategy === "horner",
-  ternlog:  (p) => (p.strategy === "xor" && p.n_out >= 2) ||
-    p.strategy === "mulacc" || p.strategy === "delta",
-  /* rec_cf: recovery-only twin (e=1/e=2 closed forms). The backend validates
-   * the win conditions (cinv_cheap/cinv!=1 for e=1, row_is_01 for e=2);
-   * here we gate on recovery op + mulacc strategy. */
-  rec_cf:   (p) => p.strategy === "mulacc" && p.isRecover,
-};
+/* Twin/ISA/plan validity is queried from the library via getValid().
+ * The tables below are GONE: TWIN_ISA_OK, TWIN_PLAN_OK, mulIsaOk were
+ * deleted. The page no longer reimplements validation. */
 const strategyCache = {};
 function strategyKey(s) {
   return JSON.stringify([s.topology, s.op.kind]);
@@ -220,7 +253,7 @@ async function probeStrategy(P) {
   if (strategyCache[key]) return strategyCache[key];
   let mod;
   try { mod = await getModule(s.isa); } catch (e) { return null; }
-  const doc = buildDoc({ ...s, candAuto: true });
+  const doc = await buildDoc({ ...s, candAuto: true });
   const r = compileKernel(mod, doc);
   if (r.ok && r.strategy) {
     const plan = { strategy: r.strategy, xor_sched: r.plan_xor_sched | 0,
@@ -233,7 +266,7 @@ async function probeStrategy(P) {
 }
 
 /* Effective ISA for a pane: the pinned isaVer wins when set, otherwise the
- * target implies it. Used to grey out options that are ISA-invalid. */
+ * target implies it. Used for the metadata query state. */
 function effIsa(s) {
   if (!s.candAuto && s.cand.isaVer) return s.cand.isaVer;
   const t = s.target;
@@ -244,44 +277,27 @@ function effIsa(s) {
   if (t === "neon") return "neon";
   return "rvv";
 }
-/* ISA-deterministic twin gates (from src/plan.c enumeration and the per-ISA
- * backend asserts in src/.../jit.c). Only these are greyed out client-side;
- * plan-kind gates (P_XOR vs P_MULACC etc.) stay backend-validated. */
-const TWIN_ISA_OK = {
-  ternlog:    (isa) => isa === "avx512",
-  permi2b:    (isa) => isa === "avx512",
-  mshift:     (isa) => isa === "avx512",
-  maskedtail: (isa) => isa === "avx512" || isa === "rvv",
-  pipe:       (isa) => isa === "neon" || isa === "sve" || isa === "rvv",
-  predtail:   (isa) => isa === "sve",
-};
-/* ISA-deterministic mul gates. nibble is valid everywhere; gfni needs the
- * avx512-gfni target (cpu->gfni) at full AVX-512; zvbc needs rvv-zvbc32e. */
-function mulIsaOk(m, s) {
-  if (m === "gfni") return s.isa === "x86" && s.target === "avx512-gfni" &&
-    effIsa(s) === "avx512";
-  if (m === "zvbc") return s.isa === "riscv" && s.target === "rvv-zvbc32e";
-  return true;
-}
-/* Uncheck twins / reset mul that the new ISA or target invalidates, so a
- * configuration change can never leave a selected-but-impossible option. */
-function sanitizeIsaGated(s) {
-  const isa = effIsa(s);
-  for (const t of TWINS) {
-    if (s.twins[t] && TWIN_ISA_OK[t] && !TWIN_ISA_OK[t](isa)) s.twins[t] = false;
-  }
-  if (s.cand.mul && s.cand.mul !== "auto" && !mulIsaOk(s.cand.mul, s)) {
-    s.cand.mul = "auto";
-  }
-}
-/* Uncheck twins that the plan kind invalidates (needs s.lastPlan). */
-function sanitizePlanGated(s) {
-  if (!s.lastPlan) return;
-  for (const t of TWINS) {
-    if (s.twins[t] && TWIN_PLAN_OK[t] && !TWIN_PLAN_OK[t](s.lastPlan)) {
-      s.twins[t] = false;
+/* Sanitize twins against the library metadata: uncheck any selected twin
+ * the library reports as invalid for the current state. Async because it
+ * queries the WASM module. Returns true if anything was unchecked. */
+async function sanitizeTwins(P) {
+  const s = P.state;
+  const v = await getValid(P);
+  const twins = await getTwins(s.isa);
+  let changed = false;
+  for (const t of twins) {
+    if (s.twins[t.id] && !v.twins[t.id]) {
+      s.twins[t.id] = false;
+      changed = true;
     }
   }
+  /* Reset mul if the current selection is not in the valid options. */
+  if (s.cand.mul && s.cand.mul !== "auto" &&
+      !v.fields.mul.options.includes(s.cand.mul)) {
+    s.cand.mul = "auto";
+    changed = true;
+  }
+  return changed;
 }
 
 function defaultPane() {
@@ -297,8 +313,11 @@ function defaultPane() {
   };
 }
 
-/* Build the rjw_compile option document from pane state. */
-function buildDoc(p) {
+/* Build the rjw_compile option document from pane state. twins is the
+ * twin ID list from the schema. */
+async function buildDoc(p) {
+  const schema = await getSchema(p.isa);
+  const twins = schema.twins.map(t => t.id);
   const top = { ctor: p.topology.ctor };
   const par = CTORS[p.topology.ctor];
   ["p1", "p2", "p3"].forEach((k, i) => {
@@ -324,7 +343,7 @@ function buildDoc(p) {
               * default 1 would reject a configuration the user never chose. */
              lmul: p.isa === "riscv" ? (p.cand.lmul | 0) : 0,
              prefetch_dist: p.cand.prefetch_dist | 0 };
-    for (const t of TWINS) cand[t] = !!p.twins[t];
+    for (const t of twins) cand[t] = !!p.twins[t];
     if (p.cand.isaVer) cand.isa = p.cand.isaVer;
   }
   const doc = { v: 1, target: p.target, topology: top, op: op, cand: cand,
@@ -353,10 +372,13 @@ function b64urlDecode(s) {
  * against the backend validity envelope. Unknown ISA/ctor/op fall back
  * to defaults. */
 const OP_KINDS = ["encode", "recover", "parity_update"];
+const MODULE_ISAS = ["x86", "aarch64", "riscv"];
 function normalizeState(o) {
   const d = defaultPane();
-  if (!o || typeof o !== "object" || !TARGETS[o.isa]) return d;
-  const target = TARGETS[o.isa].includes(o.target) ? o.target : TARGETS[o.isa][0];
+  if (!o || typeof o !== "object" || !MODULE_ISAS.includes(o.isa)) return d;
+  /* Target is validated against the schema on refresh; accept as-is here
+   * so deep links don't break before the module loads. */
+  const target = (typeof o.target === "string") ? o.target : null;
   const op = (o.op && typeof o.op === "object") ? o.op : {};
   return {
     isa: o.isa,
@@ -424,7 +446,8 @@ function buildPane(state) {
   P.isaSel = select(["x86", "aarch64", "riscv"], state.isa);
   row1.appendChild(P.isaSel);
   row1.appendChild(el("label", {}, " Target "));
-  P.targetSel = select(TARGETS[state.isa], state.target);
+  /* Populated from the library schema by refreshPane (async). */
+  P.targetSel = select([], state.target);
   row1.appendChild(P.targetSel);
   root.appendChild(row1);
   /* topology */
@@ -463,45 +486,53 @@ function buildPane(state) {
   P.disasm = el("div", { class: "disasm" });
   root.appendChild(P.disasm);
 
-  P.isaSel.onchange = () => {
+  P.isaSel.onchange = async () => {
     state.isa = P.isaSel.value;
-    state.target = TARGETS[state.isa][0];
-    sanitizeIsaGated(state);
-    refreshPane(P); scheduleCompile(P);
+    const schema = await getSchema(state.isa);
+    state.target = schema.targets[0];
+    await sanitizeTwins(P);
+    await refreshPane(P); scheduleCompile(P);
   };
-  P.targetSel.onchange = () => { state.target = P.targetSel.value;
-    sanitizeIsaGated(state);
-    refreshPane(P); scheduleCompile(P); };
+  P.targetSel.onchange = async () => { state.target = P.targetSel.value;
+    await sanitizeTwins(P);
+    await refreshPane(P); scheduleCompile(P); };
   P.ctorSel.onchange = () => { state.topology = ctorDefaults(P.ctorSel.value);
     state.lastPlan = null;
-    refreshPane(P); scheduleCompile(P);
-    probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
-      sanitizePlanGated(state); refreshPane(P); } }); };
+    refreshPane(P).then(() => scheduleCompile(P));
+    probeStrategy(P).then(async pl => { if (pl) { state.lastPlan = pl;
+      await sanitizeTwins(P); await refreshPane(P); } }); };
   P.opSel.onchange = () => { const kind = P.opSel.value;
     state.op = kind === "recover" ? { kind, failed: "0" } :
       kind === "parity_update" ? { kind, changed: "0" } : { kind };
     state.lastPlan = null;
-    refreshPane(P); scheduleCompile(P);
-    probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
-      sanitizePlanGated(state); refreshPane(P); } }); };
+    refreshPane(P).then(() => scheduleCompile(P));
+    probeStrategy(P).then(async pl => { if (pl) { state.lastPlan = pl;
+      await sanitizeTwins(P); await refreshPane(P); } }); };
   P.autoChk.onchange = () => { state.candAuto = P.autoChk.checked;
-    refreshPane(P); scheduleCompile(P);
+    refreshPane(P).then(() => scheduleCompile(P));
     if (!state.candAuto && !state.lastPlan) {
-      probeStrategy(P).then(pl => { if (pl) { state.lastPlan = pl;
-        sanitizePlanGated(state); refreshPane(P); } });
+      probeStrategy(P).then(async pl => { if (pl) { state.lastPlan = pl;
+        await sanitizeTwins(P); await refreshPane(P); } });
     } };
   refreshPane(P);
   return P;
 }
 
-function refreshPane(P) {
+async function refreshPane(P) {
   const s = P.state;
-  /* target options follow ISA */
+  const schema = await getSchema(s.isa);
+  const valid = await getValid(P);
+  /* target options follow ISA (from the library schema) */
   P.targetSel.innerHTML = "";
-  for (const t of TARGETS[s.isa]) {
+  for (const t of schema.targets) {
     const o = el("option", { value: t }, t);
     if (t === s.target) o.selected = true;
     P.targetSel.appendChild(o);
+  }
+  /* If the current target is not in the schema (e.g. stale deep link),
+   * fall back to the first target. */
+  if (!schema.targets.includes(s.target)) {
+    s.target = schema.targets[0];
   }
   /* topology params */
   P.topoParams.innerHTML = "";
@@ -541,65 +572,71 @@ function refreshPane(P) {
     ci.onchange = () => { s.op.changed = ci.value; scheduleCompile(P); };
     P.opParams.appendChild(ci);
   }
-  /* candidate box */
+  /* candidate box (all constraints from the library schema/metadata) */
   P.candBox.innerHTML = "";
   P.twinBox.innerHTML = "";
   if (!s.candAuto) {
     const c = s.cand;
     const r1 = el("div", { class: "row" });
-    const isaVers = s.isa === "x86" ? ["avx512", "avx2", "sse"] :
-      s.isa === "aarch64" ? ["sve", "neon"] : [];
+    const isaVers = schema.isaVers;
     if (isaVers.length) {
       r1.appendChild(el("label", {}, "isa "));
       const iv = select(["auto"].concat(isaVers),
         c.isaVer || "auto");
-      iv.onchange = () => { c.isaVer = iv.value === "auto" ? undefined
-        : iv.value; sanitizeIsaGated(s); refreshPane(P); scheduleCompile(P); };
+      iv.onchange = async () => { c.isaVer = iv.value === "auto" ? undefined
+        : iv.value; await sanitizeTwins(P); await refreshPane(P);
+        scheduleCompile(P); };
       r1.appendChild(iv);
     }
     r1.appendChild(el("label", {}, "mul "));
-    const mul = select(["auto", "nibble", "gfni", "zvbc"], c.mul || "auto",
-      (o) => !mulIsaOk(o, s));
+    const mulOpts = valid.fields.mul.options;
+    const mul = select(mulOpts, mulOpts.includes(c.mul) ? c.mul : "auto");
     mul.onchange = () => { c.mul = mul.value; scheduleCompile(P); };
     r1.appendChild(mul);
     r1.appendChild(el("label", {}, " U (0=auto) "));
-    const u = el("input", { type: "number", value: c.U || 0, min: 0, max: 8,
+    const u = el("input", { type: "number", value: c.U || 0,
+      min: schema.fields.U.min, max: schema.fields.U.max,
       style: "width:4em" });
     u.onchange = () => { c.U = parseInt(u.value, 10) || 0; scheduleCompile(P); };
     r1.appendChild(u);
-    if (s.isa === "riscv") {
+    if (valid.fields.lmul.enabled) {
       r1.appendChild(el("label", {}, " lmul "));
-      const l = select(["1", "2", "4", "8"], String(c.lmul || 1));
+      const lmulOpts = schema.fields.lmul.options.map(String);
+      const l = select(lmulOpts, String(c.lmul || 1));
       l.onchange = () => { c.lmul = parseInt(l.value, 10); scheduleCompile(P); };
       r1.appendChild(l);
     }
     r1.appendChild(el("label", {}, " prefetch_dist "));
     const pf = el("input", { type: "number", value: c.prefetch_dist || 0,
-      min: 0, style: "width:6em" });
+      min: schema.fields.prefetch_dist.min, style: "width:6em" });
     pf.onchange = () => { c.prefetch_dist = parseInt(pf.value, 10) || 0;
       scheduleCompile(P); };
     r1.appendChild(pf);
     P.candBox.appendChild(r1);
-    /* twin checkboxes with mutual-exclusion grey-out */
-    for (const t of TWINS) {
+    /* twin checkboxes with mutual-exclusion grey-out.
+     * Validity comes from the library (valid.twins); exclusivity groups
+     * come from the schema. */
+    const twins = schema.twins;
+    const bodyMembers = twinGroupMembers(twins, 1).map(t => t);
+    const tailMembers = twinGroupMembers(twins, 2).map(t => t);
+    for (const t of twins) {
+      const id = t.id;
       const lab = el("label", { class: "twin" });
       const cb = el("input", { type: "checkbox" });
-      cb.checked = !!s.twins[t];
-      cb.onchange = () => { s.twins[t] = cb.checked; refreshPane(P);
+      cb.checked = !!s.twins[id];
+      cb.onchange = () => { s.twins[id] = cb.checked; refreshPane(P);
         scheduleCompile(P); };
       /* grey out twins excluded by another selected twin in the same
-       * exclusivity group, by ISA gate, or by plan-kind gate */
-      const isaOk = !TWIN_ISA_OK[t] || TWIN_ISA_OK[t](effIsa(s));
-      const planOk = !TWIN_PLAN_OK[t] || !s.lastPlan ||
-        TWIN_PLAN_OK[t](s.lastPlan);
+       * exclusivity group, or reported invalid by the library */
+      const twinOk = !!valid.twins[id];
       let excl = false;
-      if (BODY_TWINS.includes(t)) {
-        excl = BODY_TWINS.some(o => o !== t && s.twins[o]);
-      } else if (TAIL_TWINS.includes(t)) {
-        excl = TAIL_TWINS.some(o => o !== t && s.twins[o]);
+      if (t.group === 1) {
+        excl = bodyMembers.some(o => o !== id && s.twins[o]);
+      } else if (t.group === 2) {
+        excl = tailMembers.some(o => o !== id && s.twins[o]);
       }
-      cb.disabled = (excl && !s.twins[t]) || !isaOk || !planOk;
-      lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + t));
+      cb.disabled = (excl && !s.twins[id]) || !twinOk;
+      lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + id));
       P.twinBox.appendChild(lab);
     }
   }
@@ -617,7 +654,7 @@ async function runPane(P) {
   P.status.textContent = "compiling…";
   P.status.className = "status busy";
   let doc;
-  try { doc = buildDoc(s); }
+  try { doc = await buildDoc(s); }
   catch (e) { P.status.textContent = "option error: " + e.message;
     P.status.className = "status err"; return; }
   let mod;
@@ -671,8 +708,8 @@ async function runPane(P) {
         s.lastPlan.xor_sched !== plan.xor_sched) {
       s.lastPlan = plan;
       strategyCache[key] = plan;
-      sanitizePlanGated(s);
-      refreshPane(P);
+      await sanitizeTwins(P);
+      await refreshPane(P);
     }
   }
   const d = await disassemble(DISASM_ARCH[s.isa], r.code);
