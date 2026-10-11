@@ -50,6 +50,11 @@ typedef struct {
         int kind;   /* 0 = B-type branch, 1 = auipc+addi pair, 2 = J-type */
     } *fix;
     int nfix, cfix;
+    /* Sticky error flag: set on buffer overflow or label/fixup table
+     * realloc failure (OOM). All em_* functions become no-ops once set;
+     * jit_build_version checks it after codegen and fails cleanly.
+     * (Mirrors the aarch64 emitter's e->err pattern.) */
+    int err;
 } em_t;
 
 void em_init(em_t *e, uint8_t *buf, size_t cap);

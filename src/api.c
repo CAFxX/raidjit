@@ -870,7 +870,12 @@ const char *rj_plan_id(const rj_jit *j)
 }
 
 /* Field-by-field candidate equality for the pinned-compile membership
- * check (memcmp is unsafe: cand_t may carry padding bytes). */
+ * check (memcmp is unsafe: cand_t may carry padding bytes).
+ * BUG-COMBO-STATIC-F04: pipe, rec_cf, crc_fold were missing, so a pinned
+ * spec differing only in those axes could match an enumerated candidate
+ * that lacks them (membership bypass). CLASS HUNT: any new cand_t axis
+ * must be added here, to planid format/parse, to any_twin, and to
+ * twin_dominates in the same change. */
 static int cand_spec_equal(const cand_t *a, const cand_t *b)
 {
     return a->isa == b->isa && a->mul == b->mul && a->U == b->U &&
@@ -879,7 +884,9 @@ static int cand_spec_equal(const cand_t *a, const cand_t *b)
            a->notail == b->notail && a->predtail == b->predtail &&
            a->maskedtail == b->maskedtail && a->permi2b == b->permi2b &&
            a->xorsched == b->xorsched && a->xorbit == b->xorbit &&
-           a->mshift == b->mshift && a->lmul == b->lmul;
+           a->mshift == b->mshift && a->lmul == b->lmul &&
+           a->pipe == b->pipe && a->rec_cf == b->rec_cf &&
+           a->crc_fold == b->crc_fold;
 }
 
 static const char *planid_kind_name(plan_kind_t k)
@@ -980,13 +987,18 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
         topo_int_free(&ti);
         return NULL;
     }
-    /* No-op plans have no tail to twin: an ID naming tail twins for one
-     * is bogus. */
+    /* No-op plans have no code to twin: an ID naming any twin for one
+     * is bogus. The kernel is a vacuous prologue/epilogue; reporting
+     * twins as "applied" would be a phantom (BUG-COMBO-E50). */
     if (pl.noop &&
-        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail)) {
+        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail ||
+         spec.cand.nt || spec.cand.ternlog || spec.cand.xorbit ||
+         spec.cand.xorsched || spec.cand.permi2b || spec.cand.remat ||
+         spec.cand.mshift || spec.cand.pipe || spec.cand.rec_cf ||
+         spec.cand.prefetch_dist || spec.cand.crc_fold || spec.cand.lmul)) {
         if (err && errlen)
             snprintf(err, errlen,
-                     "pinned plan ID: names tail twins for a no-op plan");
+                     "pinned plan ID: names twins for a no-op plan");
         plan_free(&pl);
         topo_int_free(&ti);
         return NULL;

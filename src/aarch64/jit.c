@@ -98,6 +98,11 @@ typedef struct {
     int use_eor3;
     uint8_t logtab[256], exptab[512];
     double uops, mem;
+    uint32_t twin_applied; /* BUG-COMBO-STATIC-F16: bitmask of TWIN_APPLIED_*
+                            * bits, set when each twin's code path is taken. */
+    int oom; /* sticky OOM flag: set by pool_get on realloc failure.
+              * jit_build_version checks it after codegen and fails
+              * cleanly instead of asserting. */
 } cg_t;
 
 /* logical vector reg -> physical: NEON identity; SVE: r in [0,15] ->
@@ -117,6 +122,7 @@ static int V(const cg_t *cg, int r)
 
 static size_t pool_get(cg_t *cg, int kind, uint8_t c)
 {
+    if (cg->oom) return 0; /* sticky OOM: fail fast */
     for (int i = 0; i < cg->ncent; i++)
         if (cg->cent[i].kind == kind && cg->cent[i].c == c)
             return cg->cent[i].off;
@@ -136,16 +142,20 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     }
     size_t off = (cg->pool_len + 63) & ~(size_t)63;
     if (off + len > cg->pool_cap) {
-        cg->pool_cap = (off + len + 4095) & ~(size_t)4095;
-        cg->pool = realloc(cg->pool, cg->pool_cap);
-        assert(cg->pool);
+        size_t new_cap = (off + len + 4095) & ~(size_t)4095;
+        uint8_t *np = realloc(cg->pool, new_cap);
+        if (!np) { cg->oom = 1; return 0; }
+        cg->pool = np;
+        cg->pool_cap = new_cap;
     }
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
-        cg->ccent = cg->ccent ? cg->ccent * 2 : 32;
-        cg->cent = realloc(cg->cent, (size_t)cg->ccent * sizeof(*cg->cent));
-        assert(cg->cent);
+        int new_ccent = cg->ccent ? cg->ccent * 2 : 32;
+        void *ncent = realloc(cg->cent, (size_t)new_ccent * sizeof(*cg->cent));
+        if (!ncent) { cg->oom = 1; return 0; }
+        cg->cent = ncent;
+        cg->ccent = new_ccent;
     }
     cg->cent[cg->ncent].kind = kind;
     cg->cent[cg->ncent].c = c;
@@ -218,12 +228,16 @@ static void c_st_to(cg_t *cg, int r, int u, int ptr)
     em_t *e = &cg->em;
     if (cg->is_sve) {
         if (cg->pred) {
-            if (cg->nt)
+            if (cg->nt) {
                 em_sve_stnt1b(e, V(cg, r), 1, ptr);
-            else
+                /* BUG-COMBO-STATIC-F16: effect marker. */
+                cg->twin_applied |= TWIN_APPLIED_NT;
+            } else
                 em_sve_st1b(e, V(cg, r), 1, ptr);
         } else if (cg->nt) {
             em_sve_stnt1b_off(e, V(cg, r), 0, ptr, u);
+            /* BUG-COMBO-STATIC-F16: effect marker. */
+            cg->twin_applied |= TWIN_APPLIED_NT;
         } else {
             em_sve_st1b_off(e, V(cg, r), 0, ptr, u);
         }
@@ -432,6 +446,8 @@ static void xorbit_fanout(cg_t *cg, const int *users, int nusers, int vsrc,
 
 static void gen_body_xorbit(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_XORBIT;
     const plan_t *pl = cg->pl;
     const xorbit_t *s = pl->bit_sched;
     assert(s && s->ntemps > 0);
@@ -573,6 +589,8 @@ static void c_inptr(cg_t *cg, int dst, int idx)
     if (cg->prefetch_dist && !cg->pred) {
         em_prfm(e, PRF_PLDL1STRM, dst, cg->prefetch_dist);
         cg->uops += 1;
+        /* BUG-COMBO-STATIC-F16: effect marker -- prefetch actually emitted. */
+        cg->twin_applied |= TWIN_APPLIED_PREFETCH;
     }
 }
 
@@ -949,6 +967,8 @@ static void cf_combine_lane(cg_t *cg, int u, int acc0, int acc1,
  * distributivity makes it bit-identical to the closed form. */
 static void gen_body_rec_cf(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_REC_CF;
     const struct rec_cf_data *cfd = cg->pl->rec_cf;
     int U = cg->U;
     assert(cfd && (cfd->nf == 1 || cfd->nf == 2));
@@ -1039,6 +1059,8 @@ static void gen_body(cg_t *cg)
         /* fall through: store the zeroed accumulators below */
     } else if (pl->kind == P_XOR) {
         if (cg->cand.xorsched) {
+        /* BUG-COMBO-STATIC-F16: effect marker -- the xorsched path. */
+        cg->twin_applied |= TWIN_APPLIED_XORSCHED;
         /* XOR-schedule twin: the body follows pl->xor_sched (cross-row
          * CSE). Phase 1 forms each temp t_k = in_a ^ in_b into t/t2 and
          * fans out; phase 2 streams surviving inputs via t. Every
@@ -1231,7 +1253,7 @@ static void gen_body(cg_t *cg)
         int *first_col = NULL;
         if (pl->kind == P_MULACC) {
             first_col = malloc((size_t)n_out * sizeof(*first_col));
-            assert(first_col);
+            if (!first_col) { cg->oom = 1; return; }
             for (int j = 0; j < n_out; j++) {
                 first_col[j] = -1;
                 for (int i = 0; i < n_in; i++)
@@ -1288,6 +1310,8 @@ static void gen_body(cg_t *cg)
                              * non-EOR3 path (EOR3 already did this). */
                             int lo_dst = acc;
                             if (cg->cand.remat) {
+                                /* BUG-COMBO-STATIC-F16: effect marker. */
+                                cg->twin_applied |= TWIN_APPLIED_REMAT;
                                 /* NIBLO/NIBHI ping-pong through the single
                                  * tbl_lo scratch: every (i,j,u) needs both
                                  * tables, and the scratch is shared across
@@ -1350,6 +1374,8 @@ static void gen_stores(cg_t *cg)
                              (unsigned)u * 16);
                 cg->uops += 1;
                 cg->mem += 2 * cg->vl;
+                /* BUG-COMBO-STATIC-F16: effect marker -- STNP emitted. */
+                cg->twin_applied |= TWIN_APPLIED_NT;
             }
             if (u < U)
                 c_st_to(cg, j * U + u, u, X10);
@@ -1466,6 +1492,8 @@ static void pipe_horner_column(cg_t *cg, int col, int data)
  * (degenerate: no input columns) falls back to gen_body. */
 static void gen_body_pipe(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_PIPE;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U;
@@ -1483,7 +1511,7 @@ static void gen_body_pipe(cg_t *cg)
     int *first_col = NULL;
     if (pl->kind == P_MULACC) {
         first_col = malloc((size_t)n_out * sizeof(*first_col));
-        assert(first_col);
+        if (!first_col) { cg->oom = 1; return; }
         for (int j = 0; j < n_out; j++) {
             first_col[j] = -1;
             for (int i = 0; i < n_in; i++)
@@ -1921,7 +1949,7 @@ static void compute_regs(cg_t *cg)
             cg->mask = cg->tlo + 3;
             cg->hreg =
                 malloc((size_t)2 * (size_t)n_out * sizeof(*cg->hreg));
-            assert(cg->hreg);
+            if (!cg->hreg) { cg->oom = 1; return; }
             int r = cg->tlo + 4;
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->horner_c[j];
@@ -1952,7 +1980,7 @@ static void compute_regs(cg_t *cg)
         cg->mask = n_out * U + 4;
         cg->vmax = cg->mask;
         cg->hreg = malloc((size_t)2 * (size_t)n_out * sizeof(*cg->hreg));
-        assert(cg->hreg);
+        if (!cg->hreg) { cg->oom = 1; return; }
         if (cg->cand.remat) {
             /* Rematerialize: no persistent table regs; hreg[] stays -1
              * and is never read (gen_const_setup and the body both
@@ -2327,6 +2355,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     }
 
     compute_regs(&cg);
+    if (cg.oom)
+        goto oom;
 
     uint8_t *buf = malloc(1 << 20);
     if (!buf)
@@ -2350,11 +2380,42 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     for (size_t i = 0; i < cg.pool_len; i++)
         em_byte(&cg.em, cg.pool[i]);
     em_resolve(&cg.em);
-    if (cg.em.err) {
-        snprintf(err, errlen, "codegen error (branch/pool out of range)");
+    /* Error check: the emitter sets cg.em.err on buffer overflow,
+     * label/fixup realloc failure, or branch/pool out of range; pool_get
+     * and the gen_body/compute_regs helpers set cg.oom on allocation
+     * failure. Either way the generated code is incomplete -- reject
+     * cleanly instead of installing it. */
+    if (cg.em.err || cg.oom) {
+        snprintf(err, errlen, "aarch64 backend: codegen failed (%s)",
+                 cg.oom ? "out of memory" : "emitter error");
         free(buf);
         goto fail;
     }
+    /* BUG-COMBO-STATIC-F16: twin effect postcondition. If a twin was
+     * requested but its code path was never taken, the pin was a no-op:
+     * reject cleanly instead of recording a false twin label. */
+    {
+        struct { int req; uint32_t bit; const char *name; } twins[] = {
+            { cand->nt, TWIN_APPLIED_NT, "nt" },
+            { cand->prefetch_dist != 0, TWIN_APPLIED_PREFETCH, "prefetch" },
+            { cand->remat, TWIN_APPLIED_REMAT, "remat" },
+            { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
+            { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
+            { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
+            { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
+        };
+        for (size_t ti = 0; ti < sizeof(twins)/sizeof(twins[0]); ti++) {
+            if (twins[ti].req && !(cg.twin_applied & twins[ti].bit)) {
+                snprintf(err, errlen,
+                         "%s twin requested but its code path was not "
+                         "taken (phantom twin)",
+                         twins[ti].name);
+                free(buf);
+                goto fail;
+            }
+        }
+    }
+    v->twin_applied = cg.twin_applied;
     size_t total = (cg.em.len + 4095) & ~(size_t)4095;
 #ifdef RJ_WASM
     /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2): no

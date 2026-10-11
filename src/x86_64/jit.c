@@ -116,6 +116,11 @@ typedef struct {
                              * zero were emitted, the pin was a no-op and
                              * jit_build_version rejects it (phantom twin
                              * fix, BUG_t1_80). */
+    uint32_t twin_applied; /* BUG-COMBO-STATIC-F16: bitmask of TWIN_APPLIED_*
+                            * bits, set when each twin's code path is taken. */
+    int oom; /* sticky OOM flag: set by pool_get on realloc failure.
+              * jit_build_version checks it after codegen and fails
+              * cleanly instead of asserting. */
 } cg_t;
 
 static int is_sse(const cg_t *cg) { return cg->cand.isa == ISA_SSE; }
@@ -160,6 +165,7 @@ static int hoist_inptr(const cg_t *cg, int i)
 
 static size_t pool_get(cg_t *cg, int kind, uint8_t c)
 {
+    if (cg->oom) return 0; /* sticky OOM: fail fast */
     for (int i = 0; i < cg->ncent; i++)
         if (cg->cent[i].kind == kind && cg->cent[i].c == c)
             return cg->cent[i].off;
@@ -249,16 +255,20 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     }
     size_t off = (cg->pool_len + 63) & ~(size_t)63;
     if (off + len > cg->pool_cap) {
-        cg->pool_cap = (off + len + 4095) & ~(size_t)4095;
-        cg->pool = realloc(cg->pool, cg->pool_cap);
-        assert(cg->pool);
+        size_t new_cap = (off + len + 4095) & ~(size_t)4095;
+        uint8_t *np = realloc(cg->pool, new_cap);
+        if (!np) { cg->oom = 1; return 0; }
+        cg->pool = np;
+        cg->pool_cap = new_cap;
     }
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
-        cg->ccent = cg->ccent ? cg->ccent * 2 : 32;
-        cg->cent = realloc(cg->cent, (size_t)cg->ccent * sizeof(*cg->cent));
-        assert(cg->cent);
+        int new_ccent = cg->ccent ? cg->ccent * 2 : 32;
+        void *ncent = realloc(cg->cent, (size_t)new_ccent * sizeof(*cg->cent));
+        if (!ncent) { cg->oom = 1; return 0; }
+        cg->cent = ncent;
+        cg->ccent = new_ccent;
     }
     cg->cent[cg->ncent].kind = kind;
     cg->cent[cg->ncent].c = c;
@@ -330,6 +340,8 @@ static void gen_fold_zmm(cg_t *cg, int zreg, int s)
 {
     em_t *e = &cg->em;
     assert(cg->cand.crc_fold && is_avx512(cg));
+    /* BUG-COMBO-STATIC-F16: effect marker -- the crc_fold path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_CRC_FOLD;
     for (int k = 0; k < 4; k++) {
         em_vextracti32x4(e, cg->fold_xc, zreg, (unsigned)k);
         gen_fold_chunk(cg, s);
@@ -358,12 +370,14 @@ static void c_st(cg_t *cg, int b, int x, int sc, int disp, int vs)
 {
     em_t *e = &cg->em;
     if (is_sse(cg)) {
-        if (cg->nt)
+        if (cg->nt) {
             em_movntdq_st_sse(e, b, x, sc, disp, vs);
-        else
+            cg->twin_applied |= TWIN_APPLIED_NT;
+        } else
             em_movdqa_st_sse(e, b, x, sc, disp, vs);
     } else if (cg->nt) {
         em_vmovntdq_st(e, b, x, sc, disp, vs, cg->vl);
+        cg->twin_applied |= TWIN_APPLIED_NT;
     } else {
         em_vmovdqa_st(e, b, x, sc, disp, vs, cg->vl);
     }
@@ -380,6 +394,7 @@ static void c_prefetch_in(cg_t *cg, int ptr_reg)
     if (cg->prefetch_dist) {
         em_prefetch(&cg->em, 1 /*T0*/, ptr_reg, R11, 0,
                     (int)cg->prefetch_dist);
+        cg->twin_applied |= TWIN_APPLIED_PREFETCH;
         cg->uops += 1;
     }
 }
@@ -424,6 +439,9 @@ static void c_vpternlog(cg_t *cg, int vd, int s1, int s2)
     em_vpternlog(e, vd, s1, s2, 0x96, cg->vl);
     cg->uops += 1;
     cg->vpternlogd_emitted++;
+    /* BUG-COMBO-STATIC-F16: effect marker (redundant with the counter, but
+     * keeps the postcondition uniform). */
+    cg->twin_applied |= TWIN_APPLIED_TERNLOG;
 }
 
 /* vd ^= s1 ^ [mem] via VPTERNLOGD (AVX-512 only). Counted as one uop
@@ -442,6 +460,7 @@ static void c_vpternlog_mem(cg_t *cg, int vd, int s1, int b, int x, int sc,
     cg->uops += 1;
     cg->mem += cg->vl;
     cg->vpternlogd_emitted++;
+    cg->twin_applied |= TWIN_APPLIED_TERNLOG;
 }
 
 /* Folded XOR-with-memory (one uop on every x86 ISA: pxor m128 on SSE,
@@ -523,6 +542,8 @@ static void c_mshift(cg_t *cg, int vd, int s1, int vctrl)
     assert(is_avx512(cg));
     em_vpmultishiftqb(&cg->em, vd, vctrl, s1, cg->vl);
     cg->uops += 1;
+    /* BUG-COMBO-STATIC-F16: effect marker -- the mshift path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_MSHIFT;
 }
 
 /* Nibble split of vsrc into vd_lo/vd_hi: vd_lo = vsrc & 0x0F,
@@ -739,6 +760,8 @@ static void mulacc_column(cg_t *cg, int col, int ncols, int u,
              * + 2 vpermi2b + 1-2 xor = 6-7, vs 2 loads + 2 shuf + 1-2 xor
              * = 5-6 for the VPSHUFB path (the model says the twin is
              * marginally worse; measurement decides anyway). */
+            /* BUG-COMBO-STATIC-F16: effect marker -- the permi2b path. */
+            cg->twin_applied |= TWIN_APPLIED_PERMI2B;
             assert(cg->cand.isa == ISA_AVX512);
             c_ldpool(cg, cg->tbl, pool_get(cg, CK_NIBBOTH, c));
             c_vmov(cg, cg->r1, cg->tlo);
@@ -1021,6 +1044,8 @@ static int xorbit_inptr(cg_t *cg, int i, int is_delta)
 
 static void gen_body_xorbit(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker -- the xorbit code path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_XORBIT;
     const plan_t *pl = cg->pl;
     const xorbit_t *s = pl->bit_sched;
     assert(s && s->ntemps > 0);
@@ -1252,6 +1277,8 @@ static void rec_cf_synd_accum(cg_t *cg, uint8_t c, int acc, int first,
  * the stores below are shared with the generic body. */
 static void gen_body_rec_cf(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker -- the rec_cf code path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_REC_CF;
     const plan_t *pl = cg->pl;
     const struct rec_cf_data *cfd = pl->rec_cf;
     assert(pl->kind == P_MULACC);
@@ -1497,6 +1524,8 @@ static void gen_body(cg_t *cg)
                 }
             }
         } else if (cg->cand.xorsched) {
+        /* BUG-COMBO-STATIC-F16: effect marker -- the xorsched path. */
+        cg->twin_applied |= TWIN_APPLIED_XORSCHED;
         /* XOR-schedule twin: the body follows pl->xor_sched (cross-row
          * CSE) instead of the naive per-row column loop. Phase 1 forms
          * each temp t_k = in_a ^ in_b and fans it out to its user rows;
@@ -1777,6 +1806,8 @@ static void gen_body(cg_t *cg)
                         c_vmov(cg, acc, cg->t);
                     } else if (gfni) {
                         if (cg->cand.remat) {
+                            /* BUG-COMBO-STATIC-F16: effect marker. */
+                            cg->twin_applied |= TWIN_APPLIED_REMAT;
                             size_t poff = pool_get(cg, CK_AFF, c);
                             if (!tbl_pool_valid || tbl_pool_off != poff) {
                                 c_ldpool(cg, cg->tbl, poff);
@@ -1791,6 +1822,8 @@ static void gen_body(cg_t *cg)
                     } else {
                         nibble_split(cg, cg->tlo, cg->thi, acc);
                         if (cg->cand.remat) {
+                            /* BUG-COMBO-STATIC-F16: effect marker. */
+                            cg->twin_applied |= TWIN_APPLIED_REMAT;
                             /* NIBLO/NIBHI ping-pong through the single tbl
                              * scratch: each u iteration needs both tables,
                              * so the 2 loads per (i,j,u) are inherent and
@@ -1929,6 +1962,8 @@ static void pipe_horner_compute(cg_t *cg, int col, int data)
  * iteration's stores. ncols == 0 falls back to gen_body. */
 static void gen_body_pipe(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker -- the pipe code path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_PIPE;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U, vl = cg->vl;
@@ -2744,6 +2779,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "x86_64 backend: maskedtail needs AVX-512");
         return -1;
     }
+    /* nt+maskedtail is rejected: the body stores would be non-temporal
+     * but the masked tail stores are temporal (no masked NT form is
+     * emitted), so the combination is only partial-nt. Native api.c's
+     * mt_ok already requires !nt for the duel; this backend gate is the
+     * defense-in-depth backstop for direct jit_build_version callers
+     * (BUG-COMBO-E1-MASKEDTAIL-NT). */
+    if (cand->maskedtail && cand->nt) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail excludes nt (partial-nt)");
+        return -1;
+    }
     /* Masked tail plan-kind gate (mirrors api.c's twin gate and
      * gen_tail_masked's assertion): P_XOR plain body, or GFNI multiply.
      * Nibble masked tails are not implemented. */
@@ -3147,13 +3193,23 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     for (size_t i = 0; i < cg.pool_len; i++)
         em_byte(&cg.em, cg.pool[i]);
     em_resolve(&cg.em);
+    /* OOM check: the emitter sets cg.em.err on buffer overflow or
+     * label/fixup realloc failure, and pool_get sets cg.oom on realloc
+     * failure. Either way the generated code is incomplete -- reject
+     * cleanly instead of installing it. Placed before the mem install
+     * so the fail path doesn't leak the mmap'd page. */
+    if (cg.em.err || cg.oom) {
+        snprintf(err, errlen, "x86_64 backend: out of memory during codegen");
+        goto fail;
+    }
     size_t total = cg.em.len;
 
-    /* Phantom twin check (BUG_t1_80): if ternlog was requested but zero
-     * VPTERNLOGD instructions were emitted, the pin was a no-op. Reject
-     * with a clean error instead of recording a false twin label.
+    /* Phantom twin check (BUG_t1_80, BUG-COMBO-STATIC-F16): if a twin was
+     * requested but its code path was never taken, the pin was a no-op.
+     * Reject with a clean error instead of recording a false twin label.
      * Placed before the mem install so the fail path doesn't leak the
-     * mmap'd page. */
+     * mmap'd page. The ternlog counter is subsumed by the bit but kept
+     * for its precise "no VPTERNLOGD emitted" message. */
     if (cand->ternlog && cg.vpternlogd_emitted == 0) {
         if (err && errlen > 0)
             snprintf(err, errlen,
@@ -3161,6 +3217,32 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                      "(plan has no foldable triples)");
         goto fail;
     }
+    {
+        struct { int req; uint32_t bit; const char *name; } twins[] = {
+            { cand->nt, TWIN_APPLIED_NT, "nt" },
+            { cand->prefetch_dist != 0, TWIN_APPLIED_PREFETCH, "prefetch" },
+            { cand->remat, TWIN_APPLIED_REMAT, "remat" },
+            { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
+            { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
+            { cand->mshift, TWIN_APPLIED_MSHIFT, "mshift" },
+            { cand->permi2b, TWIN_APPLIED_PERMI2B, "permi2b" },
+            { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
+            { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
+            { cand->crc_fold, TWIN_APPLIED_CRC_FOLD, "crc_fold" },
+        };
+        /* ternlog is checked via its counter above (precise message). */
+        for (size_t ti = 0; ti < sizeof(twins)/sizeof(twins[0]); ti++) {
+            if (twins[ti].req && !(cg.twin_applied & twins[ti].bit)) {
+                if (err && errlen > 0)
+                    snprintf(err, errlen,
+                             "%s twin requested but its code path was not "
+                             "taken (phantom twin)",
+                             twins[ti].name);
+                goto fail;
+            }
+        }
+    }
+    v->twin_applied = cg.twin_applied;
 
     long ps = sysconf(_SC_PAGESIZE);
     size_t memsz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);

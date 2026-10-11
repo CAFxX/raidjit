@@ -1064,8 +1064,13 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
     /* VPTERNLOG twins for AVX-512 nibble candidates: the benchmark decides
      * empirically whether the 3-input XOR wins (fewer uops but r1+r2 live
      * simultaneously, increasing register pressure). Only for P_MULACC/
-     * P_DELTA: the ternlog flag is only consulted in mulacc_column(). */
-    if (pl->kind == P_MULACC || pl->kind == P_DELTA) {
+     * P_DELTA: the ternlog flag is only consulted in mulacc_column().
+     * Skip when the plan has no nontrivial coefficients (e.g. a degenerate
+     * XOR-only P_DELTA): ternlog would never be consulted and the backend
+     * phantom postcondition would reject the candidate (BUG-COMBO-E1X86-01
+     * auto-path instance). */
+    if ((pl->kind == P_MULACC || pl->kind == P_DELTA) &&
+        plan_any_nontrivial(pl)) {
         int ntemp = n;
         for (int i = 0; i < ntemp && n < maxout; i++) {
             if (out[i].isa == ISA_AVX512 && out[i].mul == MUL_NIBBLE &&
