@@ -4,7 +4,7 @@ One `rj_fn_batched` call processes S stripes that share a topology and an
 op. v1 is a Tier-1 driver: a C loop over the already-compiled, dispatched
 `rj_fn`, one call per stripe. Zero new codegen.
 
-Design: `hidden_files/design_batched_api.md` (Carlo's §13 decisions are
+Design: [`hidden_files/design_batched_api.md`](../hidden_files/design_batched_api.md) (Carlo's §13 decisions are
 the spec; this doc is the user-facing summary).
 
 ## 1. API
@@ -78,7 +78,7 @@ Stripes complete in index order 0..S-1 on the calling thread; the driver
 spawns no threads. When the call returns, all S outputs are written
 (modulo the NT fence contract below).
 
-Threading guarantees are exactly `rj_fn`'s (`docs/limitations.md`):
+Threading guarantees are exactly `rj_fn`'s ([`docs/limitations.md`](limitations.md)):
 generated code keeps no mutable shared state and the driver adds none
 (loop-local indices only), so concurrent batched calls on one `rj_jit*`
 from any threads are safe. Not async-signal-safe, same as `rj_fn`.

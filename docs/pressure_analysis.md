@@ -83,7 +83,7 @@ offered (2U+7<=16 was, 2U+2<=16 now); AVX2 likewise U<=4 to U<=7
 offered before and after -- no change there. RAID-5 parity update
 (n_out=1) already offered U=8 everywhere. RVV keeps the U<=5
 candidate cap; the win there is headroom, not new candidates.
-`tests/test_pressure.c` §§5-7 and `tests/test_codegen_shape.c`
+[`tests/test_pressure.c`](../tests/test_pressure.c) §§5-7 and [`tests/test_codegen_shape.c`](../tests/test_codegen_shape.c)
 `test_delta_trivial` pin the exact values, the empty constant pool,
 and (SSE) execution of the kept delta temp.
 
@@ -99,7 +99,7 @@ Fix: candidate lists are now {8,7,6,5,4,3,2,1} on x86 and NEON
 makes U=6-8 newly feasible, and RVV's (need*lmul <= 32) filter rejects
 infeasible (n_out,U,lmul) combos exactly). The pressure
 filter drops U=6-8 where it doesn't fit, so this is purely additive.
-`tests/test_pressure.c` pins the new boundary.
+[`tests/test_pressure.c`](../tests/test_pressure.c) pins the new boundary.
 
 ## 3. Advanced options evaluated
 
@@ -136,17 +136,17 @@ inner iteration (nibble); GFNI remat reloads are deduped across the
 unroll loop at JIT time.
 
 Status: x86 backend implements nibble and GFNI remat (codegen, planner
-gate, pressure asserts, `tests/test_remat.c` force-builds 5 remat
+gate, pressure asserts, [`tests/test_remat.c`](../tests/test_remat.c) force-builds 5 remat
 cases against the scalar reference). AArch64 backend implements nibble
-remat (no GFNI on this ISA): codegen in `src/aarch64/jit.c`
+remat (no GFNI on this ISA): codegen in [`src/aarch64/jit.c`](../src/aarch64/jit.c)
 (prologue skips table preloads, u-loop reloads tables into the `tbl`
 scratch, 2 pool loads per nontrivial use), planner twin enumeration in
-`src/plan.c` under the same dominance policy, register-count assert
-(`n_out*U+6`) in `compute_regs`, and `tests/test_aarch64_remat.c`
+[`src/plan.c`](../src/plan.c) under the same dominance policy, register-count assert
+(`n_out*U+6`) in `compute_regs`, and [`tests/test_aarch64_remat.c`](../tests/test_aarch64_remat.c)
 force-builds 4 remat cases (NEON headline twin, all-trivial, ntriv=1
 boundary, SVE) plus planner twin-policy checks. RVV backend implements
 nibble remat (nibble is the only multiply method on this ISA): codegen
-in `src/riscv/jit.c` (prologue skips table preloads; the body hoists
+in [`src/riscv/jit.c`](../src/riscv/jit.c) (prologue skips table preloads; the body hoists
 both table loads per (i,j) -- NIBLO into the `tbl` scratch, NIBHI into
 the mask register repurposed as the second table scratch via a new
 single-table `c_ldtab1` helper -- the MULACC/DELTA pair loader's fixed
@@ -155,8 +155,8 @@ the u-loop runs inside the tables' live scope: 2 pool loads per
 nontrivial (i,j) instead of per (i,j,u); the mask itself is dead there
 because the body uses `vand.vi` with the 0x0F immediate, so the proven
 `(n_out+1)*U+6` formula is unchanged), planner twin enumeration in
-`src/plan.c` under the same dominance policy, register-count assert
-(`(n_out+1)*U+6`) at the allocation site, and `tests/test_riscv_remat.c`
+[`src/plan.c`](../src/plan.c) under the same dominance policy, register-count assert
+(`(n_out+1)*U+6`) at the allocation site, and [`tests/test_riscv_remat.c`](../tests/test_riscv_remat.c)
 force-builds 3 remat cases (RS(6,3) U=6 headline twin: persistent 33 >
 32 >= remat 30; all-trivial; custom n_out=4/ntriv=4 Vandermonde) plus
 planner twin-policy checks plus an over-pressure rejection check (U=8
@@ -202,7 +202,7 @@ concrete and testable.
   tested configuration; significant differences were losses (e.g.
   RAID6(8) nibble 1 MiB: U=9 -12.2%, U=12 -20.4%). Candidate lists stay
   {8,7,6,5,4,3,2,1}.
-- `tests/test_pressure.c`: pins exact `plan_need_regs` values and the
+- [`tests/test_pressure.c`](../tests/test_pressure.c): pins exact `plan_need_regs` values and the
   U=6/U=7/U=8 admission boundaries on AVX-512, plus the coefficient-aware
   P_DELTA values (§§5-7: all-trivial RAID-5 delta on every ISA, nontrivial
   RAID-6 control, and the newly-admitted U=5 SSE candidate).

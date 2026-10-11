@@ -12,10 +12,10 @@ one Capstone disassembler module, all `-sSINGLE_FILE=1` (self-contained,
 
 | Module | File | Contents |
 |---|---|---|
-| x86-64 | `out/raidjit_x86.js` | planner + x86-64 emitter, `rjw_compile` API |
-| AArch64 | `out/raidjit_aarch64.js` | planner + AArch64 emitter, `rjw_compile` API |
-| RISC-V | `out/raidjit_riscv.js` | planner + RISC-V emitter, `rjw_compile` API |
-| disasm | `out/disasm.js` | Capstone 6.0.0-Alpha11+ (X86+AArch64+RISCV), `dj_disasm` API |
+| x86-64 | [`out/raidjit_x86.js`](out/raidjit_x86.js) | planner + x86-64 emitter, `rjw_compile` API |
+| AArch64 | [`out/raidjit_aarch64.js`](out/raidjit_aarch64.js) | planner + AArch64 emitter, `rjw_compile` API |
+| RISC-V | [`out/raidjit_riscv.js`](out/raidjit_riscv.js) | planner + RISC-V emitter, `rjw_compile` API |
+| disasm | [`out/disasm.js`](out/disasm.js) | Capstone 6.0.0-Alpha11+ (X86+AArch64+RISCV), `dj_disasm` API |
 
 Build: `make -f tools/wasm/Makefile.wasm` (needs emsdk on PATH;
 `source ~/tools/emsdk/emsdk_env.sh`). Capstone source goes in
@@ -88,7 +88,7 @@ Result (success):
 
 `exec_validated` is always false: the module never executes generated
 code (it cannot — no executable memory in the browser). Correctness is
-argued by byte-identity with the native build (see `parity/`), which CI
+argued by byte-identity with the native build (see [`parity/`](parity/)), which CI
 executes. `uops_per_byte`/`mem_per_byte` are static-model estimates,
 not measurements.
 
@@ -115,7 +115,7 @@ const code = mod.HEAPU8.slice(cp, cp + mod.getValue(lenp, 'i32'));
 `aarch64`, or `riscv64` (RVV 1.0 + Zvbc enabled). Undecodable bytes are
 emitted as `.byte` entries (never silently dropped).
 
-Capstone 6 requirement: `dis_api.c` calls
+Capstone 6 requirement: [`dis_api.c`](dis_api.c) calls
 `cs_option(NULL, CS_OPT_MEM, ...)` with a full `cs_opt_mem` callback set
 before the first `cs_open()` — Capstone 6 fails `cs_open` with
 `CS_ERR_MEMSETUP` without it (v5 did not require this).
@@ -137,19 +137,19 @@ needed 20 extra self-contained Capstone `*Module.h` files.
 GHA outputs are leads, never verdicts: every module is re-verified
 locally (parity matrix) before use.
 
-## Parity harness (`parity/`)
+## Parity harness ([`parity/`](parity/))
 
-`parity_driver.c` links `rjw_api.c` **natively** per ARCH (without
-`-DRJ_WASM`): the same JSON in → native bytes out. `run_parity.sh`
-builds the three native drivers, runs `parity_matrix.json` through them
+[`parity_driver.c`](parity/parity_driver.c) links [`rjw_api.c`](rjw_api.c) **natively** per ARCH (without
+`-DRJ_WASM`): the same JSON in → native bytes out. [`run_parity.sh`](parity/run_parity.sh)
+builds the three native drivers, runs [`parity_matrix.json`](parity/parity_matrix.json) through them
 and through the wasm modules under node, and requires byte-identical
 code/const plus identical metadata. This is the master correctness
 gate (SPEC §S9.2).
 
 ## Page
 
-`../gen_live_kernels_page.py` inlines the four `out/*.js` bundles into
-`raidjit_kernels.html` — a single self-contained file (`file://`-safe,
+[`../gen_live_kernels_page.py`](../gen_live_kernels_page.py) inlines the four [`out/*.js`](out/) bundles into
+[`raidjit_kernels.html`](out/raidjit_kernels.html) — a single self-contained file (`file://`-safe,
 no server, no fetch, no threads).
 
 - **Any-combination options UI:** ISA selector (x86 / aarch64 / riscv)
@@ -173,7 +173,7 @@ no server, no fetch, no threads).
 
 The page is mirrored to `~/workspace/your_files/raidjit/`,
 **replacing** the static 150-kernel explorer at the same filename
-(`raidjit_kernels.html`). The Markdown reference
+([`raidjit_kernels.html`](out/raidjit_kernels.html)). The Markdown reference
 (`raidjit_kernels.md`) stays as the archived verification corpus.
 
 ## Constraints (non-negotiable)

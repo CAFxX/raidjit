@@ -1,14 +1,14 @@
 # Kernel Dumps: RAID-5(4+1) and RAID-6(5+2)
 
 > **Note 2026-10-09:** the static HTML explorer built from these dumps
-> (`raidjit_kernels.html`) has been superseded by the **live WASM kernel
+> ([`raidjit_kernels.html`](wasm/out/raidjit_kernels.html)) has been superseded by the **live WASM kernel
 > explorer** at the same deliverable path — the page now compiles any
 > option combination in-browser via WebAssembly (see
-> `tools/wasm/README.md`, SPEC §S7). The Markdown reference below and
+> [`tools/wasm/README.md`](wasm/README.md), [SPEC](wasm/SPEC.md) §S7). The Markdown reference below and
 > the shipped `.code.bin`/`.const.bin`/`.asm` files remain the archived
 > verification corpus (S9.3 byte-identity proof, parity harness).
 
-Regenerated 2026-10-07 with `make kernels` (see `tools/gen_kernels.c` in the
+Regenerated 2026-10-07 with `make kernels` (see [`tools/gen_kernels.c`](gen_kernels.c) in the
 raidjit repo). Each kernel was JIT-compiled with `benchmark=0` (heuristic
 candidate selection) for a synthetic CPU matching the target ISA — never the
 host CPUID, since the cross targets differ from the build host.
@@ -25,7 +25,7 @@ ranked — this is heuristic selection, not first-match.
 ## Verification
 
 Every kernel was executed in-process against the scalar reference
-(`src/ref.c`) at 6 lengths (0, 1, 7, 1003, 65537, 1 MiB) × 3 seeds = 18
+([`src/ref.c`](../src/ref.c)) at 6 lengths (0, 1, 7, 1003, 65537, 1 MiB) × 3 seeds = 18
 runs, on both the live JIT image and a fresh executable mapping of the
 shipped `.code.bin`/`.const.bin` bytes (proving the shipped bytes are the
 tested bytes). Buffers 64-byte aligned per the API contract. A red-green
@@ -56,7 +56,7 @@ The `maskedtail` / `predtail` rows are the item-14 tail twins: complete
 versions of the winning candidate whose scalar tail loop is replaced by the
 masked AVX-512 tail (`KMOVQ` k1 from the 520-byte tail-mask pool, `{k1}{z}`
 loads / `{k1}` stores) or the fully predicated SVE tail (`WHILELT`). Built
-from the winner exactly as `api.c` does; see `tools/gen_kernels.c`.
+from the winner exactly as [`api.c`](../src/api.c) does; see [`tools/gen_kernels.c`](gen_kernels.c).
 
 ## RAID-6 (5 data + 2 parity) — Horner
 
@@ -78,10 +78,10 @@ RAID-6 Q parity uses Horner accumulation with GF(2⁸) multiplies:
 The previous kernel set (2026-10-01 12:28) was built before the SVE2
 audit; its "sve2" kernels contained zero SVE2 instructions. That is fixed
 here: `raid6-5_sve2` contains 16 `EOR3` instructions (the `+eor3` desc tag
-is exact — it is set iff ≥1 EOR3 is emitted; see `docs/sve2_audit.md`).
+is exact — it is set iff ≥1 EOR3 is emitted; see [`docs/sve2_audit.md`](../docs/sve2_audit.md)).
 
 `raid5-4_sve2` cannot contain EOR3 by construction: P_XOR is pure XOR with
-no GF multiply for EOR3 to fold (`docs/sve2_audit.md`). Its marker is the
+no GF multiply for EOR3 to fold ([`docs/sve2_audit.md`](../docs/sve2_audit.md)). Its marker is the
 SVE codegen path itself — desc `sve xor U=5` and SVE major-opcode
 instructions in the bytes. Both kernels were compiled for the SVE2 target
 CPU; the one that can use SVE2 instructions does.
@@ -98,8 +98,8 @@ CPU; the one that can use SVE2 instructions does.
   ISA marker + count) plus the entry contract
 
 All of the above (including this README) are installed by
-`tools/finalize_kernels.sh` via `make kernels`; the README source lives at
-`tools/kernels-README.md` in the repo.
+[`tools/finalize_kernels.sh`](finalize_kernels.sh) via `make kernels`; the README source lives at
+[`tools/kernels-README.md`](kernels-README.md) in the repo.
 
 Entry contract: call as `rj_fn(const void *in[], void *out[], size_t len)`.
 Every buffer 64-byte aligned; no two buffers may overlap or alias. No
@@ -141,8 +141,8 @@ Codegen changes (Lane 2) reflected in reselected winners:
 Bug fix (2026-10-07, found by this regen):
 - pipe+predtail crashed the AArch64 backend (the predicated tail
   reuses the non-pipelined body whose register layout is dead in pipe
-  mode). The backend now rejects the combination cleanly, and api.c /
-  gen_kernels skip the predtail twin for pipe winners (the pipe twin
+  mode). The backend now rejects the combination cleanly, and [api.c](../src/api.c) /
+  [gen_kernels](gen_kernels.c) skip the predtail twin for pipe winners (the pipe twin
   keeps its scalar tail). Hence `raid6-5_sve2` (pipe winner) has no
   `_predtail` section; non-pipe SVE winners (e.g. `raid5-4_sve2`) do.
 - x86: `maskedtail` added to the pipe twin's exclusion list (same
@@ -155,19 +155,19 @@ capabilities compose planner-selected kernels at the C driver level and
 emit no distinct kernel of their own, so they have no sections here;
 their sub-kernels' shapes are covered by the sections above:
 
-- #8 fused kernels (`rj_fuse_compile`, src/fused.c): each data op
+- #8 fused kernels (`rj_fuse_compile`, [src/fused.c](../src/fused.c)): each data op
   (ENCODE / PARITY_UPDATE) is compiled through the public `rj_compile`
   planner -- the emitted bytes are exactly the sub-op kernels' bytes.
   The "fusion" (one entry point, one plan-time tile loop, CRC
   accumulation over the hot tile) is C code in `fused_driver_call`;
   no JIT codegen is involved. A fused section would duplicate the
   sub-op sections byte-for-byte.
-- #10 cache-blocked striping (`rj_compile_tiled`, src/striping.c):
+- #10 cache-blocked striping (`rj_compile_tiled`, [src/striping.c](../src/striping.c)):
   wraps the winning `rj_fn` in a C tile loop (`rj_tile_select` is
   plan-time). The header contract is explicit: "Bit-exact vs the
   untiled rj_fn (same kernel, disjoint tiles)."
-- #38 integrated CRC (`rj_compile_crc`, src/api_crc.c): the CRC-32 is
-  scalar table-driven C (src/crc.c, slice-by-8) accumulated in the
+- #38 integrated CRC (`rj_compile_crc`, [src/api_crc.c](../src/api_crc.c)): the CRC-32 is
+  scalar table-driven C ([src/crc.c](../src/crc.c), slice-by-8) accumulated in the
   driver; the JIT kernel is the standard encode winner. (`rj_compile_crc`
   is `rj_fuse_compile` with the sequence [ENCODE, CRC].)
 

@@ -53,7 +53,7 @@ Private build dirs `/tmp/qemubuild-aa`, `/tmp/qemubuild-rv`; the tree's
   codegen bug in `em_sve_lsr_unpred`'s emitter base, but a peer-review
   experiment refuted that (the old bug yields data mismatches, never a
   crash); the true root cause of the historical report is unknown —
-  see `docs/limitations.md` §12 for the full corrected record.
+  see [`docs/limitations.md`](limitations.md) §12 for the full corrected record.
   `test_matrix` was restored to the `test-qemu-aarch64-sve` make target
   on the strength of non-reproduction.
 - `test_pdelta_edge` logs contain `qemu: uncaught target signal 11`
@@ -86,7 +86,7 @@ without libc headers).
 - `make test-qemu-riscv64`: exit 0 — all binaries pass, incl.
   test_matrix at vlen=128/256/512 (17198 runs each, 0 failures).
 
-Latent bug fixed to make this possible: `tests/test_prune.c` defined
+Latent bug fixed to make this possible: [`tests/test_prune.c`](../tests/test_prune.c) defined
 x86-64-only topology/op helpers unconditionally, which fails the
 cross builds with `-Werror=unused-function` (the pre-existing file
 had the same issue; it was never exposed because the cross targets
@@ -103,16 +103,16 @@ and fixed; the QEMU matrix was re-run to validate.
 `test_dispatch` failed under QEMU SVE at all VLs: the notail HORNER twin
 produced zero output bytes at every admissible length. Root cause: the
 merge had (briefly) reverted A2's `cntb` build-time VL hunk in
-`src/aarch64/jit.c` on the misdiagnosis that "cntb is 8x wrong". Measured
+[`src/aarch64/jit.c`](../src/aarch64/jit.c) on the misdiagnosis that "cntb is 8x wrong". Measured
 ground truth: qemu-user 8.2.2 interprets
 `-cpu max,sve-default-vector-length=N` as N *bytes* (not bits) — the true
 emulated VL is N bytes, verified by an SVE `ld1b`/`st1b` round-trip under
 `whilelo(cntb)` moving exactly `cntb` bytes (128 for N=128). `prctl` and
 `rdvl` under-report 8x. The hunk was restored; the companion fix was in
-`tests/test_xorsched.c`, whose prctl-based `uop_divisor` was deleted —
+[`tests/test_xorsched.c`](../tests/test_xorsched.c), whose prctl-based `uop_divisor` was deleted —
 all call sites now use each version's `group_bytes` (RVV uses U*16,
 matching its NOMVL-normalized `uops_per_byte`). See
-`docs/length_dispatch.md` §11.0.
+[`docs/length_dispatch.md`](length_dispatch.md) §11.0.
 
 ### Re-validation results
 

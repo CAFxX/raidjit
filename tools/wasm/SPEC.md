@@ -8,7 +8,7 @@ compiles ANY option combination live in-browser, replacing the static
 
 ## S1. Goals (numbered, checkable)
 
-1. A web page `raidjit_kernels.html` that, for an arbitrary user-chosen option
+1. A web page [`raidjit_kernels.html`](out/raidjit_kernels.html) that, for an arbitrary user-chosen option
    set (target/ISA+features, topology+params, operation+params, multiply
    method, unroll, twin flags, codegen options), compiles the kernel
    **live in the browser** via a WASM module and shows the config table +
@@ -22,7 +22,7 @@ compiles ANY option combination live in-browser, replacing the static
 5. Optional A/B comparison mode: two independent option sets compiled live,
    shown side by side, deep-linkable.
 6. The static 150-kernel HTML explorer is **superseded** by this page (same
-   deliverable filename). `tools/gen_kernels_page.py` and the `.md` reference
+   deliverable filename). [`tools/gen_kernels_page.py`](../gen_kernels_page.py) and the `.md` reference
    stay in the repo; the `.md`'s 150 kernels remain a verification corpus.
 
 Non-goals: executing generated code in-browser; benchmarking in-browser;
@@ -45,7 +45,7 @@ heuristics; pushing anything anywhere.
 ## S3. Architecture
 
 Three compile modules (mirrors the native per-ARCH build exactly — this is
-deliberate: it avoids touching `plan.c`'s `#if defined(__aarch64__)/__riscv`
+deliberate: it avoids touching [`plan.c`](../../src/plan.c)'s `#if defined(__aarch64__)/__riscv`
 ISA-enumeration branches, which would risk native codegen):
 
 - `raidjit_x86.wasm` — COMMON_SRCS + src/x86_64/{emit,jit}.c + wasm cpu stub
@@ -77,7 +77,7 @@ matrix (§S9) checks directly.
 
 ## S4. Compile-only API (C, exported from each module)
 
-New file `tools/wasm/rjw_api.c` (additive; not linked into native builds):
+New file [`tools/wasm/rjw_api.c`](rjw_api.c) (additive; not linked into native builds):
 
 ```c
 /* Compiles ONE kernel from a JSON option document. Never executes code,
@@ -104,7 +104,7 @@ Semantics of `rjw_compile`:
 5. Candidate: if `cand` is `"auto"` → `plan_candidates` filtered by ISA, then
    the static `heuristic_select` winner (bench.c) — the same rule native
    uses at `benchmark=0`. Else construct `cand_t` directly from the pinned
-   axes (the `gen_kernels.c` pattern) and validate ISA-applicability with the
+   axes (the [`gen_kernels.c`](../gen_kernels.c) pattern) and validate ISA-applicability with the
    same eligibility predicates the planner uses; on violation return
    `{ok:false, err}` (never wrong code).
 6. `jit_build_version` → on success return metadata JSON; on failure
@@ -121,7 +121,7 @@ Result JSON fields: `ok`, `err?`, `desc`, `plan_id` (rj_plan_id), `target`,
 `const_sha256`, `isa_marker`, `selection` (`heuristic`|`pinned`),
 `exec_validated:false`, `nominal_vl_bytes`.
 
-Disassembler module API (`tools/wasm/dis_api.c` over Capstone):
+Disassembler module API ([`tools/wasm/dis_api.c`](dis_api.c) over Capstone):
 
 ```c
 /* arch: "x86_64"|"aarch64"|"riscv64". Returns JSON array of
@@ -139,7 +139,7 @@ are plain `malloc`/`calloc`/`realloc`/`free`/`vsnprintf` shims.
 
 JS-side normalization (~30 lines, tested): strip objdump size suffixes
 (`vpxord`→`vpxor`), comma spacing, hex case — so output is comparable to the
-`.md` reference. `tidy_disasm.py`'s lone-byte folding is NOT needed
+`.md` reference. [`tidy_disasm.py`](../tidy_disasm.py)'s lone-byte folding is NOT needed
 (Capstone never splits instructions across lines). Byte equality is the
 invariant, not asm text.
 
@@ -212,8 +212,8 @@ Per recon (exact lines in the report):
    point at it; free path uses `free`. The `__builtin___clear_cache`
    (aarch64, riscv only) and `sysconf` lines live inside the replaced
    block, so they never compile under emcc.
-2b. **VL/VLEN reads**: `src/aarch64/jit.c:1566` (`__asm__ volatile("cntb")`
-   overriding `cg.vl` from hardware) and `src/riscv/jit.c:151-155,1402`
+2b. **VL/VLEN reads**: [`src/aarch64/jit.c:1566`](../../src/aarch64/jit.c#L1566) (`__asm__ volatile("cntb")`
+   overriding `cg.vl` from hardware) and [`src/riscv/jit.c:151-155,1402`](../../src/riscv/jit.c#L151-L155)
    (`read_vlenb()` CSR read into `cg.vlenb`) are inline asm OUTSIDE the
    S6.2 replaced block and would hard-fail under emcc. Each gets its own
    `#ifdef RJ_WASM` that sources the value from the preset bundle instead
@@ -235,7 +235,7 @@ Per recon (exact lines in the report):
    link, which fails loudly if `-pthread` is ever added. (Found by peer
    review 2026-10-08.)
 4. `getenv` calls are inert (NULL under emscripten) — no change.
-5. `rjw_api.c` forces `o.benchmark=0`, skips `validate_versions`, skips stage
+5. [`rjw_api.c`](rjw_api.c) forces `o.benchmark=0`, skips `validate_versions`, skips stage
    2, never calls `rj_init` (prefetch probe).
 
 Module source lists (the Makefile's COMMON_SRCS, auditable here):
@@ -264,7 +264,7 @@ no `rand`/`time`/`getpid` in src, total-order qsort comparators, FNV-1a-64
 plan IDs over raw matrix bytes, strict `< sb - 1e-9` heuristic tie-breaks.
 ASLR/pointers never enter bytes or metadata.
 
-## S7. Page design (`tools/gen_live_kernels_page.py` → `raidjit_kernels.html`)
+## S7. Page design ([`tools/gen_live_kernels_page.py`](../gen_live_kernels_page.py) → [`raidjit_kernels.html`](out/raidjit_kernels.html))
 
 - Single self-contained HTML (emscripten `-sSINGLE_FILE=1` outputs inlined
   as base64 by the generator; pin `-sSINGLE_FILE_BINARY_ENCODE=0` since
@@ -310,7 +310,7 @@ tools/gen_live_kernels_page.py   (embeds the 4 SINGLE_FILE js outputs into
 ```
 
 Native tree changes: only `#ifdef RJ_WASM` blocks in the three `jit.c`
-files (§S6.2). Everything else additive under `tools/wasm/`.
+files (§S6.2). Everything else additive under [`tools/wasm/`](.).
 
 ## S9. Tests & acceptance gates
 
@@ -327,7 +327,7 @@ files (§S6.2). Everything else additive under `tools/wasm/`.
   == native reference byte-for-byte; desc/sizes/uops/winner identical.
   No kill trigger fired. (Spike used `-O0` for the final byte comparison;
   `-O2` compile also proven; emitted bytes are independent of host -O.)
-- S9.2 **Parity matrix (the master gate):** `tools/wasm/parity/` — native
+- S9.2 **Parity matrix (the master gate):** [`tools/wasm/parity/`](parity/) — native
   per-ARCH driver emits `{options_hash, code_sha256, const_sha256, metadata}`
   JSON lines; node runner feeds the same option documents to the wasm
   modules and compares. Matrix covers: 3 ISAs × {raid5, raid6, raid6_rs,
@@ -342,7 +342,7 @@ files (§S6.2). Everything else additive under `tools/wasm/`.
   (Guards C4.)
 - S9.4 **Disassembly differential:** decode every kernel in the parity corpus
   with `disasm.wasm`; diff normalized output against the objdump reference
-  (`.md` + `tidy_disasm.py`). Zero unknown/` .byte` decodes; zero
+  (`.md` + [`tidy_disasm.py`](../tidy_disasm.py)). Zero unknown/` .byte` decodes; zero
   mis-decodes on the emitted subset. Kill triggers per recon: per-ISA
   fallback (riscv/aarch64 hand-written decoder; x86 iced-wasm).
 - S9.5 **Native suite green:** `make test` + `make test-asan` (correctness
@@ -357,9 +357,9 @@ files (§S6.2). Everything else additive under `tools/wasm/`.
   params, huge topologies (ndata=256), failed-disk index garbage, custom
   matrix garbage, 10k-option fuzz loop in node (no crash/hang/OOM beyond a
   documented cap; document the cap).
-- S9.9 **Docs in the same change:** `tools/wasm/README.md`,
-  `tools/kernels-README.md` update (static page superseded; `.md` archived
-  reference), regen wiring (`finalize_kernels.sh` / `mirror_your_files.sh`
+- S9.9 **Docs in the same change:** [`tools/wasm/README.md`](README.md),
+  [`tools/kernels-README.md`](../kernels-README.md) update (static page superseded; `.md` archived
+  reference), regen wiring ([`finalize_kernels.sh`](../finalize_kernels.sh) / [`mirror_your_files.sh`](../mirror_your_files.sh)
   mirror the live page, not the static one).
 
 Acceptance = S9.2 + S9.3 + S9.4 + S9.5 + S9.6 + S9.7 + S9.8 + S9.9 all green.
@@ -369,10 +369,10 @@ No benchmarks anywhere in this track (C1).
 
 - `make kernels` continues to regenerate the `.md` (archived reference).
 - New target `make kernels-live` (or a flag) builds the wasm modules +
-  regenerates `raidjit_kernels.html` via `tools/gen_live_kernels_page.py`.
-- `tools/mirror_your_files.sh` mirrors the live `raidjit_kernels.html`
+  regenerates [`raidjit_kernels.html`](out/raidjit_kernels.html) via [`tools/gen_live_kernels_page.py`](../gen_live_kernels_page.py).
+- [`tools/mirror_your_files.sh`](../mirror_your_files.sh) mirrors the live [`raidjit_kernels.html`](out/raidjit_kernels.html)
   (replacing the static file at the same path).
-- `tools/gen_kernels_page.py` stays in the repo, runnable, but is removed
+- [`tools/gen_kernels_page.py`](../gen_kernels_page.py) stays in the repo, runnable, but is removed
   from the default regen pipeline (superseded deliverable).
 
 ## S11. Open decisions (coordinator calls, recorded)
@@ -400,7 +400,7 @@ No benchmarks anywhere in this track (C1).
   (jit.c diffs are `#ifdef` whitespace/braces/`__LINE__` only).
 - S9.4 disasm differential: **48/48** (x86+aarch64 37 blobs vs objdump
   with documented normalizations; riscv 11 blobs vs a native build of the
-  same `dis_api.c`, since binutils 2.42 cannot decode RVV in binary mode).
+  same [`dis_api.c`](dis_api.c), since binutils 2.42 cannot decode RVV in binary mode).
 - S9.5 native suite: `make test` **green** (full run 2026-10-09: make
   progressed sequentially through test_batched — make stops on first
   failure — and the tail (test_batched/test_lrc/test_twin_audit) was
@@ -412,11 +412,11 @@ No benchmarks anywhere in this track (C1).
   disasm_diff.py riscv path fix; `-sWASM_BIGINT=1` pinned;
   page JS robustness — JSON.parse guards, disassemble error paths,
   hash validation).
-- S9.8 self-attack: **102/102** (`tools/wasm/self_attack/attack.js` —
+- S9.8 self-attack: **102/102** ([`tools/wasm/self_attack/attack.js`](self_attack/attack.js) —
   29 adversarial compile docs + recovery probes, 20 deep-link hash
   attacks incl. prototype-pollution, 12 disasm attacks). No traps,
-  no hangs, no state corruption. See `SELF_ATTACK.md`.
-- S9.9 docs: README.md + this SPEC finalized; `tools/kernels-README.md`
+  no hangs, no state corruption. See [SELF_ATTACK.md](self_attack/SELF_ATTACK.md).
+- S9.9 docs: README.md + this SPEC finalized; [`tools/kernels-README.md`](../kernels-README.md)
   notes the static page is superseded; regen wiring mirrors the live page.
 
 Build flow (as executed): the four modules were built on GitHub Actions

@@ -1,8 +1,8 @@
 # S9.8 self-attack — WASM explorer (2026-10-09)
 
-Harness: `tools/wasm/self_attack/attack.js` (Node, drives the actual
+Harness: [`tools/wasm/self_attack/attack.js`](attack.js) (Node, drives the actual
 `tools/wasm/out/*.js` bundles exactly as the page's `compileKernel()` /
-`disassemble()` wrappers do). Full log: `attack.log`.
+`disassemble()` wrappers do). Full log: [`attack.log`](attack.log).
 
 Verdict rule per case: the module must NEVER trap (no exception escaping
 `_rjw_compile` / `_dj_disasm`), must return well-formed JSON with

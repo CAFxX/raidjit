@@ -1,7 +1,7 @@
 # AArch64 PMULL-based GF(2⁸) multiply: survey, analysis, decision
 
 **Date:** 2026-10-01 · **Status:** study complete — **do NOT integrate** (evidence below)
-**Scope:** NEON and SVE backends in `src/aarch64/jit.c`. x86/RISC-V untouched.
+**Scope:** NEON and SVE backends in [`src/aarch64/jit.c`](../src/aarch64/jit.c). x86/RISC-V untouched.
 
 ## Decision
 
@@ -26,7 +26,7 @@ Consequence: a PMULL construction is *expressible* on both NEON and
 
 ## 2. Baseline: current nibble-TBL cost
 
-From `src/aarch64/jit.c` HORNER body, per nontrivial `(row j, unroll u)`
+From [`src/aarch64/jit.c`](../src/aarch64/jit.c) HORNER body, per nontrivial `(row j, unroll u)`
 — one 16-byte (NEON) / VL-byte (SVE) vector:
 
 ```

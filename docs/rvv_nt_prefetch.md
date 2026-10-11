@@ -13,7 +13,7 @@ Implement **both**, with ratified extensions:
 | Non-temporal output stores | `NTL.ALL` hint before each `vse8.v` | Zihintntl v1.0 (ratified) | implemented |
 | Software prefetch of inputs | `prefetch.r` per input stream per group iteration | Zicbop (ratified) | implemented, opt-in |
 
-The pre-existing claim in `src/plan.c` that "RVV v1 has no non-temporal
+The pre-existing claim in [`src/plan.c`](../src/plan.c) that "RVV v1 has no non-temporal
 store primitive" was wrong: the Zihintntl extension provides exactly
 this. Both mechanisms are HINT encodings, so they degrade gracefully
 (architectural NOPs) on implementations that ignore them.
@@ -73,12 +73,12 @@ memory ordering of the store the way x86 `MOVNTDQ` (weakly ordered,
 needs `SFENCE`) or AArch64 `STNP`/`STNT1B` (needs `DMB ISHST`) do.
 Consequences, all enforced by tests:
 
-- The jitted code executes **no fence** (verified: `tests/test_nt.c`
+- The jitted code executes **no fence** (verified: [`tests/test_nt.c`](../tests/test_nt.c)
   scans NT twins for any `FENCE` word and fails if one appears).
 - **Callers need no fence either** on RISC-V — unlike x86 (caller must
   `SFENCE`) and AArch64 (caller must `DMB ISHST`). This asymmetry is
-  documented in `rj_options.nt_threshold` (`include/raidjit.h`) and
-  `cand_t.nt` (`src/plan.h`).
+  documented in `rj_options.nt_threshold` ([`include/raidjit.h`](../include/raidjit.h)) and
+  `cand_t.nt` ([`src/plan.h`](../src/plan.h)).
 
 | ISA | NT mechanism | jitted code fences | caller must fence |
 |---|---|---|---|
@@ -88,7 +88,7 @@ Consequences, all enforced by tests:
 
 ### Codegen
 
-All RVV output stores funnel through `c_vse()` in `src/riscv/jit.c`
+All RVV output stores funnel through `c_vse()` in [`src/riscv/jit.c`](../src/riscv/jit.c)
 (the only caller of `em_vse8`), so the NT twin is a one-line choke
 point: when `cand->nt`, emit `ntl.all` immediately before each
 `vse8.v`. This covers the main loop and the vector tail (RVV has no
@@ -102,7 +102,7 @@ with benchmarking on, measurement decides.
 The spec discourages following an NTL hint with an instruction that
 does not explicitly access memory; the code complies trivially — the
 hint's immediately subsequent instruction is always the `vse8.v`
-store it annotates (enforced by `tests/test_riscv_prefetch.c`'s
+store it annotates (enforced by [`tests/test_riscv_prefetch.c`](../tests/test_riscv_prefetch.c)'s
 adjacency check).
 
 ### Rejected alternatives
@@ -156,7 +156,7 @@ the streaming-write aspect) and no `.i` (no instruction stream).
 ### Detection: rj_cpu_info.rvv_zicbop
 
 No `riscv_hwprobe` key exposes Zicbop, so
-`src/riscv/cpu.c` parses the `isa:` line of `/proc/cpuinfo` for an
+[`src/riscv/cpu.c`](../src/riscv/cpu.c) parses the `isa:` line of `/proc/cpuinfo` for an
 exact `zicbop` token. Caveats:
 
 - Under QEMU user-mode the guest sees the **host's** (non-RISC-V)
@@ -186,7 +186,7 @@ exact `zicbop` token. Caveats:
 
 ### Codegen
 
-`c_prefetch_in()` in `src/riscv/jit.c`, called immediately after each
+`c_prefetch_in()` in [`src/riscv/jit.c`](../src/riscv/jit.c), called immediately after each
 input-stream pointer computation (`em_add(e, T2, T2, T1)`) in the
 P_XOR, P_MULACC, P_HORNER, and P_DELTA (old, new, and old-parity
 seeding) paths: one `prefetch.r` per input stream per group iteration,
@@ -194,7 +194,7 @@ seeding) paths: one `prefetch.r` per input stream per group iteration,
 `PREFETCHT0`. Each prefetch counts as **1 uop** in the static model
 (mirrors x86), so the prefetch twin loses the static tie-break and
 only wins via the benchmark — per the standing policy that prefetch
-stays opt-in and measurement decides (see `docs/limitations.md` §11).
+stays opt-in and measurement decides (see [`docs/limitations.md`](limitations.md) §11).
 
 ## Verification evidence (2026-10-01)
 
@@ -203,7 +203,7 @@ stays opt-in and measurement decides (see `docs/limitations.md` §11).
   (`-march=rv64gcv_zicbop`), rejects 2048.
 - **QEMU 8.2.2** (`qemu-riscv64`, `-cpu max` and `-cpu rv64`):
   executes both hint forms, no SIGILL.
-- **Unit:** `tests/test_riscv_prefetch.c` — planner twin enumeration
+- **Unit:** [`tests/test_riscv_prefetch.c`](../tests/test_riscv_prefetch.c) — planner twin enumeration
   (NT always, prefetch iff Zicbop); force-built NT twin (`+nt`,
   `#NTL.ALL == #vse8.v ≥ 1`, every store immediately preceded by the
   hint, temporal twin has none); force-built prefetch twin (`+pf`,
@@ -212,7 +212,7 @@ stays opt-in and measurement decides (see `docs/limitations.md` §11).
   (100, 4096, 8192, 16 fail; 32, 2016 build); output equality vs the
   scalar reference at 18 lengths for both twins.
   Passes under QEMU at VLEN 128/256/512.
-- **Shape:** `tests/test_nt.c` extended with `__riscv` branches:
+- **Shape:** [`tests/test_nt.c`](../tests/test_nt.c) extended with `__riscv` branches:
   counts `0x00500033` words as NT markers and scans for any `FENCE`
   word (must be zero); RVV NT twins now run the full NT
   correctness+shape matrix (raid1, raid5(8), raid6(8), rs(6,3)
@@ -220,21 +220,21 @@ stays opt-in and measurement decides (see `docs/limitations.md` §11).
 - **Mutation (red-green):** corrupting `em_ntl_all`'s word, shifting
   the prefetch offset, stubbing the prefetch gate off, and removing
   the planner Zicbop gate each produce test failures (in the new test
-  and in `test_nt.c`); all restored and re-greened.
+  and in [`test_nt.c`](../tests/test_nt.c)); all restored and re-greened.
 - **No regressions:** native `make test` green (464,279-run matrix,
   0 failures); full QEMU RVV suite at 3 VLENs; RVV remat untouched
-  (`tests/test_riscv_remat.c` re-run at all VLENs).
+  ([`tests/test_riscv_remat.c`](../tests/test_riscv_remat.c) re-run at all VLENs).
 
 ## Files
 
-- `src/riscv/emit.h`, `src/riscv/emit.c`: `em_ntl_all()`,
+- [`src/riscv/emit.h`](../src/riscv/emit.h), [`src/riscv/emit.c`](../src/riscv/emit.c): `em_ntl_all()`,
   `em_prefetch_r()` (with encoding asserts).
-- `src/riscv/jit.c`: `c_vse()` NT hint, `c_prefetch_in()`, distance
+- [`src/riscv/jit.c`](../src/riscv/jit.c): `c_vse()` NT hint, `c_prefetch_in()`, distance
   validation, `+nt`/`+pf` desc suffixes.
-- `src/riscv/cpu.c`: `rvv_zicbop` detection via `/proc/cpuinfo`.
-- `src/plan.h`, `src/plan.c`: twin enumeration, per-ISA fence
+- [`src/riscv/cpu.c`](../src/riscv/cpu.c): `rvv_zicbop` detection via `/proc/cpuinfo`.
+- [`src/plan.h`](../src/plan.h), [`src/plan.c`](../src/plan.c): twin enumeration, per-ISA fence
   contract on `cand_t.nt`.
-- `include/raidjit.h`: `rvv_zicbop`, `nt_threshold`/`prefetch_distance`
+- [`include/raidjit.h`](../include/raidjit.h): `rvv_zicbop`, `nt_threshold`/`prefetch_distance`
   RVV notes.
-- `tests/test_riscv_prefetch.c`, `tests/test_nt.c` (`__riscv`
+- [`tests/test_riscv_prefetch.c`](../tests/test_riscv_prefetch.c), [`tests/test_nt.c`](../tests/test_nt.c) (`__riscv`
   branches), `Makefile` (build + 3 QEMU VLEN lines).

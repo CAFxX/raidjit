@@ -1,8 +1,8 @@
 # Prune mutation evidence (M1–M4)
 
-Each `M<N>.log` records a real mutation run against `src/prune.c` on
+Each `M<N>.log` records a real mutation run against [`src/prune.c`](../../src/prune.c) on
 2026-10-02: the exact source diff applied, the rebuild, and the full
-`test_prune` output. The pristine `src/prune.c` was restored after each
+`test_prune` output. The pristine [`src/prune.c`](../../src/prune.c) was restored after each
 run (verified with `diff`).
 
 Reproduce any of them, e.g. M1:
@@ -43,7 +43,7 @@ make build-x86_64/test_prune
   replay winners are GFNI, not nibble twins) -- the unit tests are the
   M4 detector.
 
-M5 (api.c hook removed) is not a correctness mutation and has no log
+M5 ([api.c](../../src/api.c) hook removed) is not a correctness mutation and has no log
 here: Part 2 still passes by design (pruning only removes), but
 `hook_wiring` (Part 2b) fails because the verbose prune line
 disappears -- the production-path wiring is pinned by that test.

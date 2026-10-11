@@ -2,7 +2,7 @@
 
 One call encodes the stripe AND accumulates CRC-32/ISO-HDLC over the
 input data buffers and the parity output buffers
-(`include/raidjit_fused.h`: `rj_compile_crc` / `rj_fn_crc`). Follow-ups
+([`include/raidjit_fused.h`](../include/raidjit_fused.h): `rj_compile_crc` / `rj_fn_crc`). Follow-ups
 build on this foundation: #8 generalizes the driver to a fusion
 planner over op sequences (encode / parity update / CRC); #10 exposes
 the plan-time tiling as a first-class API for the plain path.
@@ -38,7 +38,7 @@ streams: `tile = largest pow2 <= (LLC/2)/nstreams`, clamped to
 aligned, preserving the `rj_fn` alignment contract.
 
 **CRC-32/ISO-HDLC.** Polynomial 0x04C11DB7 reflected, init/xorout
-0xFFFFFFFF. `src/crc.c` has two implementations sharing one
+0xFFFFFFFF. [`src/crc.c`](../src/crc.c) has two implementations sharing one
 runtime-generated table: byte-at-a-time scalar (differential oracle)
 and slice-by-8 (production path). Tables are generated from the
 polynomial at first use (no magic constants); `pthread_once` guards
@@ -66,7 +66,7 @@ generation.
 - Benchmarks postponed: the tile size is heuristic. The compile-time
   benchmark still arbitrates kernel selection.
 - NT-store winners: the caller's once-per-call fence contract carries
-  over unchanged (documented in `raidjit_fused.h`).
+  over unchanged (documented in [`raidjit_fused.h`](../include/raidjit_fused.h)).
 - Trampoline slots: 32 for the `rj_fn_crc` entry point, same lifetime
   rules as `rj_get_fn_batched` (documented in the header).
 
@@ -120,7 +120,7 @@ compose anywhere an `rj_fn` is expected.
 
 Scope notes:
 
-- The tile size is a static heuristic (see `src/striping.h`); it is
+- The tile size is a static heuristic (see [`src/striping.h`](../src/striping.h)); it is
   NOT a measured quantity and is never presented as one.
 - Tile boundaries are required to be 64-byte aligned, so the
   per-tile kernel calls inherit the `rj_fn` alignment contract.

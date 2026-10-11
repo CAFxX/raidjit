@@ -58,23 +58,23 @@ registers. The planner's benchmark gate decides on silicon; the static
 
 ### Gating
 
-1. **Detection** (`src/riscv/cpu.c`): no `riscv_hwprobe` key exposes
+1. **Detection** ([`src/riscv/cpu.c`](../src/riscv/cpu.c)): no `riscv_hwprobe` key exposes
    Zvbc/Zvbc32e/Zvkg/Zicond, so the existing Zicbop cpuinfo-token scan
    was generalized into `has_ext_cpuinfo()`. New `rj_cpu_info` fields:
    `rvv_zvbc`, `rvv_zvbc32e`, `rvv_zvkg`, `rvv_zicond`
    (`rvv_zvbc`/`rvv_zvkg` are informational only now). Until a
    kernel/QEMU reports the `zvbc32e` token, the twin stays off (fail
    closed); QEMU 8.2.2 does not know Zvbc32e at all (see below).
-2. **Planner** (`src/plan.c`): `MUL_ZVBC` twins are enumerated iff
+2. **Planner** ([`src/plan.c`](../src/plan.c)): `MUL_ZVBC` twins are enumerated iff
    `rvv_zvbc32e` (mirrors the x86-64 AVX-512 GFNI pattern).
    `MUL_NIBBLE` is always enumerated as the fallback. Remat twins stay
    nibble-only (nothing to rematerialize on the Zvbc path).
-3. **Backend** (`src/riscv/jit.c`): `jit_build_version` re-checks
+3. **Backend** ([`src/riscv/jit.c`](../src/riscv/jit.c)): `jit_build_version` re-checks
    `rvv_zvbc32e` and fails cleanly (no code, error message) when it is
    missing — defense in depth against force-built candidates.
 
 The twin is a third `mul_t` method (`MUL_ZVBC`), not a cand flag: `mul`
-already distinguishes multiply methods, and `prune.c`'s twin relation
+already distinguishes multiply methods, and [`prune.c`](../src/prune.c)'s twin relation
 plus `plan_need_regs` key off it.
 
 ### Register allocation (`plan_need_regs`, single source of truth)
@@ -115,7 +115,7 @@ including v0/v31 edge regs.
    advertise-but-can't-execute mismatch. Zicond executes correctly and
    stays enabled.
 
-### Tests (`tests/test_riscv_zvbc.c`)
+### Tests ([`tests/test_riscv_zvbc.c`](../tests/test_riscv_zvbc.c))
 
 All run at vlen=128/256/512 under QEMU (via the `QEMU_RVV_CPU`
 recipes):
@@ -172,7 +172,7 @@ Two genuine bugs were found by the closeout review in code the
 original implementer left untested, both fixed and regression-tested:
 
 1. **Zvbc MULACC/DELTA emitted nibble-table loads into v0**
-   (`src/riscv/jit.c`): the `c_ldtab` calls in the P_MULACC and
+   ([`src/riscv/jit.c`](../src/riscv/jit.c)): the `c_ldtab` calls in the P_MULACC and
    P_DELTA bodies ran unconditionally, but on the Zvbc path
    `tbl_lo`/`tbl_hi` are never assigned (0 = v0), so the loads
    clobbered accumulator v0 and added phantom uops/mem to the static
@@ -190,7 +190,7 @@ original implementer left untested, both fixed and regression-tested:
 
 ## B6 — Zicond: REJECTED with evidence
 
-### Branch inventory of the RVV backend (`src/riscv/jit.c`)
+### Branch inventory of the RVV backend ([`src/riscv/jit.c`](../src/riscv/jit.c))
 
 The JITed function contains exactly 5 conditional branches:
 
@@ -227,7 +227,7 @@ capability for future work), but no backend path consumes it.
 
 ### Regression pin
 
-`tests/test_riscv_zvbc.c` section F builds every RVV candidate the
+[`tests/test_riscv_zvbc.c`](../tests/test_riscv_zvbc.c) section F builds every RVV candidate the
 planner's RVV branch enumerates for RS(6,3) and RS(4,2) (both Horner)
 and RS(3,1) (XOR, RAID-5-like) — with `rvv_zicond` advertised, nibble
 and ZVBC twins, every U — and asserts zero `czero.eqz`/`czero.nez`
@@ -243,22 +243,22 @@ a deliberate, reviewed decision.
 
 ## Files changed
 
-- `include/raidjit.h`: `rvv_zvbc`, `rvv_zvbc32e`, `rvv_zvkg`,
+- [`include/raidjit.h`](../include/raidjit.h): `rvv_zvbc`, `rvv_zvbc32e`, `rvv_zvkg`,
   `rvv_zicond` fields.
-- `src/plan.h`: `MUL_ZVBC` in `mul_t`.
-- `src/plan.c`: `plan_need_regs` ZVBC branch; RVV candidate
+- [`src/plan.h`](../src/plan.h): `MUL_ZVBC` in `mul_t`.
+- [`src/plan.c`](../src/plan.c): `plan_need_regs` ZVBC branch; RVV candidate
   enumeration with the ZVBC twin.
-- `src/riscv/cpu.c`: `has_ext_cpuinfo()` generalization; four new
+- [`src/riscv/cpu.c`](../src/riscv/cpu.c): `has_ext_cpuinfo()` generalization; four new
   detections.
-- `src/riscv/emit.h`, `src/riscv/emit.c`: `em_vclmul_vv`,
+- [`src/riscv/emit.h`](../src/riscv/emit.h), [`src/riscv/emit.c`](../src/riscv/emit.c): `em_vclmul_vv`,
   `em_vclmulh_vv`.
-- `src/riscv/jit.c`: ZVBC codegen (`c_gfmul_acc_zvbc`, prologue
+- [`src/riscv/jit.c`](../src/riscv/jit.c): ZVBC codegen (`c_gfmul_acc_zvbc`, prologue
   broadcasts, register allocation, gate re-check, `+zbc` desc).
-- `tests/test_riscv_zvbc.c`: new (A–G above).
-- `tests/test_pressure.c`: ZVBC exact pressure values.
+- [`tests/test_riscv_zvbc.c`](../tests/test_riscv_zvbc.c): new (A–G above).
+- [`tests/test_pressure.c`](../tests/test_pressure.c): ZVBC exact pressure values.
 - `Makefile`: test registration; QEMU recipes at 3 vlens;
   `QEMU_RVV_CPU` with the zvbc/zvkg quirk workaround.
-- `docs/rvv_zvbc.md`: this file.
+- [`docs/rvv_zvbc.md`](rvv_zvbc.md): this file.
 - `~/workspace/raidjit-tracks/Brvv/DESIGN.md`: design note.
 
 RV-P was not touched.
