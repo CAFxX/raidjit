@@ -2771,6 +2771,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "x86_64 backend: maskedtail needs AVX-512");
         return -1;
     }
+    /* nt+maskedtail is rejected: the body stores would be non-temporal
+     * but the masked tail stores are temporal (no masked NT form is
+     * emitted), so the combination is only partial-nt. Native api.c's
+     * mt_ok already requires !nt for the duel; this backend gate is the
+     * defense-in-depth backstop for direct jit_build_version callers
+     * (BUG-COMBO-E1-MASKEDTAIL-NT). */
+    if (cand->maskedtail && cand->nt) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail excludes nt (partial-nt)");
+        return -1;
+    }
     /* Masked tail plan-kind gate (mirrors api.c's twin gate and
      * gen_tail_masked's assertion): P_XOR plain body, or GFNI multiply.
      * Nibble masked tails are not implemented. */

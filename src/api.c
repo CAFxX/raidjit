@@ -987,13 +987,18 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
         topo_int_free(&ti);
         return NULL;
     }
-    /* No-op plans have no tail to twin: an ID naming tail twins for one
-     * is bogus. */
+    /* No-op plans have no code to twin: an ID naming any twin for one
+     * is bogus. The kernel is a vacuous prologue/epilogue; reporting
+     * twins as "applied" would be a phantom (BUG-COMBO-E50). */
     if (pl.noop &&
-        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail)) {
+        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail ||
+         spec.cand.nt || spec.cand.ternlog || spec.cand.xorbit ||
+         spec.cand.xorsched || spec.cand.permi2b || spec.cand.remat ||
+         spec.cand.mshift || spec.cand.pipe || spec.cand.rec_cf ||
+         spec.cand.prefetch_dist || spec.cand.crc_fold)) {
         if (err && errlen)
             snprintf(err, errlen,
-                     "pinned plan ID: names tail twins for a no-op plan");
+                     "pinned plan ID: names twins for a no-op plan");
         plan_free(&pl);
         topo_int_free(&ti);
         return NULL;
