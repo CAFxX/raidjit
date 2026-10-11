@@ -204,9 +204,16 @@ int planid_format(char *out, size_t outlen, const topo_int_t *ti,
     if (cur_putc(&c, ':'))
         return -1;
     /* twins axis, fixed order; "-" when empty. */
+    /* BUG-COMBO-STATIC-F05: rec_cf and crc_fold were missing here although
+     * their tokens are emitted below. A rec_cf/crc_fold-only candidate
+     * formatted as "-" and lost the twin on re-parse (identity
+     * corruption). CLASS HUNT: any new cand_t twin axis must be added
+     * here, to planid format/parse, to cand_spec_equal, to any_twin, and
+     * to twin_dominates in the same change. */
     int any_twin = cand->nt || cand->prefetch_dist || cand->ternlog ||
                    cand->remat || cand->xorsched || cand->xorbit ||
-                   cand->mshift || cand->permi2b || cand->pipe || cand->lmul;
+                   cand->mshift || cand->permi2b || cand->pipe || cand->lmul ||
+                   cand->rec_cf || cand->crc_fold;
     if (!any_twin) {
         if (cur_putc(&c, '-'))
             return -1;
@@ -818,7 +825,11 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
             SHAPE_BAD("unknown plan ID: xorbit needs GF-multiply rows");
         if (cand->mul != MUL_NIBBLE)
             SHAPE_BAD("unknown plan ID: xorbit needs the nibble method");
-        if (cand->ternlog || cand->permi2b || cand->remat || cand->xorsched)
+        /* BUG-COMBO-STATIC-F03: rec_cf was missing from this list, so a
+         * pinned rec_cf+xorbit spec passed L1 and silently dropped xorbit
+         * on RVV (dispatch-order drop). */
+        if (cand->ternlog || cand->permi2b || cand->remat || cand->xorsched ||
+            cand->rec_cf)
             SHAPE_BAD("unknown plan ID: xorbit combines with no other "
                       "body twin");
         /* BUG_t1_529: xorbit is 5-8x worse than nibble on x86. */
@@ -826,6 +837,46 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
             cand->isa == ISA_AVX512)
             SHAPE_BAD("unknown plan ID: xorbit not available on x86 "
                       "(BUG_t1_529)");
+    }
+    /* BUG-COMBO-STATIC-F03: rec_cf/crc_fold had no L1 validation at all;
+     * validity rested on three divergent per-backend gates. This shared
+     * predicate mirrors the strictest common contract (planner
+     * enumeration + all backend gates): P_MULACC recovery with
+     * rec_cf_data, nf in {1,2} matching the plan shape, a nontrivial
+     * coefficient, and no other body twin (ternlog is the one allowed
+     * sibling: legitimate ternlog+rec_cf on x86). */
+    if (cand->rec_cf) {
+        const struct rec_cf_data *cfd = pl->rec_cf;
+        if (!cfd || pl->kind != P_MULACC ||
+            (cfd->nf != 1 && cfd->nf != 2) ||
+            pl->n_out != cfd->nf || pl->n_in != cfd->ns ||
+            !plan_any_nontrivial(pl) ||
+            cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->remat || cand->mshift || cand->pipe)
+            SHAPE_BAD("unknown plan ID: rec_cf needs a P_MULACC recovery "
+                      "plan with rec_cf_data (nf 1..2, n_out == nf, "
+                      "n_in == ns), a nontrivial coefficient, and no "
+                      "other body twin");
+    }
+    /* BUG-COMBO-STATIC-F03: crc_fold likewise had no L1 check. Static
+     * parts only -- the uarch gate (fused_crc_interleave_ok) needs the
+     * CPU, so the backend keeps that check (defense in depth). */
+    if (cand->crc_fold) {
+        if (cand->isa != ISA_AVX512)
+            SHAPE_BAD("unknown plan ID: crc_fold is AVX-512-only");
+        if (pl->noop)
+            SHAPE_BAD("unknown plan ID: crc_fold incompatible with noop");
+        if (cand->mul != MUL_NIBBLE && cand->mul != MUL_GFNI)
+            SHAPE_BAD("unknown plan ID: crc_fold needs MUL_NIBBLE or "
+                      "MUL_GFNI");
+        if (pl->kind == P_DELTA)
+            SHAPE_BAD("unknown plan ID: crc_fold is ENCODE-only");
+        if (cand->pipe || cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->mshift || cand->remat || cand->maskedtail ||
+            cand->ternlog || cand->predtail)
+            SHAPE_BAD("unknown plan ID: crc_fold incompatible with "
+                      "pipe/xorbit/xorsched/permi2b/mshift/remat/"
+                      "maskedtail/ternlog/predtail twins");
     }
     if (cand->mshift) {
         if (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE)

@@ -161,6 +161,8 @@ typedef struct {
     size_t vlenb;    /* VLEN in bytes on this machine (vlenb CSR), read
                     * once at build time; sizes the replicated
                     * constant-pool table entries (see pool_get) */
+    uint32_t twin_applied; /* BUG-COMBO-STATIC-F16: bitmask of TWIN_APPLIED_*
+                            * bits, set when each twin's code path is taken. */
 } cg_t;
 
 /* vlenb CSR (0xC22): VLEN in bytes. A hardware constant, readable from
@@ -263,8 +265,11 @@ static void c_vse(cg_t *cg, int vs, int rs1)
      * change memory ordering, so unlike x86/AArch64 NT no caller fence
      * is required. Not counted as a uop: on implementations that
      * ignore the hint it executes as zero uops. */
-    if (cg->cand.nt)
+    if (cg->cand.nt) {
         em_ntl_all(&cg->em);
+        /* BUG-COMBO-STATIC-F16: effect marker -- nt hint emitted. */
+        cg->twin_applied |= TWIN_APPLIED_NT;
+    }
     if (cg->masked_mem)
         em_vse8_v_m(&cg->em, vs, rs1); /* v0.t: inactive lanes not stored */
     else
@@ -283,6 +288,8 @@ static void c_prefetch_in(cg_t *cg, int ptr_reg)
     if (cg->emit_pf) {
         em_prefetch_r(&cg->em, ptr_reg, cg->pf_off);
         cg->uops += 1;
+        /* BUG-COMBO-STATIC-F16: effect marker -- prefetch emitted. */
+        cg->twin_applied |= TWIN_APPLIED_PREFETCH;
     }
 }
 
@@ -370,6 +377,8 @@ static void c_ldptr(cg_t *cg, int dst, int base, int idx);
 
 static void gen_body_xorbit(cg_t *cg, int nu)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_XORBIT;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     const xorbit_t *s = pl->bit_sched;
@@ -867,6 +876,8 @@ static void pipe_horner_compute(cg_t *cg, int col, int nu)
  * iteration's stores. ncols == 0 falls back to gen_body. */
 static void gen_body_pipe(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_PIPE;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U;
@@ -1108,6 +1119,8 @@ static void gen_body(cg_t *cg, int nu, int win)
         gen_body_xorbit(cg, nu);
     } else if (pl->kind == P_XOR) {
         if (cg->cand.xorsched) {
+        /* BUG-COMBO-STATIC-F16: effect marker -- the xorsched path. */
+        cg->twin_applied |= TWIN_APPLIED_XORSCHED;
         /* XOR-schedule twin: the body follows pl->xor_sched (cross-row
          * CSE). Phase 1 forms each temp t_k = in_a ^ in_b into
          * (vd0, vd1) and fans out; phase 2 streams surviving inputs via
@@ -1382,6 +1395,8 @@ static void gen_body(cg_t *cg, int nu, int win)
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->horner_c[j];
                 if (cg->cand.remat && c >= 2) {
+                    /* BUG-COMBO-STATIC-F16: effect marker. */
+                    cg->twin_applied |= TWIN_APPLIED_REMAT;
                     /* Table-load hoisting: both nibble tables depend
                      * only on the row coefficient c, so they are loaded
                      * once per (i,j) -- not once per (i,j,u). The u-loop
@@ -1578,6 +1593,8 @@ static int gen_rec_cf_syndrome(cg_t *cg, int k, const uint8_t *ecoef, int ns,
  * from row 1. */
 static void gen_body_rec_cf(cg_t *cg, int nu, int win)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_REC_CF;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     const struct rec_cf_data *cfd = pl->rec_cf;
@@ -2072,13 +2089,18 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     }
     /* Recovery closed-form emitter twin (algos #4): validated here, never
      * wrong code for force-built candidates. Requires P_MULACC, rec_cf_data,
-     * nf in {1,2} matching n_out/n_in, and no other body twin. */
+     * nf in {1,2} matching n_out/n_in, and no other body twin.
+     * BUG-COMBO-STATIC-F03: this gate excluded only pipe and remat, so a
+     * pinned rec_cf+xorbit spec passed every gate and the rec_cf dispatch
+     * (which runs before gen_body) silently dropped xorbit. Now excludes
+     * the full body-twin list, mirroring x86_64/aarch64 and the L1 check. */
     if (cand->rec_cf) {
         const struct rec_cf_data *cfd = pl->rec_cf;
         if (!cfd || pl->kind != P_MULACC ||
             (cfd->nf != 1 && cfd->nf != 2) ||
             pl->n_out != cfd->nf || pl->n_in != cfd->ns ||
-            cand->pipe || cand->remat) {
+            cand->pipe || cand->remat || cand->xorbit || cand->xorsched ||
+            cand->permi2b || cand->mshift) {
             snprintf(err, errlen,
                      "riscv backend: rec_cf twin needs P_MULACC with "
                      "rec_cf_data, no other body twins");
@@ -2497,6 +2519,32 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     for (size_t i = 0; i < cg.pool_len; i++)
         em_byte(&cg.em, cg.pool[i]);
     em_resolve(&cg.em);
+    /* BUG-COMBO-STATIC-F16: twin effect postcondition. If a twin was
+     * requested but its code path was never taken, the pin was a no-op:
+     * reject cleanly instead of recording a false twin label. Placed
+     * before the mem install so the fail path doesn't leak the mapping. */
+    {
+        struct { int req; uint32_t bit; const char *name; } twins[] = {
+            { cand->nt, TWIN_APPLIED_NT, "nt" },
+            { cand->prefetch_dist != 0, TWIN_APPLIED_PREFETCH, "prefetch" },
+            { cand->remat, TWIN_APPLIED_REMAT, "remat" },
+            { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
+            { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
+            { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
+            { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
+        };
+        for (size_t ti = 0; ti < sizeof(twins)/sizeof(twins[0]); ti++) {
+            if (twins[ti].req && !(cg.twin_applied & twins[ti].bit)) {
+                if (err && errlen > 0)
+                    snprintf(err, errlen,
+                             "%s twin requested but its code path was not "
+                             "taken (phantom twin)",
+                             twins[ti].name);
+                goto fail;
+            }
+        }
+    }
+    v->twin_applied = cg.twin_applied;
     size_t total = cg.em.len;
 
     long ps = sysconf(_SC_PAGESIZE);
