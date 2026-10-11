@@ -1,0 +1,6 @@
+raid6(8) enc ID: rj2:raid6(8)#8db4e55841a28f38:enc:avx512:mulacc:gfni:u8:-:scalar
+raid6(8) pupd ID: rj2:raid6(8)#8db4e55841a28f38:pupd0+2:avx512:delta:gfni:u8:-:scalar
+raid6(8) rec ID: rj2:raid6(8)#8db4e55841a28f38:rec3.rows0:avx512:xor:nibble:u8:-:scalar
+bench=1: 64 variants, 16 pruned
+benchmarked ID: rj2:raid6(8)#8db4e55841a28f38:enc:avx512:mulacc:gfni:u8:-:notail+maskedtail
+test_planid: all OK

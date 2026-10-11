@@ -1,0 +1,13 @@
+cpu: AMD EPYC 9D25 126-Core Processor
+ok api surface
+ok encode raid5(4)
+ok encode raid6_rs(6)
+ok recover raid6_rs(6)
+ok pupdate raid6_rs(6)
+ok recover raid5(4)
+ok encode rdp(5)
+ok encode evenodd(5)
+ok encode raid0(4)
+ok large-S chunking
+ok benchmark path
+test_batched: all OK

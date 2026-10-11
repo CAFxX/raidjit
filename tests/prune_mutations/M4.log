@@ -1,0 +1,35 @@
+=== M4: prune_versions() prunes the twin instead of the plain (inverted keep) ===
+--- mutation diff (swapped twin_dominates args: when vs[j] is the tl=1 twin and vs[i] the tl=0 plain, vs[j] -- the twin -- is marked dominated) ---
+--- /tmp/prune_mut/prune.c.pristine	2026-10-02 06:32:54.013844687 +0000
++++ src/prune.c	2026-10-02 06:46:25.882289964 +0000
+@@ -140,7 +140,8 @@
+         for (int j = 0; j < nv; j++) {
+             if (i == j || dominated[j])
+                 continue;
+-            if (twin_dominates(&vs[i], &vs[j], verbose))
++            /* M4: inverted keep -- prune the twin instead of the plain */
++            if (twin_dominates(&vs[j], &vs[i], verbose))
+                 dominated[j] = 1;
+         }
+     }
+--- build ---
+ar rcs build-x86_64/libraidjit.a build-x86_64/src/gf.o build-x86_64/src/plan.o build-x86_64/src/topo.o build-x86_64/src/bench.o build-x86_64/src/ref.o build-x86_64/src/api.o build-x86_64/src/prune.o build-x86_64/src/x86_64/cpu.o build-x86_64/src/x86_64/emit.o build-x86_64/src/x86_64/jit.o
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+--- run (full) ---
+FAIL unit_twin_prunes_plain:162: twin must survive
+FAIL unit_twin_prunes_plain:163: plain must be pruned
+FAIL unit_u_variants_survive:284: twin8 must survive
+FAIL unit_u_variants_survive:285: twin1 must survive
+FAIL unit_nt_twins_survive:321: twin must survive
+FAIL unit_nt_twins_survive:322: twin+nt must survive
+FAIL unit_cross_isa_mul_survive:346: twin512 must survive
+FAIL unit_prefetch_same_dist:366: pf-twin must survive
+FAIL unit_prefetch_same_dist:367: pf-plain must be pruned
+FAIL unit_eps_ties_survive:438: above-eps difference must prune, got 1
+FAIL unit_order_and_many:540: order: twin8 first
+FAIL unit_order_and_many:542: order: twin4 third
+PRUNE TESTS FAILED (12/166 checks)
+--- restore ---
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+pristine restored OK
+M4 done

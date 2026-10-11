@@ -1,0 +1,19 @@
+=== B4-M3: plan_candidates() drops all NT twins ===
+--- mutation diff ---
+--- /tmp/plan.c.b4orig	2026-10-03 18:04:03.554461897 +0000
++++ src/plan.c	2026-10-03 18:06:16.319241625 +0000
+@@ -770,7 +770,7 @@
+      * families. This is ISA-independent. */
+     if (pl->noop)
+         return n;
+-    if (allow_nt) {
++    if (allow_nt && 0) { /* B4-M3 mutation: drop all NT twins */
+         /* NT twins after the temporal originals (see plan.h). NT stores
+          * only make sense for streaming output; the benchmark decides
+          * empirically whether a twin wins. AArch64/NEON with U=1 emits
+--- run: ./build-x86_64/test_nt ---
+FAIL large: no NT twin tested
+FAIL combo: missing NT twin (have 32/0/32/0)
+FAIL combo: missing NT+prefetch twin (have 32/0/32/0)
+FAIL combo: no NT+prefetch twin tested
+exit=1

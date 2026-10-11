@@ -1,0 +1,91 @@
+# Makefile.wasm — builds the raidjit WASM modules (SPEC.md §S3, §S8).
+#
+# Three per-ISA compile modules + one Capstone disassembler module, all
+# -sSINGLE_FILE=1 (self-contained, file://-safe). This makefile is invoked
+# by the top-level Makefile's `wasm` target (see Makefile).
+#
+# Usage:
+#   make -f tools/wasm/Makefile.wasm            # everything -> tools/wasm/out/
+#   make -f tools/wasm/Makefile.wasm x86        # just the x86-64 module
+#   make -f tools/wasm/Makefile.wasm check-env  # verify emcc is present
+#
+# Requires emsdk on PATH (source ~/tools/emsdk/emsdk_env.sh).
+
+WASM_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+OUT := $(WASM_DIR)out
+REPO := $(abspath $(WASM_DIR)..)/..
+
+EMCC ?= emcc
+CFLAGS := -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -DRJ_WASM -ffp-contract=off \
+          -I$(REPO)/include -I$(REPO)/src -I$(WASM_DIR)
+# NOTE: no -Werror here: third-party sources (cJSON, Capstone) are not
+# held to the repo's warning bar; raidjit's own sources keep -Wall.
+WARN := -Wall -Wextra
+
+COMMON_SRCS := $(REPO)/src/gf.c $(REPO)/src/plan.c $(REPO)/src/topo.c \
+  $(REPO)/src/bench.c $(REPO)/src/ref.c $(REPO)/src/api.c $(REPO)/src/prune.c \
+  $(REPO)/src/dispatch.c $(REPO)/src/xorsched.c $(REPO)/src/matrix_search.c \
+  $(REPO)/src/xorcode.c $(REPO)/src/survivor.c $(REPO)/src/prefetch_calib.c \
+  $(REPO)/src/planid.c $(REPO)/src/crc.c $(REPO)/src/striping.c \
+  $(REPO)/src/api_crc.c $(REPO)/src/fused.c $(REPO)/src/api_batched.c \
+  $(REPO)/src/crc_fast.c \
+  $(WASM_DIR)rjw_api.c $(WASM_DIR)vendor/cJSON.c
+
+EMFLAGS := -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
+  -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
+  -sEXPORTED_FUNCTIONS=_rjw_compile,_rjw_code_bytes,_rjw_const_bytes,_rjw_free_string,_malloc,_free \
+  -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
+  -sEXPORT_NAME=RaidjitX86
+
+.PHONY: all x86 aarch64 riscv disasm check-env clean
+
+all: x86 aarch64 riscv disasm
+
+check-env:
+	@command -v $(EMCC) >/dev/null || \
+	  (echo "emcc not found: source ~/tools/emsdk/emsdk_env.sh first" && exit 1)
+	@$(EMCC) --version | head -1
+
+$(OUT):
+	mkdir -p $(OUT)
+
+x86: check-env $(OUT)
+	$(EMCC) $(CFLAGS) $(WARN) -DRJW_X86 $(COMMON_SRCS) \
+	  $(REPO)/src/x86_64/emit.c $(REPO)/src/x86_64/jit.c \
+	  $(WASM_DIR)cpu_wasm_x86.c \
+	  -o $(OUT)/raidjit_x86.js $(EMFLAGS) -sEXPORT_NAME=RaidjitX86
+
+aarch64: check-env $(OUT)
+	$(EMCC) $(CFLAGS) $(WARN) -DRJW_AARCH64 $(COMMON_SRCS) \
+	  $(REPO)/src/aarch64/emit.c $(REPO)/src/aarch64/jit.c \
+	  $(WASM_DIR)cpu_wasm_aarch64.c \
+	  -o $(OUT)/raidjit_aarch64.js $(EMFLAGS) -sEXPORT_NAME=RaidjitAArch64
+
+riscv: check-env $(OUT)
+	$(EMCC) $(CFLAGS) $(WARN) -DRJW_RISCV $(COMMON_SRCS) \
+	  $(REPO)/src/riscv/emit.c $(REPO)/src/riscv/jit.c \
+	  $(WASM_DIR)cpu_wasm_riscv.c \
+	  -o $(OUT)/raidjit_riscv.js $(EMFLAGS) -sEXPORT_NAME=RaidjitRiscv
+
+# Capstone disassembler module. CAPSTONE_SRC points at the unpacked
+# 6.0.0-Alpha11+ tree (only X86/AArch64/RISCV backends compiled).
+CAPSTONE_SRC ?= $(WASM_DIR)vendor/capstone
+disasm: check-env $(OUT)
+	@test -d $(CAPSTONE_SRC) || \
+	  (echo "CAPSTONE_SRC not found: $(CAPSTONE_SRC)" && exit 1)
+	$(EMCC) -O2 -std=c99 -ffp-contract=off \
+	  -DCAPSTONE_HAS_X86 -DCAPSTONE_HAS_AARCH64 -DCAPSTONE_HAS_RISCV \
+	  -I$(CAPSTONE_SRC)/include \
+	  $(shell find $(CAPSTONE_SRC)/arch/X86 $(CAPSTONE_SRC)/arch/AArch64 \
+	    $(CAPSTONE_SRC)/arch/RISCV $(CAPSTONE_SRC)/*.c \
+	    -name '*.c' -not -name '*_test.c') \
+	  $(WASM_DIR)dis_api.c $(WASM_DIR)vendor/cJSON.c \
+	  -o $(OUT)/disasm.js \
+	  -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
+	  -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
+	  -sEXPORTED_FUNCTIONS=_dj_disasm,_dj_free_string,_malloc,_free \
+	  -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
+	  -sEXPORT_NAME=Disasm
+
+clean:
+	rm -rf $(OUT)

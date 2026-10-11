@@ -1,0 +1,6 @@
+ok pipe x86-v41-horner-avx512-u2 (need=13 regs)
+ok pipe guard-page x86-v41-horner-avx512-u2 (group=128)
+ok pipe x86-mulacc-deadcol-avx2-u1 (need=10 regs)
+ok pipe planner gate
+SKIP pipe+predtail: aarch64-only
+test_pipe: all OK

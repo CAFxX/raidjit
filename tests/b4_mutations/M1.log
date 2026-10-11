@@ -1,0 +1,33 @@
+=== B4-M1: plan_candidates() drops all prefetch twins ===
+--- mutation diff ---
+--- /tmp/plan.c.b4orig	2026-10-03 18:04:03.554461897 +0000
++++ src/plan.c	2026-10-03 18:04:03.812675966 +0000
+@@ -789,12 +789,16 @@
+         }
+     }
+     if (prefetch_dist) {
++        /* B4-M1 mutation: drop all prefetch twins */
++        int ntemp = n;
++        (void)ntemp;
++        if (0) {
+         /* Prefetch twins after the NT twins: a prefetch for each input
+          * stream prefetch_dist bytes ahead. The benchmark decides
+          * empirically whether the extra uops pay off. RVV needs Zicbop
+          * for prefetch.r: without it the backend ignores prefetch_dist,
+          * so the twin would be a byte-identical duplicate: skip it. */
+-        int ntemp = n;
++        ntemp = n;
+         for (int i = 0; i < ntemp && n < maxout; i++) {
+             if (out[i].isa == ISA_RVV && !cpu->rvv_zicbop)
+                 continue;
+@@ -802,6 +806,7 @@
+             out[n].prefetch_dist = prefetch_dist;
+             n++;
+         }
++        }
+     }
+     return n;
+ }
+--- run: ./build-x86_64/test_b4_prefetch ---
+FAIL want one prefetch twin per base (0 vs 22)
+exit=1

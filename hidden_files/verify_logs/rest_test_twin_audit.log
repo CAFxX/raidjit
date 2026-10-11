@@ -1,0 +1,1158 @@
+plan P_XOR raid5(4): 96 candidates
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=2] (plain)
+building [P_XOR raid5(4) isa=2] notail
+building [P_XOR raid5(4) isa=2] maskedtail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=1] (plain)
+building [P_XOR raid5(4) isa=1] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=0] (plain)
+building [P_XOR raid5(4) isa=0] notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=2] nt
+building [P_XOR raid5(4) isa=2] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=1] nt
+building [P_XOR raid5(4) isa=1] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=0] nt
+building [P_XOR raid5(4) isa=0] nt+notail
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=2] pf=64
+building [P_XOR raid5(4) isa=2] notail+pf=64
+building [P_XOR raid5(4) isa=2] maskedtail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=1] pf=64
+building [P_XOR raid5(4) isa=1] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=0] pf=64
+building [P_XOR raid5(4) isa=0] notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=2] nt+pf=64
+building [P_XOR raid5(4) isa=2] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=1] nt+pf=64
+building [P_XOR raid5(4) isa=1] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+building [P_XOR raid5(4) isa=0] nt+pf=64
+building [P_XOR raid5(4) isa=0] nt+notail+pf=64
+plan P_MULACC custom(4,2): 128 candidates
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] maskedtail
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=2] (plain)
+building [P_MULACC custom(4,2) isa=2] notail
+building [P_MULACC custom(4,2) isa=2] permi2b
+building [P_MULACC custom(4,2) isa=1] (plain)
+building [P_MULACC custom(4,2) isa=1] notail
+building [P_MULACC custom(4,2) isa=1] (plain)
+building [P_MULACC custom(4,2) isa=1] notail
+building [P_MULACC custom(4,2) isa=1] (plain)
+building [P_MULACC custom(4,2) isa=1] notail
+building [P_MULACC custom(4,2) isa=1] (plain)
+building [P_MULACC custom(4,2) isa=1] notail
+building [P_MULACC custom(4,2) isa=0] (plain)
+building [P_MULACC custom(4,2) isa=0] notail
+building [P_MULACC custom(4,2) isa=0] (plain)
+building [P_MULACC custom(4,2) isa=0] notail
+building [P_MULACC custom(4,2) isa=0] (plain)
+building [P_MULACC custom(4,2) isa=0] notail
+building [P_MULACC custom(4,2) isa=0] (plain)
+building [P_MULACC custom(4,2) isa=0] notail
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] ternlog
+building [P_MULACC custom(4,2) isa=2] ternlog+notail
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=2] nt
+building [P_MULACC custom(4,2) isa=2] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+permi2b
+building [P_MULACC custom(4,2) isa=1] nt
+building [P_MULACC custom(4,2) isa=1] nt+notail
+building [P_MULACC custom(4,2) isa=1] nt
+building [P_MULACC custom(4,2) isa=1] nt+notail
+building [P_MULACC custom(4,2) isa=1] nt
+building [P_MULACC custom(4,2) isa=1] nt+notail
+building [P_MULACC custom(4,2) isa=1] nt
+building [P_MULACC custom(4,2) isa=1] nt+notail
+building [P_MULACC custom(4,2) isa=0] nt
+building [P_MULACC custom(4,2) isa=0] nt+notail
+building [P_MULACC custom(4,2) isa=0] nt
+building [P_MULACC custom(4,2) isa=0] nt+notail
+building [P_MULACC custom(4,2) isa=0] nt
+building [P_MULACC custom(4,2) isa=0] nt+notail
+building [P_MULACC custom(4,2) isa=0] nt
+building [P_MULACC custom(4,2) isa=0] nt+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] nt+ternlog
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] maskedtail+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] pf=64
+building [P_MULACC custom(4,2) isa=2] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] permi2b+pf=64
+building [P_MULACC custom(4,2) isa=1] pf=64
+building [P_MULACC custom(4,2) isa=1] notail+pf=64
+building [P_MULACC custom(4,2) isa=1] pf=64
+building [P_MULACC custom(4,2) isa=1] notail+pf=64
+building [P_MULACC custom(4,2) isa=1] pf=64
+building [P_MULACC custom(4,2) isa=1] notail+pf=64
+building [P_MULACC custom(4,2) isa=1] pf=64
+building [P_MULACC custom(4,2) isa=1] notail+pf=64
+building [P_MULACC custom(4,2) isa=0] pf=64
+building [P_MULACC custom(4,2) isa=0] notail+pf=64
+building [P_MULACC custom(4,2) isa=0] pf=64
+building [P_MULACC custom(4,2) isa=0] notail+pf=64
+building [P_MULACC custom(4,2) isa=0] pf=64
+building [P_MULACC custom(4,2) isa=0] notail+pf=64
+building [P_MULACC custom(4,2) isa=0] pf=64
+building [P_MULACC custom(4,2) isa=0] notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+pf=64
+building [P_MULACC custom(4,2) isa=1] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+pf=64
+building [P_MULACC custom(4,2) isa=0] nt+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+notail+pf=64
+building [P_MULACC custom(4,2) isa=2] nt+ternlog+permi2b+pf=64
+plan P_HORNER v(4,1): 128 candidates
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] maskedtail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=2] (plain)
+building [P_HORNER v(4,1) isa=2] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=1] (plain)
+building [P_HORNER v(4,1) isa=1] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=0] (plain)
+building [P_HORNER v(4,1) isa=0] notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=2] nt
+building [P_HORNER v(4,1) isa=2] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=1] nt
+building [P_HORNER v(4,1) isa=1] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=0] nt
+building [P_HORNER v(4,1) isa=0] nt+notail
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] maskedtail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=2] pf=64
+building [P_HORNER v(4,1) isa=2] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=1] pf=64
+building [P_HORNER v(4,1) isa=1] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=0] pf=64
+building [P_HORNER v(4,1) isa=0] notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=2] nt+pf=64
+building [P_HORNER v(4,1) isa=2] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=1] nt+pf=64
+building [P_HORNER v(4,1) isa=1] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+building [P_HORNER v(4,1) isa=0] nt+pf=64
+building [P_HORNER v(4,1) isa=0] nt+notail+pf=64
+plan P_DELTA raid6(5) ch={0}: 128 candidates
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] (plain)
+building [P_DELTA raid6(5) ch={0} isa=2] notail
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b
+building [P_DELTA raid6(5) ch={0} isa=1] (plain)
+building [P_DELTA raid6(5) ch={0} isa=1] notail
+building [P_DELTA raid6(5) ch={0} isa=1] (plain)
+building [P_DELTA raid6(5) ch={0} isa=1] notail
+building [P_DELTA raid6(5) ch={0} isa=1] (plain)
+building [P_DELTA raid6(5) ch={0} isa=1] notail
+building [P_DELTA raid6(5) ch={0} isa=1] (plain)
+building [P_DELTA raid6(5) ch={0} isa=1] notail
+building [P_DELTA raid6(5) ch={0} isa=0] (plain)
+building [P_DELTA raid6(5) ch={0} isa=0] notail
+building [P_DELTA raid6(5) ch={0} isa=0] (plain)
+building [P_DELTA raid6(5) ch={0} isa=0] notail
+building [P_DELTA raid6(5) ch={0} isa=0] (plain)
+building [P_DELTA raid6(5) ch={0} isa=0] notail
+building [P_DELTA raid6(5) ch={0} isa=0] (plain)
+building [P_DELTA raid6(5) ch={0} isa=0] notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b
+building [P_DELTA raid6(5) ch={0} isa=1] nt
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=1] nt
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=1] nt
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=1] nt
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=0] nt
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=0] nt
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=0] nt
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=0] nt
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] maskedtail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=1] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+pf=64
+building [P_DELTA raid6(5) ch={0} isa=0] nt+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+notail+pf=64
+building [P_DELTA raid6(5) ch={0} isa=2] nt+ternlog+permi2b+pf=64
+reachable sweep: 1152 built, 0 gracefully rejected, 0 aborted
+ok twin_audit

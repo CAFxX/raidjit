@@ -1,0 +1,42 @@
+=== M1: twin_dominates() without the U equality (cross-U pruning) ===
+--- mutation diff ---
+--- /tmp/prune_mut/prune.c.pristine	2026-10-02 06:32:54.013844687 +0000
++++ src/prune.c	2026-10-02 06:32:57.615833813 +0000
+@@ -82,7 +82,8 @@
+     if (a->cand.ternlog != 1 || b->cand.ternlog != 0)
+         return 0;
+     if (a->cand.isa != b->cand.isa || a->cand.mul != b->cand.mul ||
+-        a->cand.U != b->cand.U || a->cand.nt != b->cand.nt ||
++        /* M1: U equality dropped */
++        a->cand.nt != b->cand.nt ||
+         a->cand.prefetch_dist != b->cand.prefetch_dist ||
+         a->cand.remat != b->cand.remat)
+         return 0;
+--- build ---
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+--- run (full) ---
+prune unit:
+FAIL unit_cross_u_twin_no_prune:252: cross-U twin must not prune, got 1
+FAIL unit_cross_u_twin_no_prune:253: plain8 must survive
+prune e2e smoke (rj_compile with/without pruning):
+prune hook wiring (verbose prune line):
+  hook wiring: prune line OK (dropped 8 of 32)
+prune replay (deterministic):
+  replay xor1/64K: full=48 pruned=48 winner='t xor avx512 U=4+nt'
+  replay xor2/64K: full=60 pruned=60 winner='t rec 0+100 xor avx512 U=2+ternlog+nt'
+  replay horner/64K: full=48 pruned=48 winner='t horner avx512+gfni U=4+nt'
+  replay mulacc/64K: full=64 pruned=48 winner='t rec 0+1 mulacc avx512+gfni U=4+nt'
+FAIL replay_agreement:1050: delta/64K: TRIPWIRE: unpruned argmin-time 't pupd 0+2 delta avx512+nibble U=8+nt' was pruned
+FAIL replay_agreement:1065: delta/64K win=3.00%: full->'t pupd 0+2 delta avx512+gfni U=4+nt' pruned->'t pupd 0+2 delta avx512+gfni U=2+nt'
+FAIL replay_agreement:1065: delta/64K win=6.00%: full->'t pupd 0+2 delta avx512+nibble U=1+nt' pruned->'t pupd 0+2 delta avx512+gfni U=1+nt'
+  replay delta/64K: full=80 pruned=66 winner='t pupd 0+2 delta avx512+gfni U=4+nt'
+  replay mulacc/1M: full=64 pruned=48 winner='t rec 0+1 mulacc avx512+gfni U=8'
+  replay xor2/1M: full=60 pruned=60 winner='t rec 0+100 xor avx512 U=4+nt'
+  replay mulacc-pf/64K: full=128 pruned=96 winner='t rec 0+1 mulacc avx512+gfni U=4+nt'
+  replay rs103rec/64K: full=64 pruned=48 winner='t rec 0+1 mulacc avx512+gfni U=4+nt'
+  replay rs203rec/64K: full=60 pruned=44 winner='t rec 0+1+2 mulacc avx512+gfni U=2+nt'
+  replay rs104crec/64K: full=64 pruned=48 winner='t rec 0+1 mulacc avx512+gfni U=8+nt'
+PRUNE TESTS FAILED (5/164 checks)
+--- restore ---
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+M1 done, pristine restored

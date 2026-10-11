@@ -1,0 +1,6 @@
+planner fuzz: cpu=AMD EPYC 9D25 126-Core Processor iters=200 seed=17326859513683531384
+  ... 50/200
+  ... 100/200
+  ... 150/200
+  ... 200/200
+planner fuzz: 168 cases ran, 0 skipped (ctor refused), 32 clean-rejected, 0 failures

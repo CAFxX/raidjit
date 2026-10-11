@@ -1,0 +1,30 @@
+ok recover raid6(3) failed={1,2}
+ok encode rs(6,3)
+ok recover rs(6,3) failed={0,1,2}
+ok recover rs(6,3) failed={6,7,8}
+ok recover rs(6,3) failed={2,5,7}
+ok recover rs(6,3) failed={0,1,2,3}
+ok encode custom(4,2)
+ok recover custom(4,2) failed={0,3}
+ok recover custom(4,2) failed={4,5}
+benchmark picked: raid6(8) horner avx512+gfni U=8 +notail (55.94 GB/s)
+all tests passed
+./build-x86_64/test_matrix
+ok cpu=sse3
+ok cpu=avx2
+ok cpu=avx512-nogfni
+ok cpu=avx512-gfni
+ok cpu=avx512f-only
+ok cpu=sse2-only
+matrix: 466115 runs, 0 failures
+matrix: all OK
+./build-x86_64/test_dispatch
+note: e2e raid6(6) enc bench       -> raid6(6) horner avx512+gfni U=4 +notail      [dispatcher]
+note: e2e raid5(4) rec d0 bench    -> raid5(4) rec 0 xor avx512 U=1 +notail        [dispatcher]
+note: e2e raid6(6) pup d1 bench    -> raid6(6) pupd 1 delta avx512+gfni U=8 +notail [dispatcher]
+note: e2e raid6(6) enc nt bench    -> raid6(6) horner avx512+gfni U=4+nt +notail   [dispatcher]
+note: e2e raid6(6) enc nobench     -> raid6(6) horner avx512+gfni U=8              [general-only]
+note: dispatcher installed in >=1 config
+note: per-call ns: direct=43.9 dispatcher=57.2 overhead=13.2
+PASS test_dispatch
+make test exit=0

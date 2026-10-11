@@ -1,0 +1,268 @@
+make ARCH=aarch64 CROSS_COMPILE=aarch64-linux-gnu- _test-qemu-aarch64-sve
+make[1]: Entering directory '/home/hatch/workspace/raidjit-tracks/A2'
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_aarch64_emit
+PASS: 90 checks, 0 failures
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_correct
+benchmark: 10 candidates, 3 sizes, 3 interleaved iters, window=112.3%
+  sve horner+nibble U=4+eor3                     0.20 GB/s noise=211.9% uops/B=0.43 mem/B=10.06 code=1792  <--
+  sve horner+nibble U=3+eor3                     0.16 GB/s noise=13.1% uops/B=0.43 mem/B=10.08 code=1536
+  sve horner+nibble U=2+eor3                     0.16 GB/s noise=217.1% uops/B=0.44 mem/B=10.12 code=1280
+  sve horner+nibble U=1+eor3                     0.20 GB/s noise=46.8% uops/B=0.46 mem/B=10.25 code=1024
+  sve horner+nibble U=5+remat+eor3               0.18 GB/s noise=80.3% uops/B=0.64 mem/B=11.75 code=2560
+  neon horner+nibble U=4                         0.09 GB/s noise=87.8% uops/B=3.86 mem/B=10.50 code=1728
+  neon horner+nibble U=3                         0.18 GB/s noise=108.5% uops/B=3.88 mem/B=10.67 code=1472
+  neon horner+nibble U=2                         0.18 GB/s noise=155.5% uops/B=3.91 mem/B=11.00 code=1216
+  neon horner+nibble U=1                         0.18 GB/s noise=128.4% uops/B=4.00 mem/B=12.00 code=960
+  neon horner+nibble U=5+remat                   0.12 GB/s noise=112.3% uops/B=4.70 mem/B=24.00 code=2240
+  checksum=0012345678abcd67
+benchmark: 2 candidates, 3 sizes, 3 interleaved iters, window=76.7%
+  sve horner+nibble U=4+eor3                     0.08 GB/s noise=76.7% uops/B=0.43 mem/B=10.06 code=1792
+  sve horner+nibble U=4+eor3 notail              0.06 GB/s noise=15.6% uops/B=0.43 mem/B=10.06 code=1216  <--
+  checksum=0012345678abcd67
+cpu: ARMv8 Processor rev 0 (v8l)
+ok encode raid0(4)
+ok encode raid1
+ok recover raid1 failed={0}
+ok recover raid1 failed={1}
+ok encode raid5(4)
+ok recover raid5(4) failed={2}
+ok recover raid5(4) failed={4}
+ok recover raid5(4) failed={2,4}
+ok encode raid6(8)
+ok recover raid6(8) failed={0}
+ok recover raid6(8) failed={8}
+ok recover raid6(8) failed={9}
+ok recover raid6(8) failed={7,0}
+ok recover raid6(8) failed={3,8}
+ok recover raid6(8) failed={8,9}
+ok recover raid6(8) failed={0,1,2}
+ok encode raid6(3)
+ok recover raid6(3) failed={1,2}
+ok encode rs(6,3)
+ok recover rs(6,3) failed={0,1,2}
+ok recover rs(6,3) failed={6,7,8}
+ok recover rs(6,3) failed={2,5,7}
+ok recover rs(6,3) failed={0,1,2,3}
+ok encode custom(4,2)
+ok recover custom(4,2) failed={0,3}
+ok recover custom(4,2) failed={4,5}
+benchmark picked: sve horner+nibble U=4+eor3 +notail (0.20 GB/s)
+all tests passed
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_sve_pdelta
+test_sve_pdelta: SVE detected, vl=16
+raid5(4) ch=1: 5 SVE candidates checked
+raid5(4) ch=2: 5 SVE candidates checked
+raid6(4) ch=1: 4 SVE candidates checked
+raid6(4) ch=2: 4 SVE candidates checked
+test_sve_pdelta: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_sve_eor3
+test_sve_eor3: SVE detected, vl=16 sve2=1
+raid6(6) enc: 5 SVE candidates checked (sve2=1, expect_eor3=1)
+raid5(4) enc: 5 SVE candidates checked (sve2=1, expect_eor3=0)
+rs(6,3) rec d0+d1: 4 SVE candidates checked (sve2=1, expect_eor3=1)
+custom 2x2 [[5,1],[7,0]]: 4 SVE candidates checked (sve2=1, expect_eor3=0)
+custom 1x1 [2]: 5 SVE candidates checked (sve2=1, expect_eor3=0)
+raid6(4) dupd ch0: 4 SVE candidates checked (sve2=1, expect_eor3=1)
+raid6(6) enc (no-sve2): 5 SVE candidates checked (sve2=0, expect_eor3=0)
+test_sve_eor3: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_aarch64_remat
+ok remat rs(6,3) neon U=3 (ntriv=2)
+ok remat rs(6,3) all-trivial neon U=3 (ntriv=0)
+ok remat raid6(8) neon U=5 (ntriv=1)
+ok remat rs(6,3) sve U=3 (ntriv=2)
+ok remat planner twin
+aarch64_remat: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_aarch64_shape
+f4 [neon]: input loads=2 OK
+f4 [sve]: input loads=2 OK
+test_aarch64_shape: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_pdelta_edge
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+nchanged51: OK
+wide-topo: OK
+guard-pages: OK
+aliasing: OK
+nt-fence: OK (7 NT twins)
+invalid-indices: OK
+oom-api: OK
+test_pdelta_edge: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_boundaries
+ok raid5(4) encode
+ok raid6(5) encode
+ok rs(6,3) encode
+ok custom(4,2) encode
+ok raid6(5) recover{0,1}
+ok raid6(5) recover{0}
+ok raid5(4) recover{2}
+ok raid5(4) pdelta{0}
+ok raid6(5) pdelta{1,3}
+test_boundaries: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_matrix
+cpu variant: sve (host-gated, vl=16)
+cpu variant: sve2 (host-gated, vl=16)
+cpu variant: neon (always included)
+ok cpu=neon
+ok cpu=sve
+ok cpu=sve2
+matrix: 128457 runs, 0 failures
+matrix: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=128 ./build-aarch64/test_dispatch
+note: e2e raid6(6) enc bench       -> sve horner+nibble U=2+eor3 +notail           [dispatcher]
+note: e2e raid5(4) rec d0 bench    -> neon xor U=1                                 [general-only]
+note: e2e raid6(6) pup d1 bench    -> sve delta+nibble U=4+eor3 +notail            [dispatcher]
+note: e2e raid6(6) enc nt bench    -> sve horner+nibble U=4+eor3 +notail           [dispatcher]
+note: e2e raid6(6) enc nobench     -> sve horner+nibble U=4+eor3                   [general-only]
+note: dispatcher installed in >=1 config
+note: per-call ns: direct=69698.0 dispatcher=88498.4 overhead=18800.5
+PASS test_dispatch
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_aarch64_emit
+PASS: 90 checks, 0 failures
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_correct
+benchmark: 10 candidates, 3 sizes, 3 interleaved iters, window=90.1%
+  sve horner+nibble U=4+eor3                     0.03 GB/s noise=133.9% uops/B=0.22 mem/B=10.03 code=1792  <--
+  sve horner+nibble U=3+eor3                     0.03 GB/s noise=607.1% uops/B=0.22 mem/B=10.04 code=1536
+  sve horner+nibble U=2+eor3                     0.04 GB/s noise=59.3% uops/B=0.22 mem/B=10.06 code=1280
+  sve horner+nibble U=1+eor3                     0.04 GB/s noise=93.5% uops/B=0.23 mem/B=10.12 code=1024
+  sve horner+nibble U=5+remat+eor3               0.03 GB/s noise=90.1% uops/B=0.32 mem/B=10.88 code=2560
+  neon horner+nibble U=4                         0.05 GB/s noise=46.9% uops/B=3.86 mem/B=10.50 code=1728
+  neon horner+nibble U=3                         0.03 GB/s noise=31.9% uops/B=3.88 mem/B=10.67 code=1472
+  neon horner+nibble U=2                         0.04 GB/s noise=73.0% uops/B=3.91 mem/B=11.00 code=1216
+  neon horner+nibble U=1                         0.05 GB/s noise=103.8% uops/B=4.00 mem/B=12.00 code=960
+  neon horner+nibble U=5+remat                   0.05 GB/s noise=75.9% uops/B=4.70 mem/B=24.00 code=2240
+  checksum=0012345678abcd67
+benchmark: 2 candidates, 3 sizes, 3 interleaved iters, window=224.5%
+  sve horner+nibble U=4+eor3                     0.02 GB/s noise=224.5% uops/B=0.22 mem/B=10.03 code=1792
+  sve horner+nibble U=4+eor3 notail              0.03 GB/s noise=89.4% uops/B=0.22 mem/B=10.03 code=1216  <--
+  checksum=0012345678abcd67
+cpu: ARMv8 Processor rev 0 (v8l)
+ok encode raid0(4)
+ok encode raid1
+ok recover raid1 failed={0}
+ok recover raid1 failed={1}
+ok encode raid5(4)
+ok recover raid5(4) failed={2}
+ok recover raid5(4) failed={4}
+ok recover raid5(4) failed={2,4}
+ok encode raid6(8)
+ok recover raid6(8) failed={0}
+ok recover raid6(8) failed={8}
+ok recover raid6(8) failed={9}
+ok recover raid6(8) failed={7,0}
+ok recover raid6(8) failed={3,8}
+ok recover raid6(8) failed={8,9}
+ok recover raid6(8) failed={0,1,2}
+ok encode raid6(3)
+ok recover raid6(3) failed={1,2}
+ok encode rs(6,3)
+ok recover rs(6,3) failed={0,1,2}
+ok recover rs(6,3) failed={6,7,8}
+ok recover rs(6,3) failed={2,5,7}
+ok recover rs(6,3) failed={0,1,2,3}
+ok encode custom(4,2)
+ok recover custom(4,2) failed={0,3}
+ok recover custom(4,2) failed={4,5}
+benchmark picked: sve horner+nibble U=4+eor3 +notail (0.03 GB/s)
+all tests passed
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_sve_pdelta
+test_sve_pdelta: SVE detected, vl=32
+raid5(4) ch=1: 5 SVE candidates checked
+raid5(4) ch=2: 5 SVE candidates checked
+raid6(4) ch=1: 4 SVE candidates checked
+raid6(4) ch=2: 4 SVE candidates checked
+test_sve_pdelta: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_sve_eor3
+test_sve_eor3: SVE detected, vl=32 sve2=1
+raid6(6) enc: 5 SVE candidates checked (sve2=1, expect_eor3=1)
+raid5(4) enc: 5 SVE candidates checked (sve2=1, expect_eor3=0)
+rs(6,3) rec d0+d1: 4 SVE candidates checked (sve2=1, expect_eor3=1)
+custom 2x2 [[5,1],[7,0]]: 4 SVE candidates checked (sve2=1, expect_eor3=0)
+custom 1x1 [2]: 5 SVE candidates checked (sve2=1, expect_eor3=0)
+raid6(4) dupd ch0: 4 SVE candidates checked (sve2=1, expect_eor3=1)
+raid6(6) enc (no-sve2): 5 SVE candidates checked (sve2=0, expect_eor3=0)
+test_sve_eor3: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_aarch64_remat
+ok remat rs(6,3) neon U=3 (ntriv=2)
+ok remat rs(6,3) all-trivial neon U=3 (ntriv=0)
+ok remat raid6(8) neon U=5 (ntriv=1)
+ok remat rs(6,3) sve U=3 (ntriv=2)
+ok remat planner twin
+aarch64_remat: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_aarch64_shape
+f4 [neon]: input loads=2 OK
+f4 [sve]: input loads=2 OK
+test_aarch64_shape: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_pdelta_edge
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
+nchanged51: OK
+wide-topo: OK
+guard-pages: OK
+aliasing: OK
+nt-fence: OK (7 NT twins)
+invalid-indices: OK
+oom-api: OK
+test_pdelta_edge: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_boundaries
+ok raid5(4) encode
+ok raid6(5) encode
+ok rs(6,3) encode
+ok custom(4,2) encode
+ok raid6(5) recover{0,1}
+ok raid6(5) recover{0}
+ok raid5(4) recover{2}
+ok raid5(4) pdelta{0}
+ok raid6(5) pdelta{1,3}
+test_boundaries: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_matrix
+cpu variant: sve (host-gated, vl=32)
+cpu variant: sve2 (host-gated, vl=32)
+cpu variant: neon (always included)
+ok cpu=neon
+ok cpu=sve
+ok cpu=sve2
+matrix: 128233 runs, 0 failures
+matrix: all OK
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=256 ./build-aarch64/test_dispatch
+note: e2e raid6(6) enc bench       -> sve horner+nibble U=4+eor3 +notail           [dispatcher]
+note: e2e raid5(4) rec d0 bench    -> neon xor U=2 +notail                         [dispatcher]
+note: e2e raid6(6) pup d1 bench    -> neon delta+nibble U=2 +notail                [dispatcher]
+note: e2e raid6(6) enc nt bench    -> sve horner+nibble U=4+eor3 +notail           [dispatcher]
+note: e2e raid6(6) enc nobench     -> sve horner+nibble U=4+eor3                   [general-only]
+note: dispatcher installed in >=1 config
+note: per-call ns: direct=184670.2 dispatcher=178934.0 overhead=-5736.2
+PASS test_dispatch
+QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64 -cpu max,sve-default-vector-length=512 ./build-aarch64/test_dispatch
+note: e2e raid6(6) enc bench       -> sve horner+nibble U=4+eor3 +notail           [dispatcher]
+note: e2e raid5(4) rec d0 bench    -> neon xor U=7                                 [general-only]
+note: e2e raid6(6) pup d1 bench    -> sve delta+nibble U=4+eor3 +notail            [dispatcher]
+note: e2e raid6(6) enc nt bench    -> sve horner+nibble U=4+eor3 +notail           [dispatcher]
+note: e2e raid6(6) enc nobench     -> sve horner+nibble U=4+eor3                   [general-only]
+note: dispatcher installed in >=1 config
+note: per-call ns: direct=162472.4 dispatcher=188837.7 overhead=26365.3
+PASS test_dispatch
+# The test itself also covers the non-SVE2 baseline path via a
+# synthetic cpu (sve2 force-disabled); QEMU's neoverse-n1 model does
+# not advertise SVE hwcaps, so it cannot serve as the baseline host.
+make[1]: Leaving directory '/home/hatch/workspace/raidjit-tracks/A2'
+sve exit=0

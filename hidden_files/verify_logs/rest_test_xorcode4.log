@@ -1,0 +1,11 @@
+== validity ==
+== matrices ==
+== encode ==
+== recover ==
+== max-config smoke ==
+max-config smoke: 6 JIT-verified, 0 clean no-candidate
+== combinations ==
+combination matrix: 322 candidates JITed x 7 lengths
+== default table ==
+XORCODE-ALL-OK
+exit=0

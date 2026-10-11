@@ -1,0 +1,9 @@
+ok rejections
+ok encode_crc_equals_38 raid5(4)
+ok encode_crc_equals_38 raid6_rs(6)
+ok encode_crc_equals_38 rs(6,3)
+ok pupdate_crc
+ok encode_pupdate_pair
+ok two_encodes_and_single
+ok benchmark_path
+test_fused: all OK

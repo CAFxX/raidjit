@@ -1,0 +1,22 @@
+ok encode lrc-azure(12,2,2)
+ok encode lrc(8,2,4)
+ok encode lrc(10,2,6)
+ok encode lrc(7,2,3)
+azure/f0                     fail= 0 local_row=2 kind(local)=0
+azure/f6                     fail= 6 local_row=3 kind(local)=0
+azure/f11                    fail=11 local_row=3 kind(local)=0
+lrc-opt(20,2,4)/f0           fail= 0 local_row=2 kind(local)=0
+ok distance lrc-azure(12,2,2): 560 3-erasure patterns recoverable, witness not
+ok distance lrc(8,2,4): 220 3-erasure patterns recoverable, witness not
+ok distance lrc-opt(9,3,3): 1365 4-erasure patterns recoverable, witness not
+static cost, lrc-azure(12,2,2), single failure of disk 0 (uops/B, mem B/B of the canonical version):
+  rows  kind     ncols  nnz   uops_per_byte  mem_per_byte
+  {0  } mulacc     12    12        0.5977      14.4844
+  {1  } mulacc     12    12        0.5977      14.4844
+  {2  } xor         6     6        0.1113       7.0156
+static cost, lrc-opt(20,2,4), single failure of disk 0 (uops/B, mem B/B of the canonical version):
+  rows  kind     ncols  nnz   uops_per_byte  mem_per_byte
+  {0  } mulacc     20    20        1.0039      23.6094
+  {1  } mulacc     20    20        1.0039      23.6094
+  {2  } xor         4     4        0.0801       5.0156
+lrc: 2733 checks, 0 failures

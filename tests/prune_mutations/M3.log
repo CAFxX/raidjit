@@ -1,0 +1,38 @@
+=== M3: twin_dominates() without the triple gate (prune plain whenever a same-class twin exists) ===
+--- mutation diff (keeps 'if (!strict) return 0;' as dead code so the build stays -Werror-clean; the gate itself is gone: strict is unconditionally 1) ---
+--- /tmp/prune_mut/prune.c.pristine	2026-10-02 06:32:54.013844687 +0000
++++ src/prune.c	2026-10-02 06:44:11.466770871 +0000
+@@ -87,19 +87,8 @@
+         a->cand.remat != b->cand.remat)
+         return 0;
+ 
+-    int strict = 0;
+-    if (a->uops_per_byte > b->uops_per_byte + PRUNE_EPS)
+-        return 0;
+-    if (a->uops_per_byte < b->uops_per_byte - PRUNE_EPS)
+-        strict = 1;
+-    if (a->mem_per_byte > b->mem_per_byte + PRUNE_EPS)
+-        return 0;
+-    if (a->mem_per_byte < b->mem_per_byte - PRUNE_EPS)
+-        strict = 1;
+-    if (a->code_size > b->code_size)
+-        return 0;
+-    if (a->code_size < b->code_size)
+-        strict = 1;
++    /* M3: triple gate removed */
++    int strict = 1;
+     if (!strict)
+         return 0;
+ 
+--- build ---
+ar rcs build-x86_64/libraidjit.a build-x86_64/src/gf.o build-x86_64/src/plan.o build-x86_64/src/topo.o build-x86_64/src/bench.o build-x86_64/src/ref.o build-x86_64/src/api.o build-x86_64/src/prune.o build-x86_64/src/x86_64/cpu.o build-x86_64/src/x86_64/emit.o build-x86_64/src/x86_64/jit.o
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+--- run (full) ---
+FAIL unit_mulacc_plain_dominant_twin_survives:213: twin must not be pruned in favor of plain, got 1
+FAIL unit_eps_ties_survive:378: eps-tie must survive, got 1
+FAIL unit_twin_not_pareto_survives:404: non-pareto twin must not prune, got 1
+PRUNE TESTS FAILED (3/164 checks)
+--- restore ---
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+pristine restored OK
+M3 done
