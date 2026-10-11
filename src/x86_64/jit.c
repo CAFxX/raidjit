@@ -118,6 +118,9 @@ typedef struct {
                              * fix, BUG_t1_80). */
     uint32_t twin_applied; /* BUG-COMBO-STATIC-F16: bitmask of TWIN_APPLIED_*
                             * bits, set when each twin's code path is taken. */
+    int oom; /* sticky OOM flag: set by pool_get on realloc failure.
+              * jit_build_version checks it after codegen and fails
+              * cleanly instead of asserting. */
 } cg_t;
 
 static int is_sse(const cg_t *cg) { return cg->cand.isa == ISA_SSE; }
@@ -162,6 +165,7 @@ static int hoist_inptr(const cg_t *cg, int i)
 
 static size_t pool_get(cg_t *cg, int kind, uint8_t c)
 {
+    if (cg->oom) return 0; /* sticky OOM: fail fast */
     for (int i = 0; i < cg->ncent; i++)
         if (cg->cent[i].kind == kind && cg->cent[i].c == c)
             return cg->cent[i].off;
@@ -251,16 +255,20 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     }
     size_t off = (cg->pool_len + 63) & ~(size_t)63;
     if (off + len > cg->pool_cap) {
-        cg->pool_cap = (off + len + 4095) & ~(size_t)4095;
-        cg->pool = realloc(cg->pool, cg->pool_cap);
-        assert(cg->pool);
+        size_t new_cap = (off + len + 4095) & ~(size_t)4095;
+        uint8_t *np = realloc(cg->pool, new_cap);
+        if (!np) { cg->oom = 1; return 0; }
+        cg->pool = np;
+        cg->pool_cap = new_cap;
     }
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
-        cg->ccent = cg->ccent ? cg->ccent * 2 : 32;
-        cg->cent = realloc(cg->cent, (size_t)cg->ccent * sizeof(*cg->cent));
-        assert(cg->cent);
+        int new_ccent = cg->ccent ? cg->ccent * 2 : 32;
+        void *ncent = realloc(cg->cent, (size_t)new_ccent * sizeof(*cg->cent));
+        if (!ncent) { cg->oom = 1; return 0; }
+        cg->cent = ncent;
+        cg->ccent = new_ccent;
     }
     cg->cent[cg->ncent].kind = kind;
     cg->cent[cg->ncent].c = c;
@@ -3185,6 +3193,15 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     for (size_t i = 0; i < cg.pool_len; i++)
         em_byte(&cg.em, cg.pool[i]);
     em_resolve(&cg.em);
+    /* OOM check: the emitter sets cg.em.err on buffer overflow or
+     * label/fixup realloc failure, and pool_get sets cg.oom on realloc
+     * failure. Either way the generated code is incomplete -- reject
+     * cleanly instead of installing it. Placed before the mem install
+     * so the fail path doesn't leak the mmap'd page. */
+    if (cg.em.err || cg.oom) {
+        snprintf(err, errlen, "x86_64 backend: out of memory during codegen");
+        goto fail;
+    }
     size_t total = cg.em.len;
 
     /* Phantom twin check (BUG_t1_80, BUG-COMBO-STATIC-F16): if a twin was

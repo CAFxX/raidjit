@@ -14,7 +14,10 @@ void em_init(em_t *e, uint8_t *buf, size_t cap)
 
 static void em_u8(em_t *e, unsigned v)
 {
-    assert(e->len < e->cap);
+    /* Buffer overflow (OOM path): set the sticky flag instead of
+     * asserting. All subsequent emits become no-ops; jit_build_version
+     * rejects the build cleanly after codegen. */
+    if (e->err || e->len >= e->cap) { e->err = 1; return; }
     e->buf[e->len++] = (uint8_t)v;
 }
 
@@ -36,10 +39,13 @@ static void em_i64(em_t *e, uint64_t v)
 
 int em_label(em_t *e)
 {
+    if (e->err) return -1;
     if (e->nlab == e->clab) {
-        e->clab = e->clab ? e->clab * 2 : 32;
-        e->lpos = realloc(e->lpos, (size_t)e->clab * sizeof(size_t));
-        assert(e->lpos);
+        int nclab = e->clab ? e->clab * 2 : 32;
+        size_t *np = realloc(e->lpos, (size_t)nclab * sizeof(size_t));
+        if (!np) { e->err = 1; return -1; }
+        e->lpos = np;
+        e->clab = nclab;
         for (int i = e->nlab; i < e->clab; i++)
             e->lpos[i] = (size_t)-1;
     }
@@ -48,16 +54,20 @@ int em_label(em_t *e)
 
 void em_bind(em_t *e, int lab)
 {
+    if (e->err) return;
     assert(lab >= 0 && lab < e->nlab);
     e->lpos[lab] = e->len;
 }
 
 static void em_fixup(em_t *e, size_t at, int lab, int add)
 {
+    if (e->err) return;
     if (e->nfix == e->cfix) {
-        e->cfix = e->cfix ? e->cfix * 2 : 64;
-        e->fix = realloc(e->fix, (size_t)e->cfix * sizeof(*e->fix));
-        assert(e->fix);
+        int ncfix = e->cfix ? e->cfix * 2 : 64;
+        void *nf = realloc(e->fix, (size_t)ncfix * sizeof(*e->fix));
+        if (!nf) { e->err = 1; return; }
+        e->fix = nf;
+        e->cfix = ncfix;
     }
     e->fix[e->nfix].at = at;
     e->fix[e->nfix].lab = lab;
@@ -67,6 +77,7 @@ static void em_fixup(em_t *e, size_t at, int lab, int add)
 
 void em_resolve(em_t *e)
 {
+    if (e->err) return;
     for (int i = 0; i < e->nfix; i++) {
         size_t at = e->fix[i].at;
         int lab = e->fix[i].lab;

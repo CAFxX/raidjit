@@ -75,7 +75,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_crc_fast $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
         $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc \
         $(BUILDDIR)/test_lrc_local \
-        $(BUILDDIR)/test_twin_audit
+        $(BUILDDIR)/test_twin_audit $(BUILDDIR)/test_emitter_oom
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -426,6 +426,7 @@ endif
 	./$(BUILDDIR)/test_lrc
 	./$(BUILDDIR)/test_lrc_local
 	./$(BUILDDIR)/test_twin_audit
+	./$(BUILDDIR)/test_emitter_oom
 
 # Sanitizer build: all tests under ASan+UBSan (leaks, OOB, UB).
 test-asan: clean
@@ -628,6 +629,9 @@ $(BUILDDIR)/test_ports: tests/test_ports.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(
 
 $(BUILDDIR)/test_ui_meta: tests/test_ui_meta.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_ui_meta.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_emitter_oom: tests/test_emitter_oom.c $(filter %/emit.c,$(ARCH_SRCS)) $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_emitter_oom.c $(filter %/emit.c,$(ARCH_SRCS)) $(LDFLAGS)
 
 $(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_recover_closedform.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
