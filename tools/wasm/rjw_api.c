@@ -404,8 +404,11 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
     }
     /* BUG-COMBO-E1X86-01: ternlog only takes effect on the P_XOR fold or
      * the MUL_NIBBLE body. On MUL_GFNI/MUL_ZVBC the flag is never consulted,
-     * so the pin would be a phantom. */
-    if (cand->ternlog && pl->kind != P_XOR && cand->mul != MUL_NIBBLE) {
+     * so the pin would be a phantom. P_HORNER never consults it either,
+     * and an all-trivial P_DELTA takes the c==1 branch everywhere. */
+    if (cand->ternlog && pl->kind != P_XOR &&
+        (pl->kind == P_HORNER || cand->mul != MUL_NIBBLE ||
+         !plan_any_nontrivial(pl))) {
         snprintf(err, errlen,
                  "ternlog needs MUL_NIBBLE body or P_XOR fold");
         return -1;
@@ -889,7 +892,7 @@ char *rjw_compile(const char *json)
         (pinned.nt || pinned.ternlog || pinned.xorbit || pinned.xorsched ||
          pinned.permi2b || pinned.remat || pinned.mshift || pinned.pipe ||
          pinned.rec_cf || pinned.notail || pinned.predtail ||
-         pinned.maskedtail || pinned.prefetch_dist)) {
+         pinned.maskedtail || pinned.prefetch_dist || pinned.lmul)) {
         snprintf(err, sizeof(err),
                  "pinned twins for a no-op plan");
         goto fail;
@@ -1141,6 +1144,9 @@ char *rjw_compile(const char *json)
          * successful build with the flag set means the closed form ran). */
         if (bw->cand.rec_cf)
             cJSON_AddItemToArray(tw, cJSON_CreateString("rec_cf"));
+        /* BUG-COMBO-STATIC-F16: crc_fold has no entry here because the
+         * snapshot tree has no crc_fold field at all (needs a re-sync
+         * from main, not a gate fix). */
         cJSON_AddItemToObject(r, "twins", tw);
         cJSON_AddNumberToObject(r, "code_size", (double)g_code_len);
         cJSON_AddNumberToObject(r, "const_size", (double)g_const_len);
