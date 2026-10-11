@@ -200,6 +200,104 @@ int main(void)
                 rj_free(pp);
         }
 
+        /* BUG-COMBO-TRAP-001/003: mul=gfni is AVX-512-only in the
+         * backend (c_aff asserts !is_sse; em_vgf2p8affineqb needs
+         * VL64). Splice mul=gfni onto isa=sse and isa=avx2 of a
+         * multiply-kind plan: the tokens must parse, but
+         * rj_compile_pinned must reject loudly via the
+         * planid_cand_valid GFNI x ISA gate -- the invalid candidate
+         * must never reach the backend asserts. */
+        {
+            rj_topology *trs = rj_topo_rs(6, 3);
+            CHECK(trs != NULL, "topo rs(6,3)");
+            rj_op oenc = rj_op_encode();
+            rj_jit *jrs = compile_det(trs, &oenc);
+            const char *idrs = rj_plan_id(jrs);
+            CHECK(idrs != NULL, "rs id null");
+            printf("rs(6,3) enc ID: %s\n", idrs);
+            /* Must be a multiply-kind plan: otherwise the P_XOR rule
+             * would fire first and the test would pass for the wrong
+             * reason. */
+            CHECK(strstr(idrs, ":mulacc:") != NULL ||
+                  strstr(idrs, ":horner:") != NULL ||
+                  strstr(idrs, ":delta:") != NULL,
+                  "rs(6,3) enc is not a multiply plan: %s", idrs);
+            /* Axes: 0 rj<V>, 1 topo, 2 op, 3 isa, 4 kind, 5 mul,
+             * 6 u<U>, 7 twins, 8 tail. */
+            const char *saxes[] = {"sse", "avx2"};
+            for (int si = 0; si < 2; si++) {
+                /* locate axis 3 (isa) and axis 5 (mul) */
+                const char *ax[9];
+                ax[0] = idrs;
+                int ok = 1;
+                for (int a = 1; a < 9; a++) {
+                    const char *c = strchr(ax[a - 1] + (a > 1 ? 1 : 0),
+                                           ':');
+                    if (!c) {
+                        ok = 0;
+                        break;
+                    }
+                    ax[a] = c + 1;
+                }
+                CHECK(ok, "axis walk failed: %s", idrs);
+                char pid[4096];
+                /* prefix through ":<kind>:" */
+                size_t pre = (size_t)(ax[5] - idrs);
+                CHECK(pre + 32 < sizeof(pid), "pid size");
+                memcpy(pid, idrs, pre);
+                size_t w = pre;
+                /* mul axis := gfni */
+                w += (size_t)snprintf(pid + w, sizeof(pid) - w, "gfni:");
+                /* u<U> axis: copy from ax[6] up to the twins ':' */
+                const char *uend = strchr(ax[6], ':');
+                CHECK(uend != NULL, "u axis end");
+                size_t ulen = (size_t)(uend - ax[6]) + 1; /* incl ':' */
+                CHECK(w + ulen < sizeof(pid), "pid size 2");
+                memcpy(pid + w, ax[6], ulen);
+                w += ulen;
+                /* rest (twins + tail) unchanged */
+                CHECK(w + strlen(ax[7]) + 1 < sizeof(pid), "pid size 3");
+                strcpy(pid + w, ax[7]);
+                /* now fix the isa axis (axis 3): rebuild with saxes[si] */
+                char pid2[4096];
+                size_t pre3 = (size_t)(ax[3] - idrs);
+                size_t isalen = (size_t)(strchr(ax[3], ':') - ax[3]);
+                CHECK(pre3 + 8 + (strlen(pid) - pre3 - isalen) <
+                      sizeof(pid2), "pid2 size");
+                memcpy(pid2, pid, pre3);
+                size_t w2 = pre3;
+                w2 += (size_t)snprintf(pid2 + w2, sizeof(pid2) - w2,
+                                       "%s", saxes[si]);
+                strcpy(pid2 + w2, pid + pre3 + isalen);
+                /* syntactic parse must accept the spliced tokens */
+                topo_int_t tirs;
+                char eb[256];
+                CHECK(topo_int_build(&tirs, trs, eb, sizeof(eb)) == 0,
+                      "topo_int_build rs");
+                planid_spec_t spec;
+                int pr = planid_parse(pid2, &tirs,
+                                      topo_internal_name(trs), &oenc,
+                                      &spec, eb, sizeof(eb));
+                CHECK(pr == 0 && spec.cand.mul == MUL_GFNI,
+                      "gfni token parse: pr=%d mul=%d eb='%s' pid='%s'",
+                      pr, spec.cand.mul, eb, pid2);
+                topo_int_free(&tirs);
+                /* pinned compile must reject loudly via the GFNI gate */
+                char err[512];
+                err[0] = '\0';
+                rj_jit *pp = rj_compile_pinned(trs, &oenc, NULL, pid2,
+                                               err, sizeof(err));
+                CHECK(pp == NULL, "gfni+%s ID accepted", saxes[si]);
+                CHECK(strstr(err, "GFNI") != NULL &&
+                      strstr(err, "AVX-512") != NULL,
+                      "gfni ISA rejection: '%s' pid='%s'", err, pid2);
+                if (pp)
+                    rj_free(pp);
+            }
+            rj_free(jrs);
+            rj_topo_free(trs);
+        }
+
         /* parity update op axis */
         int ch[] = {2, 0};
         rj_op pu = rj_op_parity_update(ch, 2);

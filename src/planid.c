@@ -864,6 +864,13 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
     }
     if (cand->ternlog && cand->isa != ISA_AVX512)
         SHAPE_BAD("unknown plan ID: ternlog is AVX-512-only");
+    /* BUG-COMBO-TRAP-001/003: the GFNI multiply path (c_aff) asserts
+     * !is_sse and em_vgf2p8affineqb needs VL64, so MUL_GFNI is
+     * AVX-512-only in the backend. The planner only enumerates it at
+     * ISA_AVX512 (plan.c); a pinned mul=gfni at any other ISA must
+     * fail here, never reach the asserts. */
+    if (cand->mul == MUL_GFNI && cand->isa != ISA_AVX512)
+        SHAPE_BAD("unknown plan ID: MUL_GFNI needs the AVX-512 ISA");
     if (cand->lmul) {
         if (cand->isa != ISA_RVV)
             SHAPE_BAD("unknown plan ID: lmul is RVV-only");
