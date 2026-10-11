@@ -995,7 +995,7 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
          spec.cand.nt || spec.cand.ternlog || spec.cand.xorbit ||
          spec.cand.xorsched || spec.cand.permi2b || spec.cand.remat ||
          spec.cand.mshift || spec.cand.pipe || spec.cand.rec_cf ||
-         spec.cand.prefetch_dist || spec.cand.crc_fold)) {
+         spec.cand.prefetch_dist || spec.cand.crc_fold || spec.cand.lmul)) {
         if (err && errlen)
             snprintf(err, errlen,
                      "pinned plan ID: names twins for a no-op plan");

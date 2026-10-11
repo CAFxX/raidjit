@@ -792,23 +792,6 @@ int planid_parse(const char *id, const topo_int_t *ti, const char *toponame,
 
 /* ---------------- candidate shape validation ---------------- */
 
-/* True if any plan matrix entry needs a GF multiply (i.e. is not 0/1).
- * mshift/permi2b select the GF-multiply emission method; on a degenerate
- * XOR-only plan (e.g. raid1 parity_update with a single changed disk, whose
- * P_DELTA matrix is [[1]]) they would pass the plan-kind gate but silently
- * emit the no-twin baseline (BUG-COMBO-PARITY-TWIN-DROP). */
-static int plan_has_gf_entries(const plan_t *pl)
-{
-    if (!pl->mat)
-        return 0;
-    int n = pl->n_out * pl->n_in;
-    for (int i = 0; i < n; i++) {
-        if (pl->mat[i] != 0 && pl->mat[i] != 1)
-            return 1;
-    }
-    return 0;
-}
-
 int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
                       size_t errlen)
 {
@@ -901,7 +884,11 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
         if (pl->kind != P_MULACC && pl->kind != P_DELTA &&
             pl->kind != P_HORNER)
             SHAPE_BAD("unknown plan ID: mshift needs GF-multiply rows");
-        if (!plan_has_gf_entries(pl))
+        /* BUG-COMBO-PARITY-TWIN-DROP: the kind gate alone passes degenerate
+         * XOR-only deltas (e.g. raid1 parity_update changed=[0], whose
+         * P_DELTA matrix is [[1]]). plan_any_nontrivial is the single source
+         * of truth for "some coefficient outside {0,1}" (plan.c:61). */
+        if (!plan_any_nontrivial(pl))
             SHAPE_BAD("unknown plan ID: mshift needs GF-multiply rows");
         if (cand->xorbit || cand->permi2b || cand->remat || cand->xorsched)
             SHAPE_BAD("unknown plan ID: mshift combines with no other "
@@ -915,7 +902,7 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
             SHAPE_BAD("unknown plan ID: permi2b needs AVX-512 nibble");
         if (pl->kind != P_MULACC && pl->kind != P_DELTA)
             SHAPE_BAD("unknown plan ID: permi2b needs P_MULACC/P_DELTA");
-        if (!plan_has_gf_entries(pl))
+        if (!plan_any_nontrivial(pl))
             SHAPE_BAD("unknown plan ID: permi2b needs GF-multiply rows");
         if (cand->xorbit || cand->mshift || cand->remat || cand->xorsched)
             SHAPE_BAD("unknown plan ID: permi2b combines with no other "
@@ -946,9 +933,14 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
     /* Ternlog only takes effect on the P_XOR fold or the MUL_NIBBLE body
      * (nibble/permi2b branches, rec_cf syndrome). On MUL_GFNI/MUL_ZVBC the
      * flag is never consulted, so the pin would be a phantom
-     * (BUG-COMBO-E1X86-01). The backend phantom postcondition is the
-     * backstop; this gate fails earlier with a clear reason. */
-    if (cand->ternlog && pl->kind != P_XOR && cand->mul != MUL_NIBBLE)
+     * (BUG-COMBO-E1X86-01). P_HORNER's emitter never consults ternlog
+     * either, and an all-trivial (0/1-only) P_DELTA takes the c==1 branch
+     * everywhere. The backend phantom postcondition is the backstop; this
+     * gate fails earlier with a clear reason. plan_any_nontrivial returns
+     * 1 for NULL mat (conservative), so the explorer UI path is safe. */
+    if (cand->ternlog && pl->kind != P_XOR &&
+        (pl->kind == P_HORNER || cand->mul != MUL_NIBBLE ||
+         !plan_any_nontrivial(pl)))
         SHAPE_BAD("unknown plan ID: ternlog needs MUL_NIBBLE body or "
                   "P_XOR fold");
     if (cand->lmul) {
