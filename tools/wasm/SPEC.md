@@ -21,7 +21,7 @@ compiles ANY option combination live in-browser, replacing the static
 5. Optional A/B comparison mode: two independent option sets compiled live,
    shown side by side, deep-linkable.
 6. The static 150-kernel HTML explorer is **superseded** by this page (same
-   deliverable filename). `tools/gen_kernels_page.py` and the `.md` reference
+   deliverable filename). [tools/gen_kernels_page.py](../gen_kernels_page.py) and the `.md` reference
    stay in the repo; the `.md`'s 150 kernels remain a verification corpus.
 
 Non-goals: executing generated code in-browser; benchmarking in-browser;
@@ -44,12 +44,12 @@ heuristics; pushing anything anywhere.
 ## S3. Architecture
 
 Three compile modules (mirrors the native per-ARCH build exactly — this is
-deliberate: it avoids touching `plan.c`'s `#if defined(__aarch64__)/__riscv`
+deliberate: it avoids touching [plan.c](../../src/plan.c)'s `#if defined(__aarch64__)/__riscv`
 ISA-enumeration branches, which would risk native codegen):
 
-- `raidjit_x86.wasm` — COMMON_SRCS + src/x86_64/{emit,jit}.c + wasm cpu stub
-- `raidjit_aarch64.wasm` — COMMON_SRCS + src/aarch64/{emit,jit}.c + wasm cpu stub
-- `raidjit_riscv.wasm` — COMMON_SRCS + src/riscv/{emit,jit}.c + wasm cpu stub
+- `raidjit_x86.wasm` — COMMON_SRCS + [src/x86_64/](../../src/x86_64/){emit,jit}.c + wasm cpu stub
+- `raidjit_aarch64.wasm` — COMMON_SRCS + [src/aarch64/](../../src/aarch64/){emit,jit}.c + wasm cpu stub
+- `raidjit_riscv.wasm` — COMMON_SRCS + [src/riscv/](../../src/riscv/){emit,jit}.c + wasm cpu stub
 
 One disassembler module:
 
@@ -66,7 +66,7 @@ page generator, so `file://` works with zero network fetches.
 
 ### S3.1 Why not one module
 
-`plan_candidates` (src/plan.c:722-947) enumerates ISA candidates under
+`plan_candidates` ([src/plan.c:722-947](../../src/plan.c)) enumerates ISA candidates under
 compile-time `#if defined(__aarch64__) / #elif defined(__riscv) / #else`
 (x86-64). A single wasm32 module would need a source refactor of the
 planner or `-D__aarch64__` hacks that perturb emscripten's libc headers.
@@ -101,9 +101,9 @@ Semantics of `rjw_compile`:
 4. `plan_build` (or `plan_build_recover_rows` when `op=recover` and an
    explicit equation-row subset is given).
 5. Candidate: if `cand` is `"auto"` → `plan_candidates` filtered by ISA, then
-   the static `heuristic_select` winner (bench.c) — the same rule native
+   the static `heuristic_select` winner ([bench.c](../../src/bench.c)) — the same rule native
    uses at `benchmark=0`. Else construct `cand_t` directly from the pinned
-   axes (the `gen_kernels.c` pattern) and validate ISA-applicability with the
+   axes (the [gen_kernels.c](../gen_kernels.c) pattern) and validate ISA-applicability with the
    same eligibility predicates the planner uses; on violation return
    `{ok:false, err}` (never wrong code).
 6. `jit_build_version` → on success return metadata JSON; on failure
@@ -132,7 +132,7 @@ char *dj_disasm(const char *arch, const uint8_t *bytes, size_t len,
 
 JS-side normalization (~30 lines, tested): strip objdump size suffixes
 (`vpxord`→`vpxor`), comma spacing, hex case — so output is comparable to the
-`.md` reference. `tidy_disasm.py`'s lone-byte folding is NOT needed
+`.md` reference. [tidy_disasm.py](../tidy_disasm.py)'s lone-byte folding is NOT needed
 (Capstone never splits instructions across lines). Byte equality is the
 invariant, not asm text.
 
@@ -199,14 +199,14 @@ Per recon (exact lines in the report):
 1. **cpu.c replaced** per arch by `tools/wasm/cpu_wasm_<arch>.c` providing
    `rj_cpu_detect` that fills the struct from a preset bundle passed in
    (never cpuid/getauxval/`/proc/cpuinfo`/prctl/ecall).
-2. **mmap/mprotect pivot** in each `src/<arch>/jit.c` `jit_build_version` /
+2. **mmap/mprotect pivot** in each [`src/<arch>/jit.c`](../../src/) `jit_build_version` /
    `jit_free_version`: under `RJ_WASM`, after `em_resolve`, copy
    `cg.em.len` bytes to a fresh `malloc` block; `v->mem`/`v->memsz`/`v->fn`
    point at it; free path uses `free`. The `__builtin___clear_cache`
    (aarch64, riscv only) and `sysconf` lines live inside the replaced
    block, so they never compile under emcc.
-2b. **VL/VLEN reads**: `src/aarch64/jit.c:1566` (`__asm__ volatile("cntb")`
-   overriding `cg.vl` from hardware) and `src/riscv/jit.c:151-155,1402`
+2b. **VL/VLEN reads**: [src/aarch64/jit.c:1566](../../src/aarch64/jit.c) (`__asm__ volatile("cntb")`
+   overriding `cg.vl` from hardware) and [src/riscv/jit.c:151-155,1402](../../src/riscv/jit.c)
    (`read_vlenb()` CSR read into `cg.vlenb`) are inline asm OUTSIDE the
    S6.2 replaced block and would hard-fail under emcc. Each gets its own
    `#ifdef RJ_WASM` that sources the value from the preset bundle instead
@@ -250,7 +250,7 @@ no `rand`/`time`/`getpid` in src, total-order qsort comparators, FNV-1a-64
 plan IDs over raw matrix bytes, strict `< sb - 1e-9` heuristic tie-breaks.
 ASLR/pointers never enter bytes or metadata.
 
-## S7. Page design (`tools/gen_live_kernels_page.py` → `raidjit_kernels.html`)
+## S7. Page design ([tools/gen_live_kernels_page.py](../gen_live_kernels_page.py) → `raidjit_kernels.html`)
 
 - Single self-contained HTML (emscripten `-sSINGLE_FILE=1` outputs inlined
   as base64 by the generator; pin `-sSINGLE_FILE_BINARY_ENCODE=0` since
@@ -296,7 +296,7 @@ tools/gen_live_kernels_page.py   (embeds the 4 SINGLE_FILE js outputs into
 ```
 
 Native tree changes: only `#ifdef RJ_WASM` blocks in the three `jit.c`
-files (§S6.2). Everything else additive under `tools/wasm/`.
+files (§S6.2). Everything else additive under [tools/wasm/](.).
 
 ## S9. Tests & acceptance gates
 
@@ -328,7 +328,7 @@ files (§S6.2). Everything else additive under `tools/wasm/`.
   (Guards C4.)
 - S9.4 **Disassembly differential:** decode every kernel in the parity corpus
   with `disasm.wasm`; diff normalized output against the objdump reference
-  (`.md` + `tidy_disasm.py`). Zero unknown/` .byte` decodes; zero
+  (`.md` + [tidy_disasm.py](../tidy_disasm.py)). Zero unknown/` .byte` decodes; zero
   mis-decodes on the emitted subset. Kill triggers per recon: per-ISA
   fallback (riscv/aarch64 hand-written decoder; x86 iced-wasm).
 - S9.5 **Native suite green:** `make test` + `make test-asan` (correctness
@@ -344,7 +344,7 @@ files (§S6.2). Everything else additive under `tools/wasm/`.
   matrix garbage, 10k-option fuzz loop in node (no crash/hang/OOM beyond a
   documented cap; document the cap).
 - S9.9 **Docs in the same change:** `tools/wasm/README.md`,
-  `tools/kernels-README.md` update (static page superseded; `.md` archived
+  [tools/kernels-README.md](../kernels-README.md) update (static page superseded; `.md` archived
   reference), regen wiring (`finalize_kernels.sh` / `mirror_your_files.sh`
   mirror the live page, not the static one).
 
@@ -355,10 +355,10 @@ No benchmarks anywhere in this track (C1).
 
 - `make kernels` continues to regenerate the `.md` (archived reference).
 - New target `make kernels-live` (or a flag) builds the wasm modules +
-  regenerates `raidjit_kernels.html` via `tools/gen_live_kernels_page.py`.
-- `tools/mirror_your_files.sh` mirrors the live `raidjit_kernels.html`
+  regenerates `raidjit_kernels.html` via [tools/gen_live_kernels_page.py](../gen_live_kernels_page.py).
+- [tools/mirror_your_files.sh](../mirror_your_files.sh) mirrors the live `raidjit_kernels.html`
   (replacing the static file at the same path).
-- `tools/gen_kernels_page.py` stays in the repo, runnable, but is removed
+- [tools/gen_kernels_page.py](../gen_kernels_page.py) stays in the repo, runnable, but is removed
   from the default regen pipeline (superseded deliverable).
 
 ## S11. Open decisions (coordinator calls, recorded)

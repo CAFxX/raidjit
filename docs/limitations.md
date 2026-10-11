@@ -9,7 +9,7 @@ returns NULL with an error message; anything else is called out explicitly.
 
 ### 1.1 Default RS matrix is MDS only inside a small envelope
 `rj_topo_raid6()` and `rj_topo_rs()` use `M[j][i] = 2^(j*(ndata-1-i))`,
-emitted by the plan-time generator-matrix search (`docs/matrix_search.md`).
+emitted by the plan-time generator-matrix search ([docs/matrix_search.md](matrix_search.md)).
 Since `ord(2) = 51` in GF(2⁸)/0x11B, the matrix is a true Reed-Solomon
 (every ≤ npar erasure set recoverable) only for **npar ≤ 3 and ndata ≤ 51**
 (`npar ≤ 1` has no basis restriction). The constructors return NULL outside
@@ -82,8 +82,8 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
 ## 3. Codegen and platform scope
 
 - **x86-64, AArch64, RISC-V.** Three backends share the planner and
-  API; only the emitter/JIT/CPU-detection differ (`src/`, `src/aarch64/`,
-  `src/riscv/`).
+  API; only the emitter/JIT/CPU-detection differ ([src/](../src/), [src/aarch64/](../src/aarch64/),
+  [src/riscv/](../src/riscv/)).
 - **AArch64** (added 2026-10-01): NEON + SVE/SVE2. Requires
   `getauxval(AT_HWCAP)`; SVE vector length via `PR_SVE_GET_VL` (disabled
   if reported VL < 16 bytes, as happens under qemu-user). NEON tested
@@ -91,7 +91,7 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
   VL-agnostic (runtime `cntb`, never hardcoded width) and execution-tested
   under qemu-aarch64 8.2.2 `-cpu max,sve-default-vector-length=128/256`
   (128k+ matrix runs each, 0 failures).
-- **RISC-V** (added 2026-10-01): RVV backend (`src/riscv/`),
+- **RISC-V** (added 2026-10-01): RVV backend ([src/riscv/](../src/riscv/)),
   `vsetvli` strip-mining, nibble-shuffle multiply via `vrgather`.
   LMUL is a planner tuning axis (`cand_t.lmul` ∈ {1,2,4,8}; logical
   vector register *r* maps to the LMUL-aligned physical group head
@@ -115,7 +115,7 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
   (RBX [+R15] [+R12–R14 when pointer hoisting is active]: 1, 2, 4 or 5
   pushes → `rsp%16` is 0, 8, 8 or 0). Safe today —
   no calls, no aligned spills — but a latent hazard: if generated code ever
-  calls out, `sub rsp,8` must be added (noted in `src/x86_64/jit.c`).
+  calls out, `sub rsp,8` must be added (noted in [src/x86_64/jit.c](../src/x86_64/jit.c)).
 - **No code caching:** each `rj_compile` re-emits and re-benchmarks from
   scratch. Compiling many distinct ops has linear cost; cache the `rj_jit*`
   yourself if you compile in a hot path.
@@ -142,7 +142,7 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
 - Consequences:
   - A reported GB/s means exactly: *best among the generated legal
     candidates under this protocol on this CPU*. Not portable, not absolute,
-    not a claim about other implementations. The header documents this.
+    not a claim about other implementations. [The header](../include/raidjit.h) documents this.
   - Within-noise ties are deliberately resolved toward *efficiency*
     (µop-cache, memory bandwidth), not raw peak speed. A candidate that is
     0.5% faster but measurably more wasteful will lose by design.
@@ -157,7 +157,7 @@ needs `ndata ≥ 2`, `rj_topo_raid6` needs `3 ≤ ndata ≤ 51`. Recovery with
   paths) — fail-fast, never silent corruption, but not a clean error return.
   Full error propagation is future work.
 - `bench_iters <= 0` defaults to 11 and `bench_bytes = 0` defaults to 1 MiB
-  (documented in the header); negative `bench_iters` is *not* rejected, just
+  (documented in the [header](../include/raidjit.h)); negative `bench_iters` is *not* rejected, just
   defaulted.
 - `loop_align` must be 0 (auto) or a power of two; anything else is rejected
   by `rj_compile`.
@@ -225,13 +225,13 @@ The same measure-don't-model principle will apply to the ARM/RISC-V ports
   those kernels. In practice every RVV implementation ships `M` (RVA
   profiles mandate it; QEMU `-cpu max` has it), so this is a portability
   note, not a live constraint.
-- **AArch64 (NEON, SVE/SVE2): implemented 2026-10-01** in `src/aarch64/`
+- **AArch64 (NEON, SVE/SVE2): implemented 2026-10-01** in [src/aarch64/](../src/aarch64/)
   (emitter, JIT, CPU detection). NEON's `tbl` is the direct counterpart
   of `pshufb` for nibble multiplies; SVE/SVE2 use a length-agnostic loop
   structure (runtime `cntb`, predicated `whilelo`, single predicate p0).
   On CPUs reporting SVE2 (`HWCAP2_SVE2`), the SVE backend folds the
   nibble-multiply reduction into one EOR3 per multiply (see
-  `docs/sve2_audit.md`); the desc string gains a `+eor3` tag. The
+  [docs/sve2_audit.md](sve2_audit.md)); the desc string gains a `+eor3` tag. The
   baseline SVE path is unchanged for non-SVE2 machines.
   (Fixed 2026-10-02: P_DELTA now seeds its accumulator from the old-parity
   input (`in[2*nc+j]`); see §12.)
@@ -279,13 +279,13 @@ The same measure-don't-model principle will apply to the ARM/RISC-V ports
   `STNT1B`) stores must execute `DMB ISHST` themselves after the jitted
   function returns. Omitting the fence is a correctness bug in the caller,
   not in the library: without it, a subsequent load may observe stale
-  data. Correctness tests (`tests/test_nt.c`) verify the shape (0×
+  data. Correctness tests ([tests/test_nt.c](../tests/test_nt.c)) verify the shape (0×
   SFENCE, ≥1 NT store, temporal twins contain no NT store) plus output
   equality against the scalar reference for encode and recover.
 
 ### Empirical selection policy (measured 2026-10-01, AMD EPYC 9D25, 32MB L3)
 
-`tests/study_nt.c`, RAID-6(8) AVX-512+GFNI:
+[tests/study_nt.c](../tests/study_nt.c), RAID-6(8) AVX-512+GFNI:
 
 | scenario | temporal | NT | winner |
 |---|---|---|---|
@@ -315,13 +315,13 @@ choice is to enable the twin and let measurement decide.
   (2) **no caller fence is needed** — the hint does not weaken store
   ordering the way `MOVNTDQ`/`STNP` do. Details and rejected
   alternatives (Zicbom, Zicboz, vendor extensions) in
-  `docs/rvv_nt_prefetch.md`.
+  [docs/rvv_nt_prefetch.md](rvv_nt_prefetch.md).
 - **Recovery outputs:** in a recover op the NT-written outputs are the
   reconstructed *failed disks* (not the parities); the contract above
   applies unchanged — x86 callers `SFENCE` (AArch64: `DMB ISHST`)
   after the call before another agent reads the rebuilt disks, and the
   jitted code itself still emits no fence. NT recovery twins are
-  covered like encode twins: `tests/test_nt.c` proves output equality
+  covered like encode twins: [tests/test_nt.c](../tests/test_nt.c) proves output equality
   vs the scalar reference and survivor-disks-untouched for rs(6,3)
   single/double/all-parity/data+parity failures, rs(12,3) and
   raid6(8) double failures, a 2 MiB large-length recovery (the NT
@@ -341,7 +341,7 @@ choice is to enable the twin and let measurement decide.
   on x86-64: the prologue loads the first 5 `in[]` pointers once into
   RSI/RDI/R12-R14 (all loop-invariant), and the vector body uses them
   directly instead of `mov r10, [r8+i*8]` per group iteration
-  (`src/x86_64/jit.c`: `ptr_hoist_count`/`body_inptr`). R12-R14 are
+  ([src/x86_64/jit.c](../src/x86_64/jit.c): `ptr_hoist_count`/`body_inptr`). R12-R14 are
   callee-saved (pushed/popped when used); RSI/RDI are caller-saved and
   dead in the vector body. P_DELTA is excluded (its `[old,new,oldpar]`
   pointer layout needs its own design); output pointers still reload
@@ -362,7 +362,7 @@ choice is to enable the twin and let measurement decide.
 - I4 (2026-10-06) reframed rejected item 18: instead of per-kernel
   benchmark auto-tuning, the machine is characterized once per process
   by a ~10 ms probe at first `rj_init` (pointer-chase latency + memset
-  bandwidth sweep, cached in-process; see `src/prefetch_calib.c`), and
+  bandwidth sweep, cached in-process; see [src/prefetch_calib.c](../src/prefetch_calib.c)), and
   each candidate's prefetch distance is computed analytically at plan
   time: `iters = clamp(ceil(latency * bandwidth / (U*VL*nstreams)),
   1, 64)`, distance = `iters * U * VL` per input stream, ISA-range
@@ -390,7 +390,7 @@ choice is to enable the twin and let measurement decide.
   silently wrapped (fixed 2026-10-03; previously distances ≥ 32768
   wrapped, e.g. 1 MB → offset 0). RVV validates 32..2016 (multiple
   of 32) and fails the build otherwise.
-- **Evaluation (2026-10-01, AMD EPYC 9D25):** `tests/study_prefetch.c`
+- **Evaluation (2026-10-01, AMD EPYC 9D25):** [tests/study_prefetch.c](../tests/study_prefetch.c)
   compared distances 0/256/512/1024/2048/4096/8192 on RAID-6(8)
   AVX-512+GFNI for cold streaming (128MB, fresh buffers per rep) and
   in-cache (256KB) workloads. No distance showed a consistent win:
@@ -434,7 +434,7 @@ choice is to enable the twin and let measurement decide.
   it measures faster on the target CPU; the distance is the I4
   analytical default unless manually overridden, and no distance is
   recommended as "optimal" — measurement decides. Full survey in
-  `docs/rvv_nt_prefetch.md`.
+  [docs/rvv_nt_prefetch.md](rvv_nt_prefetch.md).
 - **AArch64:** the prefetch twin uses `PRFM PLDL1STRM` (streaming
   prefetch, the ARM counterpart of x86's `PREFETCHT0` for
   write-once/read-once RAID streams). Encodable distances are
@@ -445,7 +445,7 @@ choice is to enable the twin and let measurement decide.
   default distance unless manually overridden. No AArch64-specific
   prefetch distance is recommended; the hardware prefetcher handles
   sequential RAID streams well, and measurement decides. The B4 past-end
-  self-attack (`tests/test_b4_prefetch.c`) uses the encodable maximum
+  self-attack ([tests/test_b4_prefetch.c](../tests/test_b4_prefetch.c)) uses the encodable maximum
   32760 there, and scans the emitted code to prove every PRFM word
   carries the full offset.
 
@@ -455,19 +455,19 @@ choice is to enable the twin and let measurement decide.
   instead of the old-parity input (`in[2*nc+j]`), producing wrong results
   for parity-update operations (`test_matrix`: `neon raid5(4) pdelta
   len=128 par0 mismatch [neon delta+nibble U=8]`). The codegen now loads
-  the seed from `in[2*nc+j]` (`src/aarch64/jit.c`: "Seed accumulators
-  from old parity"); verified by `tests/test_pdelta_edge.c` under QEMU
+  the seed from `in[2*nc+j]` ([src/aarch64/jit.c](../src/aarch64/jit.c): "Seed accumulators
+  from old parity"); verified by [tests/test_pdelta_edge.c](../tests/test_pdelta_edge.c) under QEMU
   aarch64 (out-of-place and in-place, all OK).
 - **SVE under qemu-user:** `PR_SVE_GET_VL` reports 8 bytes while the true
   VL is 64 bytes. The backend disables SVE if the reported VL < 16 bytes
   and falls back to NEON. On real hardware with a correct `PR_SVE_GET_VL`,
   SVE/SVE2 candidates are generated and benchmarked normally.
 - **Emitter:** all instruction encodings were verified against
-  `aarch64-linux-gnu-as` (80 checks in `tests/test_aarch64_emit.c`, all
+  `aarch64-linux-gnu-as` (80 checks in [tests/test_aarch64_emit.c](../tests/test_aarch64_emit.c), all
   passing). Three bugs were found and fixed during verification (NEON
   USHR base + shift encoding, SVE TBL base bit 17, NEON TBL base).
 - **SVE `test_matrix` segfault under QEMU (NOT REPRODUCIBLE 2026-10-02;
-  original attribution REFUTED):** a Makefile note claimed `test_matrix`
+  original attribution REFUTED):** a [Makefile](../Makefile) note claimed `test_matrix`
   segfaulted with SVE enabled under QEMU and excluded it from
   `test-qemu-aarch64-sve`. Re-verification on 2026-10-02 (qemu-aarch64
   8.2.2, `-cpu max,sve-default-vector-length=` 128/256/512) shows no
@@ -480,17 +480,17 @@ choice is to enable the twin and let measurement decide.
   base (`0x04209630`) into the current tree yields clean data-mismatch
   failures (`sve raid6(4) encode len=512 par1 mismatch`, exit 1) — zero
   crashes. Mechanism: on the SVE path `V(cg,r)=16+r`
-  (`src/aarch64/jit.c:77`), so the corrupted zn' = 17|zn is always a
+  ([src/aarch64/jit.c](../src/aarch64/jit.c)), so the corrupted zn' = 17|zn is always a
   valid z-register; the instruction decodes legally and only reads the
   wrong source. A wrong register cannot segfault. The emitter bug is
   real and its fix is real (pinned by the multi-register-combo shape
-  tests at `tests/test_aarch64_emit.c:137-151`, among the binary's 90
+  tests at [tests/test_aarch64_emit.c](../tests/test_aarch64_emit.c), among the binary's 90
   checks), but it never crashed anything — the AGENTS.md record itself
   says "caught by QEMU test *failure*".
   The historical segfault's **true root cause is unknown**. Leading
   hypothesis: a flawed observation — e.g. a misreported SIGILL from
   synthetic SVE variants executing on an SVE-less QEMU host (the
-  host-gating in `tests/test_matrix.c:1457` exists precisely because
+  host-gating in [tests/test_matrix.c](../tests/test_matrix.c) exists precisely because
   un-gated synthetic SVE "crashes instead of testing"), a stale binary,
   or a QEMU flake. This fits the note's "other tests pass" (only
   `test_matrix` uses synthetic ISA variants). It cannot be confirmed:
@@ -535,12 +535,12 @@ choice is to enable the twin and let measurement decide.
 - **Evaluation:** the emitter (`em_vpternlog_mem`) was cross-checked
   byte-for-byte against GAS on 24 randomized operand combinations
   (register classes, SIB scales, disp8/disp32 forms). Correctness is
-  covered by `tests/test_pxor_ternlog.c` (differential vs the plain
+  covered by [tests/test_pxor_ternlog.c](../tests/test_pxor_ternlog.c) (differential vs the plain
   candidate and a scalar reference: npar 1..3, ndata 1..8, dense /
   checkerboard / seeded-random patterns (the random ones also force a
   zero column and a zero row), U 1..8, 13 main/tail-boundary lengths
   each, plus an NT-store twin and a prefetch twin) and by
-  `tests/test_codegen_shape.c` (`test_tl`: exactly 3 VPTERNLOGD on a
+  [tests/test_codegen_shape.c](../tests/test_codegen_shape.c) (`test_tl`: exactly 3 VPTERNLOGD on a
   4x2 plan, none on the plain twin, planner gating to AVX-512 only,
   no twin for `n_out == 1`; red-green verified by mutation).
 - **Selection:** the twin is appended after its temporal original.
@@ -561,12 +561,12 @@ choice is to enable the twin and let measurement decide.
 ## 14. P_XOR XOR-schedule twin (cross-row CSE, evaluated 2026-10-02)
 
 - For `P_XOR` plans, the planner builds a greedy cross-row CSE schedule
-  at plan time (`src/xorsched.c`): identical rows are deduplicated, then
+  at plan time ([src/xorsched.c](../src/xorsched.c)): identical rows are deduplicated, then
   the most co-occurring input pair across rows is repeatedly extracted
   into a temp `t_k = in_a ^ in_b` (flat pairs only, never nested). The
   schedule is attached to the plan (`plan_t.xor_sched`); a
   schedule-driven body exists in all three backends (desc tag `+xsched`).
-  See `docs/xor_schedule.md` for the full design.
+  See [docs/xor_schedule.md](xor_schedule.md) for the full design.
 - **Gating:** the twin is enumerated per (ISA, U) base candidate only
   when `xorsched_version_uops` predicts a STRICT uop win under the
   emitter's own counting convention, and only if the extra temp register
@@ -576,8 +576,8 @@ choice is to enable the twin and let measurement decide.
 - **Dominance-pruning safety:** the strict gate means the naive twin can
   never dominate the scheduled twin on `(uops, mem)`; both versions'
   static fields come from the same emitter machinery. Verified by
-  `tests/test_xorsched.c` (strict inequality on built versions).
-- **Evaluation:** `tests/test_xorsched.c` (differential scheduled vs
+  [tests/test_xorsched.c](../tests/test_xorsched.c) (strict inequality on built versions).
+- **Evaluation:** [tests/test_xorsched.c](../tests/test_xorsched.c) (differential scheduled vs
   naive vs scalar reference: 6 topologies incl. duplicate/dead rows,
   13 lengths, U 1/2/4, all ISAs; model-exactness: predicted uops ==
   emitter uops on every backend, incl. the +nt/+pf combos; gate checks;
@@ -591,7 +591,7 @@ choice is to enable the twin and let measurement decide.
   EPYC 9D25, 2 vCPU), a sharing-heavy 20-in/4-out config shows a 20.1%
   static uop win (0.3711 vs 0.4648 uops/B, model-exact, AVX-512 U=4).
   A quiet-system duel (taskset-pinned, 12 runs/arm through
-  `bench_select`, `tools/duel_xorsched.c`): at 64 KiB the twin is
+  `bench_select`, [tools/duel_xorsched.c](../tools/duel_xorsched.c)): at 64 KiB the twin is
   +0.8% median (83.66 vs 82.98 GB/s) with overlapping IQRs — faster in
   10/12 paired runs but within noise; at 1 MiB the shared VM's
   memory-bandwidth noise dominates (4x within-arm spread) and the duel
@@ -599,7 +599,7 @@ choice is to enable the twin and let measurement decide.
   observation does not reproduce under pinning. Honest status: no
   conclusive measurement either way; the twin ships benchmark-gated
   and `bench_select` picks it exactly where it measures faster.
-  Full detail in `docs/xor_schedule.md` §7.
+  Full detail in [docs/xor_schedule.md](xor_schedule.md) §7.
 
 ## 15. XOR array codes (RDP/EVENODD/Liberation, merged 2026-10-02)
 
@@ -610,9 +610,9 @@ choice is to enable the twin and let measurement decide.
   `d`, `out[r]` / `out[R + r]` are the P / Q parity rows. Every parity
   row is a pure XOR of input rows, so these compile through the existing
   `P_XOR` plan path. `rj_xorcode_rows(t)` reports `R` (0 for non-XOR
-  topologies). Full construction: `docs/xor_codes.md`.
+  topologies). Full construction: [docs/xor_codes.md](xor_codes.md).
 - **Validity envelopes vs constructor caps (deliberate):** the
-  `xorcode_*_valid()` predicates in `src/xorcode.h` admit a wider
+  `xorcode_*_valid()` predicates in [src/xorcode.h](../src/xorcode.h) admit a wider
   envelope than the constructors — e.g. `xorcode_rdp_valid(257) == 1`
   (257 is prime) but `rj_topo_rdp(257)` returns NULL via the 256-disk
   (`RJ_MAX_DISKS`) cap. The predicates answer the math question ("is
@@ -620,15 +620,15 @@ choice is to enable the twin and let measurement decide.
   the engineering envelope. Documented here so the asymmetry is not
   mistaken for a bug.
 - **Default-table status:** `rj_topo_raid6(ndata)` dispatches on
-  `docs/xor_code_default.md` (machine-readable winner table; the C table
-  in `src/xorcode.c` is transcribed from it and `test_xorcode.c` checks
+  [docs/xor_code_default.md](xor_code_default.md) (machine-readable winner table; the C table
+  in [src/xorcode.c](../src/xorcode.c) is transcribed from it and `test_xorcode.c` checks
   they agree). The table's status line records the latest merged-tree
-  re-run outcome (see `docs/xor_code_default.md`); while it is all-RS,
+  re-run outcome (see [docs/xor_code_default.md](xor_code_default.md)); while it is all-RS,
   `rj_topo_raid6()` returns RS topologies exactly as before. If a
   re-run flips an entry, the return format changes to the expanded row
   model for that `ndata` (a semantic API consequence; the README
   row-model section covers the caller contract).
-- **Recovery sampling rationale:** `tests/test_xorcode.c` recovers every
+- **Recovery sampling rationale:** [tests/test_xorcode.c](../tests/test_xorcode.c) recovers every
   2-data-disk pair exhaustively through the same `solve_recovery` the
   JIT uses (plus data+P, data+Q, P+Q); the parity-involved extras beyond
   that are spot-sampled by design, and `check_mds` is exhaustive over

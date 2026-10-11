@@ -23,7 +23,7 @@ The emitted body contains no redundant XORs — accumulators are overwritten
 (move / direct load) on first touch, never XORed with zero, and every
 shared subexpression is computed exactly once per group.
 
-## 2. IR and greedy algorithm (`src/xorsched.c`)
+## 2. IR and greedy algorithm ([src/xorsched.c](../src/xorsched.c))
 
 Atoms: inputs `0..n_in-1`, plus temps `t_k = in_a ^ in_b` (flat pairs only —
 temps are never nested; see §6 for why).
@@ -119,14 +119,14 @@ used nowhere else directly) keeps `mem_sched == mem_naive`.
 
 1. Differential correctness: scheduled ≡ naive ≡ scalar reference across
    topologies × lengths × alignments on x86-64, AArch64 (NEON + SVE at
-   VL 128/256) and RVV (VLEN 128/256/512) — `tests/test_xorsched.c`.
+   VL 128/256) and RVV (VLEN 128/256/512) — [tests/test_xorsched.c](../tests/test_xorsched.c).
    Status 2026-10-02: MET — native x86-64 702 iterations (416 full
    checks), 4 twins; NEON 234 (130 full), 3 twins; SVE 468 × 2 VLs
    (260 full each), 3 twins each; RVV 234 × 3 VLENs (156 full each),
    4 twins each; all 0 failures. Evidence: §5 and the qemurun logs.
 2. Model honesty: for every enumerated twin on every backend,
    `sched.uops_per_byte < naive.uops_per_byte` strictly (same test).
-3. No regression: `tools/perf_guard.c` before/after inside the baseline
+3. No regression: [tools/perf_guard.c](../tools/perf_guard.c) before/after inside the baseline
    pass-to-pass bands on 64 KiB / 1 MiB.
 4. Empirical relevance: on at least one sharing-heavy P_XOR config the
    scheduled twin is *measured* faster than naive in a benchmark duel
@@ -155,7 +155,7 @@ the second pointer (`gen_body` already treats T2–T5 as scratch).
 
 QEMU execution (correctness only, no perf claims) — 2026-10-02, all
 0 failures, via `make test-qemu-aarch64`, `test-qemu-aarch64-sve`,
-`test-qemu-riscv64` (`tests/test_xorsched.c`, bucketed counts are full
+`test-qemu-riscv64` ([tests/test_xorsched.c](../tests/test_xorsched.c), bucketed counts are full
 differential/model checks / no-schedule skips / reg-fit skips):
 - qemu-aarch64 `-cpu max` (NEON): 234 iterations (130 / 65 / 39),
   3 twins (3 +nt, 3 +pf).
@@ -165,7 +165,7 @@ differential/model checks / no-schedule skips / reg-fit skips):
   each (156 / 78 / 0), 4 twins each (4 +nt, 4 +pf).
 The combo exactness checks (xsched+nt / xsched+pf vs model), the OOM
 unwind sweep (25 allocation sites), and the shipped-path e2e test
-(`test_xorsched_e2e.c`) also ran on every QEMU config above, 0 failures.
+([test_xorsched_e2e.c](../tests/test_xorsched_e2e.c)) also ran on every QEMU config above, 0 failures.
 
 ## 6. Dominance-pruning safety (for the parallel pruning track)
 
@@ -201,11 +201,11 @@ extracted temp provably saves `≥ 1` XOR uop (needs `≥ 2` user rows).
 ### Nested-extraction evaluation (2026-10-06): deliberately NOT implemented
 
 A nested greedy (temp-input and temp-temp pairs, `t1 = t0^c`) was
-prototyped standalone (`tools/nested_cse_experiment.c`: nested greedy +
+prototyped standalone ([tools/nested_cse_experiment.c](../tools/nested_cse_experiment.c): nested greedy +
 honest AVX-convention static uop counting + scalar differential
 correctness check per schedule) and measured on 12 topologies: the
 repo's six xorsched differential-test topologies (t1-t6 from
-`tests/test_xorsched.c`), six synthetic deeply-structured/dense plans,
+[tests/test_xorsched.c](../tests/test_xorsched.c)), six synthetic deeply-structured/dense plans,
 and a real RDP-recovery P_XOR plan shape. Static uops per lane
 (AVX: temp formation 2 uops with an input operand, 1 uop temp-temp;
 fan-out 1 uop/row):
@@ -245,7 +245,7 @@ many rows) where the twin is benchmark-relevant.
 Twin-vs-naive benchmark duel on a sharing-heavy synthetic P_XOR config:
 20-in/4-out, 2 shared pairs → 2 temps (the `t1` matrix), ISA **AVX-512**,
 **U=4**, through the real `bench_select` harness
-(`tools/duel_xorsched.c`), taskset-pinned to one core, 12 runs/arm,
+([tools/duel_xorsched.c](../tools/duel_xorsched.c)), taskset-pinned to one core, 12 runs/arm,
 median+IQR per arm. Two working-set configs: `bench_bytes=64 KiB`
 (harness sizes {16K, 64K, 256K}; 64K is cache-fit) and `bench_bytes=1
 MiB` (sizes {256K, 1M, 4M}; 1M is streaming).
@@ -269,11 +269,11 @@ a conclusive measured win either. Honest status: no conclusive
 measurement in either direction on this shared VM; the twin is retained
 **benchmark-gated** — `bench_select` picks it only where it measures
 faster on the target machine, never forced. Raw logs:
-`docs/xor_duel_2026-10-02_64K.log`, `docs/xor_duel_2026-10-02_1M.log`.
+[docs/xor_duel_2026-10-02_64K.log](xor_duel_2026-10-02_64K.log), [docs/xor_duel_2026-10-02_1M.log](xor_duel_2026-10-02_1M.log).
 
 ## 8. Tiling-study reconsideration
 
-`docs/tiling_study.md` rejections P1/P2/P4 concern loop tiling and row-major
+[docs/tiling_study.md](tiling_study.md) rejections P1/P2/P4 concern loop tiling and row-major
 restructuring (load inflation: tiling multiplies input loads by
 `n_out/T`). This track does **not** change those premises: the scheduled
 body keeps the input-major shared-input structure (each contributing input
@@ -313,7 +313,7 @@ A1's bit-level scheduler (`xorbit_build`) uses flat pair-CSE: temps are
 pairs of input bits only, never nested. A3 evaluated nested/hierarchical
 CSE (temps of temps) on the bit-level IR, where the economics differ
 from the byte-level Wave-1 evaluation above (bit-level DAGs are deeper).
-Prototype: `tools/xorbit_nested_eval.c` (standalone, not in the build).
+Prototype: [tools/xorbit_nested_eval.c](../tools/xorbit_nested_eval.c) (standalone, not in the build).
 
 Objective: static gate count `G = ntemps + sum_ob max(0, natoms(ob)-1)`,
 the XOR gate count of the scheduled DAG. Each nested extraction provably
@@ -337,7 +337,7 @@ Method (deterministic; two runs diffed byte-identical):
   size, i.e. `xorbit_need_regs` becomes `n_out*U + 4 + maxlive`.
 
 Corpus (16 fixed matrices; `real` = real workload shape):
-t-mulacc4x2, t-mulacc6x3 (from `tests/test_xorbit.c`), raid6-8p2
+t-mulacc4x2, t-mulacc6x3 (from [tests/test_xorbit.c](../tests/test_xorbit.c)), raid6-8p2
 (8+2: P row of 1s, Q row of powers of 2), rs63/rs104/rs144-vdm
 (Vandermonde `2^(i*j)` parity), t-horner63, horner10x4, t-delta,
 delta4x3, sparse20x4 (recovery-like sparse, 6 ones/row -- no CSE:
@@ -402,11 +402,11 @@ gates but needs up to 156 live temps (unproducible pressure); the
 pressure-affordable win is ~1% on real shapes, not a win by the twin's
 own strict-static-win gate standard, and the larger wins concentrate in
 synthetic deep-share shapes -- mirroring the Wave-1 byte-level
-conclusion. No `src/` change ships; the flat-only temp-operand bound
+conclusion. No [src/](../src/) change ships; the flat-only temp-operand bound
 that `gen_body_xorbit` relies on is pinned by a test in
-`tests/test_xorbit.c` (`check_flat_bound`).
+[tests/test_xorbit.c](../tests/test_xorbit.c) (`check_flat_bound`).
 
 Re-test trigger: a real GF-multiply workload class where maxlive<=2
 nested shows >10% gate wins on real shapes, or a register-file /
 emitter change that makes a temp-stack affordable -- re-run
-`tools/xorbit_nested_eval.c` (build: see its header comment).
+[tools/xorbit_nested_eval.c](../tools/xorbit_nested_eval.c) (build: see its header comment).

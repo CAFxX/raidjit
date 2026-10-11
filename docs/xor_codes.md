@@ -83,7 +83,7 @@ Without the `S` adjustment the diagonal parities would not give distance
 
 This track ships iff **all** hold:
 
-1. `tests/test_xorcode.c` passes: validity boundaries (prime/non-prime,
+1. [tests/test_xorcode.c](../tests/test_xorcode.c) passes: validity boundaries (prime/non-prime,
    `k/w` envelope, 256-disk cap), matrix unit tests (binary, Liberation
    ones-count, exhaustive 2-disk MDS via `solve_recovery` for
    RDP/EVENODD/Liberation at small params), encode vs scalar `ref_run`
@@ -93,21 +93,21 @@ This track ships iff **all** hold:
    exhaustive over all whole-disk pairs through the same solver)
    bit-exact, max-config JIT smoke (rdp/evenodd/liberation(13): encode +
    one 2-disk recovery), synthetic-CPU × every-candidate × length combination
-   matrix, and `docs/xor_code_default.md` ↔ C table agreement.
+   matrix, and [docs/xor_code_default.md](xor_code_default.md) ↔ C table agreement.
 2. Every new test is demonstrably able to fail (mutation evidence in
    §5).
 3. `make test`, `make test-asan`, `make test-qemu` green in this copy
    (with the §6 caveat on pre-existing tests that assert the old
    `rj_topo_raid6` = RS default).
 4. Code-choice benchmark (§4) run on the host; winners recorded in
-   `docs/xor_code_default.md`; `rj_topo_raid6` dispatches accordingly.
+   [docs/xor_code_default.md](xor_code_default.md); `rj_topo_raid6` dispatches accordingly.
 5. Perf guard: no regression vs the checked-in baseline on 64 KiB/1 MiB
    for configs whose topology did not deliberately change (§7).
 
 ## 2. API
 
-Constructors (declared in `include/raidjit.h`; internal helpers —
-choice table, matrix builders, validity predicates — in `src/xorcode.h`):
+Constructors (declared in [include/raidjit.h](../include/raidjit.h); internal helpers —
+choice table, matrix builders, validity predicates — in [src/xorcode.h](../src/xorcode.h)):
 
 - `rj_topo_rdp(int p)` — NULL unless `p` prime ≥ 3 and `p^2-1 <= 256`.
 - `rj_topo_evenodd(int p)` — NULL unless `p` prime ≥ 3 and
@@ -119,7 +119,7 @@ choice table, matrix builders, validity predicates — in `src/xorcode.h`):
   `rj_topo_raid6_gf` (less clear), keeping `rj_topo_rs(ndata,2)` (loses
   the RAID-6 naming). Documented here per the task.)
 - `rj_topo_raid6(int ndata)` — now dispatches to the benchmark-selected
-  default per `docs/xor_code_default.md` (RS fallback when no XOR code
+  default per [docs/xor_code_default.md](xor_code_default.md) (RS fallback when no XOR code
   applies/wins). Bounds unchanged (`3 <= ndata <= 51`, NULL outside).
   **When an XOR code wins, the topology uses the expanded row model**
   (pointer contract in §1.1), not one pointer per data disk.
@@ -157,7 +157,7 @@ choice table, matrix builders, validity predicates — in `src/xorcode.h`):
   returns NULL — asserted via the `plan_candidates` oracle, so the
   failure mode is loud in both directions.
 - `rj_topo_raid6` dispatch and the C default table agree with
-  `docs/xor_code_default.md` for every ndata 3..51 (parsed at test
+  [docs/xor_code_default.md](xor_code_default.md) for every ndata 3..51 (parsed at test
   time).
 
 ## 4. Code-choice benchmark (host: AMD EPYC 9D25, AVX-512+VBMI+BITALG+GFNI)
@@ -264,14 +264,14 @@ preserved** — only the summary tables in this section survive. The
 numbers here therefore cannot be re-derived or audited cell by cell. The
 integrator's post-merge re-run of the code-choice benchmark **must**
 preserve both (the raw logs and the exact script used) alongside the
-updated `docs/xor_code_default.md` table. Designing that re-run protocol
+updated [docs/xor_code_default.md](xor_code_default.md) table. Designing that re-run protocol
 is the integrator's job, not this track's.
 
 > **Integrator: re-run this benchmark on the merged tree.** Track A3's
 > XOR-schedule/CSE over the P_XOR path directly attacks the XOR codes'
 > main cost (redundant XORs across the 2R parity rows) and is expected
 > to make them more competitive — defaults recorded in
-> `docs/xor_code_default.md` may flip.
+> [docs/xor_code_default.md](xor_code_default.md) may flip.
 
 ## 5. Mutation evidence
 
@@ -284,7 +284,7 @@ re-run to show it FAILS, then reverted:
 2. EVENODD: drop the `S` (missing diagonal) term → MDS check fails.
 3. Liberation: drop the `O_w` extra 1 → Q ones-count `kw+k-1` check
    fails and MDS check fails.
-4. Default table: flip one `docs/xor_code_default.md` entry →
+4. Default table: flip one [docs/xor_code_default.md](xor_code_default.md) entry →
    table-agreement test fails.
 5. Constructor: force `rj_topo_rdp` to return NULL for prime `p` →
    validity test fails.
@@ -306,11 +306,11 @@ structurally safe. Checked 2026-10-02; the integrator owns the fixes:
 
 **Confirmed RS assumption (breaks loudly on a flip):**
 
-1. `tests/test_boundaries.c::case_encode_raid6` (~line 419):
+1. [tests/test_boundaries.c::case_encode_raid6](../tests/test_boundaries.c) (~line 419):
    `rj_topo_raid6(5)` asserted to lower to `P_HORNER` — under an XOR
    default the plan kind becomes `P_XOR` and the assertion fails.
    Same file lines ~502, ~524 use `rj_topo_raid6(5)` for other cases.
-2. `tests/test_codegen_shape.c` F1/F5 (~lines 429, 531 — `rj_topo_raid6(6)`;
+2. [tests/test_codegen_shape.c](../tests/test_codegen_shape.c) F1/F5 (~lines 429, 531 — `rj_topo_raid6(6)`;
    also ~776, ~819, ~990 use `rj_topo_raid6(6)`/`rj_topo_raid6(4)`):
    asserts P_HORNER-specific codegen facts (one input load per (i,u),
    vzeroupper placement) that do not hold for a P_XOR plan.
@@ -319,26 +319,25 @@ structurally safe. Checked 2026-10-02; the integrator owns the fixes:
 integrator checks each for plan-kind asserts, failed-index literals
 assuming parity at `ndata`/`ndata+1`, and `ndata == k` stream counts):**
 
-3. `tests/test_correct.c:286` `rj_topo_raid6(8)` — failed-index
+3. [tests/test_correct.c:286](../tests/test_correct.c) `rj_topo_raid6(8)` — failed-index
    literals `{8}`, `{9}`, `{8,9}` assume parity disks at indices 8, 9;
    under the expanded model those indices are data rows (the helper is
    self-consistent on buffer counts, so this would silently test the
-   wrong disks, not crash). Also `:304` `rj_topo_raid6(3)`.
-4. `tests/test_matrix.c:1516-1517` (`rj_topo_raid6(4)`, `(8)`),
-   `tests/test_benchreject.c:39` (`(8)`), `tests/test_scan_align.c:376,
-   405,422` (`(8)`), `tests/test_nt.c:345` (`(8)`),
-   `tests/test_pdelta.c:89-174` (`(4)` ×8), `tests/test_pressure.c:282`
-   (`(4)`), `tests/test_remat.c:265` (`(8)`),
-   `tests/test_sve_pdelta.c:179` (`(4)`), `tests/test_aarch64_remat.c:283`
-   (`(8)`), `tests/test_sve_eor3.c:249,307,321` (`(6)`, `(4)`),
-   `tests/test_pdelta_edge.c:373,408,540` (`(8)`), `:658,669` (`(4)`).
-5. `tools/perf_guard.c` corpus `raid6(8+2)/*` — goes through
+   wrong disks, not crash). Also [`:304`](../tests/test_correct.c) `rj_topo_raid6(3)`.
+4. [tests/test_matrix.c:1516-1517](../tests/test_matrix.c) (`rj_topo_raid6(4)`, `(8)`),
+   [tests/test_benchreject.c:39](../tests/test_benchreject.c) (`(8)`), [tests/test_scan_align.c](../tests/test_scan_align.c):376, 405,422 (`(8)`), [tests/test_nt.c:345](../tests/test_nt.c) (`(8)`),
+   [tests/test_pdelta.c:89-174](../tests/test_pdelta.c) (`(4)` ×8), [tests/test_pressure.c:282](../tests/test_pressure.c)
+   (`(4)`), [tests/test_remat.c:265](../tests/test_remat.c) (`(8)`),
+   [tests/test_sve_pdelta.c:179](../tests/test_sve_pdelta.c) (`(4)`), [tests/test_aarch64_remat.c:283](../tests/test_aarch64_remat.c)
+   (`(8)`), [tests/test_sve_eor3.c:249,307,321](../tests/test_sve_eor3.c) (`(6)`, `(4)`),
+   [tests/test_pdelta_edge.c](../tests/test_pdelta_edge.c):373,408,540 (`(8)`), :658,669 (`(4)`).
+5. [tools/perf_guard.c](../tools/perf_guard.c) corpus `raid6(8+2)/*` — goes through
    `rj_topo_raid6()`; self-consistent (derives stream counts from the
    topology), but the measured object changes meaning under a flip.
 
 **Structurally safe (can never be an XOR topology):** `ndata=51/52`
-bounds checks (`tests/test_correct.c:396-399`,
-`tests/test_pdelta_edge.c:308,689`), `tools/perf_guard.c`
+bounds checks ([tests/test_correct.c:396-399](../tests/test_correct.c),
+[tests/test_pdelta_edge.c:308,689](../tests/test_pdelta_edge.c)), [tools/perf_guard.c](../tools/perf_guard.c)
 `raid6(16+2)` (ndata=16 > 13), and the study/dump tools (not built by
 `make`).
 
@@ -347,7 +346,7 @@ here.
 
 ## 7. Perf guard
 
-`tools/perf_guard.c` corpus configs `raid6(8+2)/*` go through
+[tools/perf_guard.c](../tools/perf_guard.c) corpus configs `raid6(8+2)/*` go through
 `rj_topo_raid6()`: if the default for ndata=8 flips to an XOR code, the
 guard measures the expanded topology (self-consistent: it derives
 stream counts from the topology). Throughput is compared per data byte

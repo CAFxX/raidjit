@@ -8,7 +8,7 @@ its group-mates with a pure-XOR equation; up to **h** failures anywhere
 recover from the global parities. The point of the family is repair
 cost: local recovery reads **r** disks instead of **k**.
 
-## Constructors (`src/topo.c`, declared in `include/raidjit.h`)
+## Constructors ([src/topo.c](../src/topo.c), declared in [include/raidjit.h](../include/raidjit.h))
 
 | Constructor | Meaning |
 |---|---|
@@ -59,7 +59,7 @@ the generic path if local subsets can't be built.
 
 Rationale: the emergent preference was fragile to benchmark noise,
 significance-gate fallback, and cost-model drift. The rule is robust
-to all three. See `hidden_files/lrc_locality_SPEC.md`.
+to all three. See [hidden_files/lrc_locality_SPEC.md](../hidden_files/lrc_locality_SPEC.md).
 
 Note: the rule also fires for RAID6 single-data-failure (structural
 1-group detection: the P row is a pure-XOR row covering all disks).
@@ -68,7 +68,7 @@ but means benchmark mode can no longer select the Q-row subset for
 RAID6.
 
 Static cost (canonical version, single failure of disk 0; from
-`tests/test_lrc.c`, benchmark-off — benchmarks are postponed per the
+[tests/test_lrc.c](../tests/test_lrc.c), benchmark-off — benchmarks are postponed per the
 A6 brief, so these are static-model numbers, not measurements):
 
 `lrc-azure(12,2,2)`:
