@@ -204,9 +204,14 @@ int planid_format(char *out, size_t outlen, const topo_int_t *ti,
     if (cur_putc(&c, ':'))
         return -1;
     /* twins axis, fixed order; "-" when empty. */
+    /* BUG-COMBO-STATIC-F05: rec_cf was missing here although its token is
+     * emitted below. A rec_cf-only candidate formatted as "-" and lost
+     * the twin on re-parse. (crc_fold does not exist in this snapshot
+     * tree; it needs a re-sync from main, not a gate fix.) */
     int any_twin = cand->nt || cand->prefetch_dist || cand->ternlog ||
                    cand->remat || cand->xorsched || cand->xorbit ||
-                   cand->mshift || cand->permi2b || cand->pipe || cand->lmul;
+                   cand->mshift || cand->permi2b || cand->pipe || cand->lmul ||
+                   cand->rec_cf;
     if (!any_twin) {
         if (cur_putc(&c, '-'))
             return -1;
@@ -781,6 +786,22 @@ int planid_parse(const char *id, const topo_int_t *ti, const char *toponame,
 
 /* ---------------- candidate shape validation ---------------- */
 
+/* True if any plan matrix entry needs a GF multiply (i.e. is not 0/1).
+ * mshift/permi2b select the GF-multiply emission method; on a degenerate
+ * XOR-only plan they would pass the plan-kind gate but silently emit the
+ * no-twin baseline (BUG-COMBO-PARITY-TWIN-DROP). */
+static int plan_has_gf_entries(const plan_t *pl)
+{
+    if (!pl->mat)
+        return 0;
+    int n = pl->n_out * pl->n_in;
+    for (int i = 0; i < n; i++) {
+        if (pl->mat[i] != 0 && pl->mat[i] != 1)
+            return 1;
+    }
+    return 0;
+}
+
 int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
                       size_t errlen)
 {
@@ -824,6 +845,8 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
         if (pl->kind != P_MULACC && pl->kind != P_DELTA &&
             pl->kind != P_HORNER)
             SHAPE_BAD("unknown plan ID: mshift needs GF-multiply rows");
+        if (!plan_has_gf_entries(pl))
+            SHAPE_BAD("unknown plan ID: mshift needs GF-multiply rows");
         if (cand->xorbit || cand->permi2b || cand->remat || cand->xorsched)
             SHAPE_BAD("unknown plan ID: mshift combines with no other "
                       "body twin");
@@ -836,6 +859,8 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
             SHAPE_BAD("unknown plan ID: permi2b needs AVX-512 nibble");
         if (pl->kind != P_MULACC && pl->kind != P_DELTA)
             SHAPE_BAD("unknown plan ID: permi2b needs P_MULACC/P_DELTA");
+        if (!plan_has_gf_entries(pl))
+            SHAPE_BAD("unknown plan ID: permi2b needs GF-multiply rows");
         if (cand->xorbit || cand->mshift || cand->remat || cand->xorsched)
             SHAPE_BAD("unknown plan ID: permi2b combines with no other "
                       "body twin");
@@ -855,6 +880,11 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
     }
     if (cand->ternlog && cand->isa != ISA_AVX512)
         SHAPE_BAD("unknown plan ID: ternlog is AVX-512-only");
+    /* BUG-COMBO-E1X86-01: ternlog only takes effect on the P_XOR fold or
+     * the MUL_NIBBLE body; on MUL_GFNI/MUL_ZVBC the pin would be a phantom. */
+    if (cand->ternlog && pl->kind != P_XOR && cand->mul != MUL_NIBBLE)
+        SHAPE_BAD("unknown plan ID: ternlog needs MUL_NIBBLE body or "
+                  "P_XOR fold");
     if (cand->lmul) {
         if (cand->isa != ISA_RVV)
             SHAPE_BAD("unknown plan ID: lmul is RVV-only");

@@ -402,6 +402,14 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         snprintf(err, errlen, "ternlog needs AVX-512");
         return -1;
     }
+    /* BUG-COMBO-E1X86-01: ternlog only takes effect on the P_XOR fold or
+     * the MUL_NIBBLE body. On MUL_GFNI/MUL_ZVBC the flag is never consulted,
+     * so the pin would be a phantom. */
+    if (cand->ternlog && pl->kind != P_XOR && cand->mul != MUL_NIBBLE) {
+        snprintf(err, errlen,
+                 "ternlog needs MUL_NIBBLE body or P_XOR fold");
+        return -1;
+    }
     if (cand->maskedtail && cand->isa == ISA_AVX512 &&
         !(cpu->avx512f && cpu->avx512bw)) {
         snprintf(err, errlen, "maskedtail needs AVX-512");
@@ -413,6 +421,13 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
     }
     if (cand->maskedtail && cand->notail) {
         snprintf(err, errlen, "maskedtail and notail are disjoint");
+        return -1;
+    }
+    /* BUG-COMBO-E1-MASKEDTAIL-NT: nt+maskedtail emits non-temporal body
+     * stores but temporal masked tail stores (partial-nt). Reject like
+     * the native api.c mt_ok gate. */
+    if (cand->maskedtail && cand->nt) {
+        snprintf(err, errlen, "maskedtail excludes nt (partial-nt)");
         return -1;
     }
     if (cand->predtail) {
@@ -437,7 +452,9 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         return -1;
     }
     if (cand->mul != MUL_NIBBLE || cand->ternlog || cand->maskedtail ||
-        cand->permi2b || cand->mshift || cand->xorbit) {
+        cand->permi2b || cand->mshift) {
+        /* BUG-COMBO-STATIC-F01: xorbit was wrongly in this list. xorbit is
+         * implemented for NEON/SVE/RVV (not x86); it is valid here. */
         snprintf(err, errlen, "x86-only multiply/twin axis on aarch64");
         return -1;
     }
@@ -459,7 +476,9 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         return -1;
     }
     if (cand->ternlog || cand->permi2b ||
-        cand->mshift || cand->xorbit || cand->predtail) {
+        cand->mshift || cand->predtail) {
+        /* BUG-COMBO-STATIC-F01: xorbit was wrongly in this list. xorbit is
+         * implemented for RVV (not x86); it is valid here. */
         snprintf(err, errlen, "x86/SVE-only twin axis on riscv");
         return -1;
     }
@@ -501,10 +520,11 @@ static int feature_gates(const plan_t *pl, const cand_t *cand,
         }
 #endif
     }
-    if (cand->nt && pl->kind == P_DELTA) {
-        snprintf(err, errlen, "nt twin not offered for P_DELTA");
-        return -1;
-    }
+    /* BUG-COMBO-STATIC-F02: the nt+P_DELTA ban was removed. It was a
+     * WASM-only gate with no counterpart in planid_cand_valid, the
+     * planner, or any backend -- the backends honour nt for DELTA
+     * plans. A single-path gate with no documented concern is a
+     * validity divergence, not a safety rule. */
     return 0;
 }
 
@@ -861,6 +881,20 @@ char *rjw_compile(const char *json)
                           sizeof(err)) != 0)
         goto fail;
 
+    /* No-op plans have no code to twin: a pinned twin request for one is
+     * bogus. Without this guard the build succeeds with a vacuous kernel
+     * while reporting the twins as applied (BUG-COMBO-E50). Mirrors the
+     * native api.c noop guard. */
+    if (!is_auto && pl.noop &&
+        (pinned.nt || pinned.ternlog || pinned.xorbit || pinned.xorsched ||
+         pinned.permi2b || pinned.remat || pinned.mshift || pinned.pipe ||
+         pinned.rec_cf || pinned.notail || pinned.predtail ||
+         pinned.maskedtail || pinned.prefetch_dist)) {
+        snprintf(err, sizeof(err),
+                 "pinned twins for a no-op plan");
+        goto fail;
+    }
+
     /* ---- options ---- */
     rj_options o;
     rj_options_default(&o);
@@ -1102,6 +1136,11 @@ char *rjw_compile(const char *json)
             cJSON_AddItemToArray(tw, cJSON_CreateString("mshift"));
         if (bw->cand.pipe)
             cJSON_AddItemToArray(tw, cJSON_CreateString("pipe"));
+        /* BUG-COMBO-M5: rec_cf was omitted although the body is in effect
+         * (the backend rejects rec_cf when pl->rec_cf == NULL, so a
+         * successful build with the flag set means the closed form ran). */
+        if (bw->cand.rec_cf)
+            cJSON_AddItemToArray(tw, cJSON_CreateString("rec_cf"));
         cJSON_AddItemToObject(r, "twins", tw);
         cJSON_AddNumberToObject(r, "code_size", (double)g_code_len);
         cJSON_AddNumberToObject(r, "const_size", (double)g_const_len);
