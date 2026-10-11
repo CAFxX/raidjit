@@ -699,5 +699,10 @@ $(BUILDDIR)/test_twin_audit: tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(
 $(BUILDDIR)/test_bench_facility: tests/test_bench_facility.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_bench_facility.c
 
+# Hash oracle for the benchmark facility (tools/bench/hashdump.c).
+# Recompiles kernels from (topology, op, plan_id) and hashes the machine code.
+$(BUILDDIR)/hashdump: tools/bench/hashdump.c $(BUILDDIR)/libraidjit.a | $(BUILDDIR)
+	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L -I. -o $@ tools/bench/hashdump.c $(BUILDDIR)/libraidjit.a -lcrypto -lm
+
 $(BUILDDIR)/test_pinned_negative: tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

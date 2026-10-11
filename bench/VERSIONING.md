@@ -12,7 +12,7 @@ interpretable and new tools from breaking on it.
 > resort, not the default: the facility prefers careful merging with explicit
 > uncertainty over discarding data.
 
-## 1. The four version axes
+## 1. The version axes (seven, independently versioned)
 
 A result file carries four independent version numbers in `provenance`,
 because the things that can drift do so independently:
@@ -79,7 +79,7 @@ degrade gracefully, axis by axis, instead of rejecting whole files.
 3. **Machine check**: `machine_id` must match `bench/results/<id>/machine.json`
    (or be registered with `--new-machine`). Unknown machine → quarantine.
 4. **Sanity checks** (see README): out-of-range values → quarantine with reason.
-5. **Axis tagging**: the stored copy gets a sidecar `_compat.json` recording
+5. **Axis tagging**: the stored copy gets a sidecar `<name>.json.compat.json` recording
    which axes match current versions, so aggregation can filter without
    re-deriving.
 6. **Staleness pre-computation**: ingestion computes the initial `code_hash`
@@ -136,4 +136,4 @@ produces a new stored copy with provenance recording the migration.
 
 When any axis bumps, update this table **and** add the migration (or
 quarantine rule) to `tools/bench/migrate.py`. A version bump without a
-migration entry is a CI failure (see `tests/test_bench_facility.py`).
+migration entry is a CI failure (see `tests/test_bench_facility.c`).

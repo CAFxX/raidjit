@@ -23,6 +23,7 @@ tool calls classify() per (config, v1, v2) triple.
 import json
 import os
 import re
+import sys
 
 LEVEL_WEIGHTS = {0: 1.0, 1: 0.9, 2: 0.5, 3: 0.2, 4: 0.1}
 LEVEL_NAMES = {
@@ -55,48 +56,76 @@ def _match_pattern(pattern, candidate):
 
 
 def _load_annotations():
-    """Load all manual annotations. Returns list of (from, to, entries)."""
+    """Load all manual annotations. Returns list of validated dicts.
+    MAJOR-4 fix: validate level ranges at load; skip corrupt files loudly
+    (to stderr) instead of silently ignoring or crashing later."""
     out = []
     if not os.path.isdir(ANNOTATIONS_DIR):
         return out
     for fn in sorted(os.listdir(ANNOTATIONS_DIR)):
         if not fn.endswith(".json"):
             continue
+        path = os.path.join(ANNOTATIONS_DIR, fn)
         try:
-            with open(os.path.join(ANNOTATIONS_DIR, fn), encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 a = json.load(f)
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            print(f"warning: skipping corrupt annotation {fn}: {e}",
+                  file=sys.stderr)
+            continue
+        # Validate structure: levels must be int 0..4
+        ok = True
+        for entry in a.get("classifications", []):
+            lvl = entry.get("level")
+            if not isinstance(lvl, int) or isinstance(lvl, bool) or not 0 <= lvl <= 4:
+                print(f"warning: skipping annotation {fn}: invalid level {lvl!r} "
+                      f"(must be int 0..4)", file=sys.stderr)
+                ok = False
+                break
+        dl = a.get("default_level", 4)
+        if not isinstance(dl, int) or isinstance(dl, bool) or not 0 <= dl <= 4:
+            print(f"warning: skipping annotation {fn}: invalid default_level {dl!r}",
+                  file=sys.stderr)
+            ok = False
+        if ok:
             out.append(a)
-        except (json.JSONDecodeError, OSError):
-            continue  # corrupt annotation: ignore, don't crash
     return out
 
 
+def _versions_match(a_from, a_to, v1, v2):
+    """MAJOR-4 fix: empty versions never match (was: ''.startswith('') is True).
+    Supports abbreviated SHA matching in both directions."""
+    if not a_from or not a_to or not v1 or not v2:
+        return False
+    return ((v1.startswith(a_from) or a_from.startswith(v1)) and
+            (v2.startswith(a_to) or a_to.startswith(v2)))
+
+
 def _classify_manual(candidate, v1, v2, annotations):
-    """Check manual annotations. Returns (level, reason) or None."""
+    """Check manual annotations. Returns (level, reason) or None.
+
+    MAJOR-4 fix: check ALL patterns across ALL version-matching annotations
+    before falling back to defaults (was: first annotation's default won
+    even if a later annotation had a matching pattern)."""
+    # Phase 1: pattern matches across all version-matching annotations
     for a in annotations:
-        if a.get("from_version") != v1 or a.get("to_version") != v2:
+        if not _versions_match(a.get("from_version", ""), a.get("to_version", ""),
+                               v1, v2):
             continue
-        # Abbreviated SHAs match full SHAs
         for entry in a.get("classifications", []):
             if _match_pattern(entry.get("config_pattern", ""), candidate):
                 return (entry["level"],
                         f"manual annotation by {a.get('annotator', '?')}: "
                         f"{entry.get('reason', '')}")
+    # Phase 2: defaults (first matching annotation's default wins)
+    for a in annotations:
+        if not _versions_match(a.get("from_version", ""), a.get("to_version", ""),
+                               v1, v2):
+            continue
         default = a.get("default_level", 4)
         return (default, f"manual annotation default (no pattern matched)")
-    # Also try abbreviated matching
-    for a in annotations:
-        fv, tv = a.get("from_version", ""), a.get("to_version", "")
-        if v1.startswith(fv) or fv.startswith(v1):
-            if v2.startswith(tv) or tv.startswith(v2):
-                for entry in a.get("classifications", []):
-                    if _match_pattern(entry.get("config_pattern", ""), candidate):
-                        return (entry["level"],
-                                f"manual annotation by {a.get('annotator', '?')}: "
-                                f"{entry.get('reason', '')}")
     return None
-
-
+    # NOTE: the old second loop below is superseded by _versions_match above.
 def _classify_config_space(candidate, csv1, csv2):
     """If the config-space version bump touched this config's validity,
     the change is at least structural (level 3). Returns (level, reason) or None.

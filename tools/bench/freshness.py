@@ -58,24 +58,42 @@ def detect_nondeterminism(hash_index):
     """Find (config, version) keys with >1 distinct code_hash.
 
     Returns list of dicts describing each nondeterminism alert.
-    Same config + same version + different hash = codegen nondeterminism BUG.
+
+    ASSUMPTION (MINOR-3 fix): codegen is machine-independent given
+    (config, version). If codegen depends on CPUID/uarch (same isa label,
+    different emitted code per host), honest machines produce different
+    hashes -> false positive. The alert therefore includes the distinct
+    machine_ids; if they differ, the "bug" may be machine-dependent
+    codegen, not nondeterminism. The required invariant is documented in
+    STALENESS.md: the facility assumes deterministic codegen per
+    (config, version, cpu_features).
+
+    Action on alert: human triage (not automatic quarantine — the
+    aggregator has no quarantine path post-import; the alert is the signal).
     """
     alerts = []
     for (cfg, ver), entries in hash_index.items():
         hashes = {h for h, _, _ in entries}
         if len(hashes) > 1:
+            machines = sorted({r.get("machine_id", "?") for _, _, r in entries})
+            multi_machine = len(machines) > 1
             alerts.append({
                 "type": "NONDETERMINISM",
                 "config": cfg,
                 "raidjit_version": ver,
                 "distinct_hashes": sorted(hashes),
                 "count": len(entries),
-                "severity": "BUG",
+                "machine_ids": machines,
+                "severity": "BUG" if not multi_machine else "INVESTIGATE",
                 "message": (
-                    f"config {cfg} at {ver[:12]} produced "
-                    f"{len(hashes)} distinct code hashes: codegen is "
-                    f"nondeterministic (uninitialized memory? ASLR leak?). "
-                    f"File a bug; quarantine these measurements."
+                    f"config {cfg} at {ver[:12] if isinstance(ver, str) else ver} produced "
+                    f"{len(hashes)} distinct code hashes across "
+                    f"machine(s) {machines}. " +
+                    ("If machines differ, this may be machine-dependent codegen "
+                     "(CPUID-gated paths), not nondeterminism. " if multi_machine else "") +
+                    "If same machine: codegen nondeterminism BUG "
+                    "(uninitialized memory? ASLR leak?). Human triage required; "
+                    "do not use these measurements until resolved."
                 ),
             })
     return alerts

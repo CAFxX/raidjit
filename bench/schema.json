@@ -82,6 +82,10 @@
             "type": "integer",
             "minimum": 1,
             "description": "Version of the config-space validity rules under which this candidate was legal (see bench/config_space/VERSIONS.md). A twin/ISA/option legal in v1 but retired in v2 keeps its v1 tag; queries must be version-aware and never silently merge across a config-space break."
+          },
+          "plan_kind": {
+            "type": "string",
+            "description": "Plan kind: xor, mulacc, horner, delta. Used for config grouping and drift detection."
           }
         },
         "required": [

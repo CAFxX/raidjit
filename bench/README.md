@@ -33,6 +33,9 @@ bench/
 tools/bench/
   rj_bench_import.py     # validate + import submitted results
   rj_bench_aggregate.py  # aggregate with staleness model
+  rj_bench_train.py      # train heuristic override tables
+  rj_bench_hashdump.py   # hash oracle wrapper (config -> code_hash)
+  hashdump.c             # C helper: recompile + SHA-256 (build via make)
   classify.py            # change classification (levels 0-4)
   freshness.py           # per-candidate freshness, drift detection
   migrate.py             # schema migration registry
@@ -48,11 +51,20 @@ python3 tools/bench/rj_bench_import.py results-from-zen4.json
 python3 tools/bench/rj_bench_import.py --new-machine results-newbox.json
 # then fill in bench/results/newbox/machine.json
 
+# Build the hash oracle (one-time; recompiles kernels to hash them)
+make build-x86_64/hashdump
+
+# Materialize current-version code hashes for staleness analysis
+python3 tools/bench/rj_bench_hashdump.py bench/results/*/*.json --out hashes.json
+
 # Aggregate everything (JSON report)
 python3 tools/bench/rj_bench_aggregate.py --format json --out report.json
 
-# Aggregate for a specific target version (staleness-aware)
-python3 tools/bench/rj_bench_aggregate.py --target abc1234 --format md
+# Aggregate for a specific target version (staleness-aware, graded freshness)
+python3 tools/bench/rj_bench_aggregate.py --target abc1234 --hashes hashes.json --format md
+
+# Train heuristic overrides for a uarch
+python3 tools/bench/rj_bench_train.py report.json --uarch zen4 --out bench/heuristics/zen4.json
 ```
 
 ## Key concepts
@@ -73,7 +85,7 @@ different hash = nondeterminism **bug** (the aggregator flags it).
 
 ### 3. Version tolerance is per-axis, not per-file
 
-Six independent version axes (`VERSIONING.md`): schema, raidjit SHA, plan-ID
+Seven independent version axes (`VERSIONING.md`): schema, raidjit SHA, plan-ID
 format, static model, twin set, config space, bench protocol. Comparability
 is decided per-axis: a result with a drifted twin set can still contribute
 to ISA-level analysis. We degrade gracefully, never reject whole files
@@ -172,19 +184,32 @@ When anything versioned changes:
       classifier would get the transition wrong.
 
 A version bump without the corresponding entry is a test failure
-(`tests/test_bench_facility.py`).
+(`tests/test_bench_facility.c`).
 
 ## Security: untrusted input
 
 Result files may be user-submitted. The facility assumes adversarial input:
-- JSON parsing never evals; deeply nested structures are bounded by Python's
-  recursion limit (caught as Reject, not a crash).
-- No shell invocation with file-derived data; filenames are sanitized
-  (`re.sub(r"[^a-zA-Z0-9()+_-]", "_", ...)`).
-- Numeric fields are range-checked; strings are length-bounded by schema.
+
+- JSON parsing never evals. Input size is capped at 64 MiB before parsing.
+  `NaN`/`Infinity` constants are rejected at parse time (`parse_constant`).
+  Deeply nested structures hit Python's recursion limit, which is caught as
+  `Reject` (clean error), not a crash. All verified by tests.
+- Structural validation uses the authoritative `bench/schema.json` via the
+  `jsonschema` package (not hand-rolled checks). The aggregator is defensive:
+  every field access uses `.get()` with ledger-recorded skips; malformed
+  results produce alerts, never `KeyError` crashes.
+- No shell invocation with file-derived data; filenames are strictly
+  sanitized (timestamp must fully match RFC 3339; other components allowlist
+  filtered; path separators rejected).
+- Numeric fields are range-checked (`MAX_GBPS`, `MAX_UOPS_PER_BYTE`,
+  `MAX_CODE_SIZE`); booleans are rejected where integers are expected
+  (`isinstance(True, int)` guard).
 - The importer never writes outside `bench/` (paths are constructed, not
   taken from input).
-- Machine registration (`--new-machine`) creates a stub; a human fills it.
+- Machine registration (`--new-machine`) creates a stub `machine.json`;
+  a human fills in real values.
+- Annotation files are validated at load (levels must be int 0–4);
+  corrupt annotations are skipped with a loud warning, never a crash.
 
 ## What this is not
 

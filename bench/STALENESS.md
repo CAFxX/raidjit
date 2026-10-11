@@ -72,7 +72,12 @@ same config, there are exactly four cases:
    - Same basic blocks, different registers/immediates → Level 2.
    - Different block structure → Level 3.
 3. **Config-space signal** (automatic): if the transition's `config_space_version`
-   bump touched this config's twin/ISA/gate → at least Level 3.
+   bumped, the impact on any specific config is *unknown* without
+   machine-readable restriction data → Level 4 (conservative). When
+   `bench/config_space/vN.json` gains machine-readable `retired_*` lists,
+   configs using retired twins/ISAs classify as Level 3 (structural:
+   the config is gone, not just changed) and others as Level 1
+   (the bump didn't touch them).
 4. **Default**: Level 4 (unknown). Never assume neutral.
 
 The classifier records **which source** produced the classification. Manual
@@ -107,17 +112,44 @@ comparison_weight(A vs B) = min(freshness(A), freshness(B))
                           × machine_trust
 ```
 
+**Composition order (MAJOR-7 fix):** usability gates on *freshness only*
+(the staleness of the code), not on the final weight. A comparison with
+freshness 0.5 (usable, at the boundary) but machine_trust 0.7 carries
+weight 0.35 — it is *usable but light*, not excluded. The threshold asks
+"is this comparison about the right code?"; the weight asks "how much
+should it count?" These are separate questions.
+
+**Calibration (MAJOR-7 fix):** the constants (level weights 0.9/0.5/0.2/0.1,
+threshold 0.5, decay base 0.9, priors 1.0/2.0) are *explicit priors*, not
+derived values. They will be calibrated once measured data exists by:
+1. Holding out recent measurements, 2. Predicting with different constants,
+3. Picking the set that maximizes held-out ranking accuracy. Until then,
+they are documented assumptions, not truths.
+
 **Consequence:** if v1 measured (twinA vs twinB vs baseline) and v2 changed
 twinA's code but not twinB's or baseline's:
 - twinB-vs-baseline: both fresh → full weight, fully usable.
 - twinA-vs-anything: twinA is stale → reduced weight or excluded.
 - We extract the twinB signal. We do **not** throw away the file.
 
-**Absolute GB/s values** (not just rankings) require stricter handling:
-they're only transferred at Level 0–1. At Level 2+, absolute numbers are
-dropped but the **ranking** may survive (a 5% register-allocation change
-won't flip a 2× twin advantage, but we can't be sure about a 3% edge —
-the trainer accounts for this via the noise margin).
+**Absolute GB/s vs ranking (MAJOR-6 fix):** the aggregator declares winners
+by comparing absolute GB/s, but the *significance* of the margin is
+level-dependent. The tie threshold widens with staleness:
+
+```
+tie_threshold(level) = base_noise_pct × (1 + level)
+```
+
+- Level 0: base noise (e.g. 1.5%) — standard comparison.
+- Level 1: 3.0% — small changes could plausibly shift close calls.
+- Level 2: 4.5% — register allocation could flip a narrow win.
+- Level 3+: the comparison is excluded from training anyway (weight < threshold).
+
+This formalizes the intuition: a 2× twin advantage survives Level 2, but a
+3% edge does not. The `tied` field in pairwise records reflects this
+level-adjusted threshold. (Implementation note: the current aggregator uses
+the result's `noise_window_pct`; the level adjustment is applied in the
+trainer's dominance computation — see rj_bench_train.py.)
 
 ## 4. Confidence decay: driven by change count, not wall-clock time
 
@@ -218,7 +250,7 @@ No aggregated value is ever a bare number. Every inference carries:
       "v1 and v2 bench protocols match (sizes [64K, 1M])"
     ],
     "flags": ["CROSS_VERSION", "STALE_PARTIAL"],
-    "confidence": 0.78
+    "confidence": 0.535
   }
 }
 ```
@@ -236,10 +268,12 @@ No aggregated value is ever a bare number. Every inference carries:
 ```
 confidence = total_weight / (total_weight + skepticism_prior)
 ```
-where `skepticism_prior` = 1.0 (configurable). This means a single
-low-weight source yields low confidence, while many agreeing sources
-converge toward 1.0. It is **not** a p-value; it's a weight-normalized
-measure of evidence mass.
+where `skepticism_prior` is 1.0 for aggregation (describing evidence) and
+2.0 for training (deciding planner behavior — see TRAINING.md). The higher
+training prior reflects that changing planner behavior needs stronger
+evidence than describing what was measured. It is **not** a p-value; it's
+a weight-normalized measure of evidence mass. A single low-weight source
+yields low confidence; many agreeing sources converge toward 1.0.
 
 ## 7. Worked example
 
@@ -252,7 +286,11 @@ reporting bug (Level 1 for non-xorbit configs).
 **Analysis for target v2:**
 - `baseline`: hash unchanged → freshness 1.0.
 - `ternlog`: hash unchanged (reporting fix didn't touch codegen) → Level 1 → freshness 0.9.
-- `xorbit`: config-space restriction → Level 3 → freshness 0.2. Also flagged `RETIRED_CONFIG` for x86.
+- `xorbit`: config-space bump v1→v2 → Level 4 (conservative: the automatic
+  classifier cannot yet tell the restriction didn't touch other configs) →
+  freshness 0.1. Flagged `STALE_UNKNOWN`. (With a manual annotation
+  classifying the xorbit restriction as structural, this becomes Level 3 /
+  freshness 0.2 with source `manual_annotation`.)
 
 **Partial inference:**
 - ternlog-vs-baseline at v2: min(0.9, 1.0) = 0.9 ≥ 0.5 → **usable**, weight 0.9.
@@ -269,13 +307,14 @@ stale xorbit number means anything for v2.
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| Change classifier (auto: hash + disasm + config-space) | `tools/bench/classify.py` | To build |
-| Manual annotation loader | `tools/bench/annotations.py` | To build |
-| Freshness computer (per-candidate) | `tools/bench/freshness.py` | To build |
-| Weighted aggregation with uncertainty | `tools/bench/rj_bench_aggregate.py` | To build |
-| Heuristic trainer (consumes weighted comparisons) | `tools/bench/rj_bench_train.py` | Design only |
-| Config-space registry | `bench/config_space/VERSIONS.md` | Done |
-| Annotation schema | `bench/annotations/README.md` | To write |
+| Change classifier (auto: hash + disasm + config-space) | `tools/bench/classify.py` | Built |
+| Manual annotation loader | `tools/bench/classify.py` (`_load_annotations`) | Built |
+| Freshness computer (per-candidate) | `tools/bench/freshness.py` | Built |
+| Hash oracle (config → code_hash for target) | `tools/bench/hashdump.c` + `rj_bench_hashdump.py` | Built |
+| Weighted aggregation with uncertainty | `tools/bench/rj_bench_aggregate.py` | Built |
+| Heuristic trainer (consumes weighted comparisons) | `tools/bench/rj_bench_train.py` | Built |
+| Config-space registry | `bench/config_space/VERSIONS.md` | Done (prose; machine-readable pending) |
+| Annotation schema | `bench/annotations/README.md` | Done |
 
 ## 9. Non-goals (explicit)
 

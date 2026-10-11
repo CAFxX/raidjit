@@ -3,7 +3,7 @@
 
 Every schema_version bump MUST register a migration function here (or an
 explicit quarantine rule). A version bump without a migration entry is a
-test failure (see tests/test_bench_facility.py::test_migration_coverage).
+test failure (see tests/test_bench_facility.c::test_migration_coverage).
 
 Migration functions take (data: dict) -> dict. They must:
   - Not mutate the input (work on a copy).
