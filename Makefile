@@ -75,7 +75,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_pipe $(BUILDDIR)/test_crc $(BUILDDIR)/test_crc_fast $(BUILDDIR)/test_fused $(BUILDDIR)/test_striping $(BUILDDIR)/test_planid \
         $(BUILDDIR)/test_batched $(BUILDDIR)/test_lrc \
         $(BUILDDIR)/test_lrc_local \
-        $(BUILDDIR)/test_twin_audit $(BUILDDIR)/test_emitter_oom
+        $(BUILDDIR)/test_twin_audit $(BUILDDIR)/test_emitter_oom $(BUILDDIR)/test_bench_facility
 X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_cet \
         $(BUILDDIR)/test_scan_align $(BUILDDIR)/test_remat \
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
@@ -695,6 +695,9 @@ $(BUILDDIR)/test_lrc_local: tests/test_lrc_local.c $(BUILDDIR)/libraidjit.a $(HD
 
 $(BUILDDIR)/test_twin_audit: tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_twin_audit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_bench_facility: tests/test_bench_facility.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_bench_facility.c
 
 $(BUILDDIR)/test_pinned_negative: tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_pinned_negative.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

@@ -1,0 +1,225 @@
+{
+  "$id": "https://github.com/CAFxX/raidjit/bench/schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "Schema for raidjit offline benchmark result files. Version tolerance is a first-class requirement: every file declares its schema version and the raidjit version that produced it; ingestion migrates or quarantines as needed.",
+  "properties": {
+    "candidates": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "isa": {
+            "type": "string"
+          },
+          "measured": {
+            "additionalProperties": true,
+            "properties": {
+              "gbps_iqr": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "gbps_median": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "noise_window_pct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "gbps_median"
+            ],
+            "type": "object"
+          },
+          "mul": {
+            "type": "string"
+          },
+          "plan_id": {
+            "description": "Opaque plan identifier. Only comparable within the same planid_format_version.",
+            "type": "string"
+          },
+          "selected": {
+            "description": "Whether bench_select picked this candidate.",
+            "type": "boolean"
+          },
+          "static": {
+            "additionalProperties": true,
+            "description": "Static-model figures. Only comparable within the same static_model_version.",
+            "properties": {
+              "mem_per_byte": {
+                "type": "number"
+              },
+              "uops_per_byte": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "twins": {
+            "description": "Twin names. Only comparable within the same twin_set_version AND config_space_version.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "u": {
+            "type": "integer"
+          },
+          "code_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "SHA-256 of the generated machine code bytes (hex, lowercase). GROUND TRUTH for kernel identity: two measurements are of the same kernel only if code_hash matches. Same config + different code_hash across raidjit versions = codegen changed (not comparable as same kernel, but the delta is interesting). Same config + same raidjit_version + different code_hash = nondeterminism BUG (flag immediately)."
+          },
+          "code_size": {
+            "type": "integer",
+            "description": "Size of the generated machine code in bytes. Must be consistent with code_hash (same bytes hashed)."
+          },
+          "config_space_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Version of the config-space validity rules under which this candidate was legal (see bench/config_space/VERSIONS.md). A twin/ISA/option legal in v1 but retired in v2 keeps its v1 tag; queries must be version-aware and never silently merge across a config-space break."
+          }
+        },
+        "required": [
+          "plan_id",
+          "measured",
+          "code_hash",
+          "config_space_version"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "failed": {
+      "description": "For recover: indices of failed disks. Omitted for encode.",
+      "items": {
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "format_version": {
+      "description": "Opaque format tag, e.g. 'bench-result/1'. Changed only on breaking reorganization of the file layout.",
+      "type": "string"
+    },
+    "machine_id": {
+      "description": "References bench/results/<machine-id>/machine.json",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "type": "string"
+    },
+    "notes": {
+      "description": "Free-form submitter notes.",
+      "type": "string"
+    },
+    "op": {
+      "description": "Operation benchmarked.",
+      "enum": [
+        "encode",
+        "recover",
+        "parity_update"
+      ],
+      "type": "string"
+    },
+    "protocol": {
+      "additionalProperties": true,
+      "description": "How the measurement was taken. Forward-compatible: unknown keys ignored.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "noise_rule": {
+          "type": "string"
+        },
+        "sizes_bytes": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "timed_iters": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "warmup_iters": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "provenance": {
+      "additionalProperties": true,
+      "description": "Version context needed to interpret this result soundly across raidjit versions. Semantic drift (plan IDs, twins, cost model) is tracked per-axis so aggregation can decide comparability per-axis instead of rejecting whole files.",
+      "properties": {
+        "bench_protocol_version": {
+          "description": "Version of the bench_select protocol. Measured GB/s are only comparable when protocol version AND sizes match.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "planid_format_version": {
+          "description": "Version of the plan-ID grammar. Plan IDs are only comparable when this matches; a mismatch quarantines the plan_id field (other fields may still aggregate).",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "raidjit_version": {
+          "description": "Git SHA (full or abbreviated) of the raidjit tree that produced this result. 'unknown' if not recorded (legacy).",
+          "type": "string"
+        },
+        "static_model_version": {
+          "description": "Version of the static cost model (uops/byte etc.). Static figures are only comparable when this matches.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "twin_set_version": {
+          "description": "Version of the twin enumeration (RJ_TWIN_* list). Twin names are only comparable when this matches; a new twin added is a MINOR bump, a twin removed/renamed is MAJOR.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "config_space_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Version of the config-space validity rules (which twins x ISAs x plan kinds are legal). Bumped on ANY gate change. See bench/config_space/VERSIONS.md."
+        }
+      },
+      "required": [
+        "raidjit_version",
+        "planid_format_version",
+        "static_model_version",
+        "twin_set_version",
+        "config_space_version"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "description": "Version of THIS schema document. Ingestion migrates v1..N forward; unknown future versions are quarantined, never crashed on.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "timestamp": {
+      "description": "When the benchmark ran (UTC, RFC 3339).",
+      "format": "date-time",
+      "type": "string"
+    },
+    "topology": {
+      "description": "Topology descriptor, e.g. 'rs(6,3)', 'raid5(4+1)'. Interpreted per planid_format_version.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "format_version",
+    "machine_id",
+    "timestamp",
+    "provenance",
+    "topology",
+    "op",
+    "candidates"
+  ],
+  "title": "raidjit benchmark result",
+  "type": "object"
+}
