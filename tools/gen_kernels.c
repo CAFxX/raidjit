@@ -1079,7 +1079,8 @@ int main(int argc, char **argv)
                 /* Pressure filter mirrors plan.c: the twin needs one
                  * more live register (the multishift control) than
                  * plan_need_regs models. */
-                if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, U, 0, 0, 0) +
+                if (plan_need_regs(ISA_AVX512, MUL_NIBBLE, &pl, U, 0, 0, 0,
+                                 pl.want_crc) +
                         1 >
                     isa_nregs(ISA_AVX512))
                     continue;
@@ -1126,7 +1127,7 @@ int main(int argc, char **argv)
                 if (pisa == ISA_RVV && cands[i].lmul)
                     lmul = cands[i].lmul;
                 if (plan_need_regs(pisa, cands[i].mul, &pl, cands[i].U,
-                                   0, 1, 0) *
+                                   0, 1, 0, pl.want_crc) *
                         lmul >
                     isa_nregs(pisa))
                     continue;

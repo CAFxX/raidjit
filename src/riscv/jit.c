@@ -2336,7 +2336,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             return -1;
         }
         assert(r == plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
-                                       cand->maskedtail) * L);
+                                       cand->maskedtail, cand->crc_fold) * L);
     } else { /* P_MULACC / P_DELTA */
         cg.vd0 = vreg(&cg, n_out * U); /* U data group heads */
         if (cg.zvbc && plan_any_nontrivial(pl)) {
@@ -2364,7 +2364,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
             assert(vneed ==
                    plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
-                                       cand->maskedtail) *
+                                       cand->maskedtail, cand->crc_fold) *
                        L);
         } else if (cg.zvbc) {
             /* All-trivial coefficients: no multiplies, no kvec/cvec.
@@ -2384,7 +2384,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
             assert(vneed ==
                    plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
-                                       cand->maskedtail) *
+                                       cand->maskedtail, cand->crc_fold) *
                        L);
         } else if (cg.need_mask) {
             /* Pipe twin (track I8): the Dn dataset (U group heads)
@@ -2434,7 +2434,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
             assert(cg.mask + L ==
                    plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
-                                       cand->maskedtail) *
+                                       cand->maskedtail, cand->crc_fold) *
                        L);
         } else if (pl->kind == P_DELTA) {
             /* All-{0,1} delta matrix: the nibble tables, r1/r2 and the
@@ -2451,7 +2451,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
             assert(cg.thi + L ==
                    plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
-                                       cand->maskedtail) *
+                                       cand->maskedtail, cand->crc_fold) *
                        L);
         } else {
             /* P_MULACC with all-{0,1} coefficients is unreachable from
@@ -2465,7 +2465,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
             assert(cg.vd0 + U * L ==
                    plan_need_regs(ISA_RVV, cand->mul, pl, U, cand->remat, cand->pipe,
-                                       cand->maskedtail) *
+                                       cand->maskedtail, cand->crc_fold) *
                        L);
         }
     }
