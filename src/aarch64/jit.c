@@ -2109,6 +2109,50 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                  "nibble, non-remat");
         return -1;
     }
+    /* x86-only body twins (lead L3): the aarch64 backend implements the
+     * plain nibble body only -- there is no permi2b (VPERMI2B),
+     * mshift (VPMULTISHIFTQB), or ternlog (VPTERNLOGD) code path here,
+     * and no masked-tail emitter (AVX-512 opmask / RVV v0 only). The
+     * planner never enumerates these for NEON/SVE and
+     * planid_cand_valid rejects them, but a direct jit_build_version
+     * caller bypasses both. Reject cleanly here -- never silently
+     * build the plain body and record a phantom twin
+     * (BUG-COMBO-STATIC-F16). */
+    if (cand->permi2b) {
+        snprintf(err, errlen,
+                 "aarch64 backend: permi2b twin needs AVX-512 VPERMI2B "
+                 "(not implemented for AArch64)");
+        return -1;
+    }
+    if (cand->mshift) {
+        snprintf(err, errlen,
+                 "aarch64 backend: mshift twin needs AVX-512 "
+                 "VPMULTISHIFTQB (not implemented for AArch64)");
+        return -1;
+    }
+    if (cand->ternlog) {
+        snprintf(err, errlen,
+                 "aarch64 backend: ternlog twin needs AVX-512 VPTERNLOGD "
+                 "(not implemented for AArch64)");
+        return -1;
+    }
+    if (cand->maskedtail) {
+        snprintf(err, errlen,
+                 "aarch64 backend: maskedtail twin needs AVX-512 opmask "
+                 "or RVV v0 (not implemented for AArch64)");
+        return -1;
+    }
+    /* Multiply method (lead L3): MUL_GFNI is x86-only, MUL_ZVBC is
+     * RISC-V-only; the aarch64 nibble body implements MUL_NIBBLE only
+     * and never reads cand->mul. The planner enumerates MUL_NIBBLE
+     * only for NEON/SVE (plan.c). Reject cleanly rather than
+     * building the nibble body for a GFNI/ZVBC multiply request. */
+    if (cand->mul != MUL_NIBBLE) {
+        snprintf(err, errlen,
+                 "aarch64 backend: mul=%d not implemented for AArch64 "
+                 "(MUL_NIBBLE only)", (int)cand->mul);
+        return -1;
+    }
     /* Recovery closed-form emitter twin (algos #4): the backend emits
      * the syndrome+combine body (gen_body_rec_cf) instead of the generic
      * MULACC over the baked R matrix. The planner only enumerates it on
@@ -2418,6 +2462,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             { cand->remat, TWIN_APPLIED_REMAT, "remat" },
             { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
             { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
+            /* Lead L3 defense in depth: permi2b/mshift are rejected by
+             * the front gates above (no aarch64 code path reads them),
+             * but the postcondition must not silently pass them if a
+             * future change ever admits them past the gates. Mirrors
+             * the x86_64 table. */
+            { cand->mshift, TWIN_APPLIED_MSHIFT, "mshift" },
+            { cand->permi2b, TWIN_APPLIED_PERMI2B, "permi2b" },
             { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
             { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
         };
