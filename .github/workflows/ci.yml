@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # weekly: catch drift from toolchain changes even without pushes
+    - cron: "0 6 * * 1"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+
+      - name: make all
+        run: make all
+
+      - name: make test
+        run: make test
+
+      - name: Check generated files match committed versions
+        # If `make all` regenerates any committed file (docs, vectors,
+        # generated sources), the repo was out of sync: fail.
+        run: git diff --exit-code
