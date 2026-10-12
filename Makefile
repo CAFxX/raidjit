@@ -82,7 +82,7 @@ X86_ONLY_TESTS = $(BUILDDIR)/test_emit $(BUILDDIR)/test_affine $(BUILDDIR)/test_
         $(BUILDDIR)/test_codegen_shape $(BUILDDIR)/test_pxor_ternlog \
         $(BUILDDIR)/test_maskedtail $(BUILDDIR)/test_permi2b \
         $(BUILDDIR)/test_xorbit $(BUILDDIR)/test_mshift \
-        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative $(BUILDDIR)/test_rec_cf_emit $(BUILDDIR)/test_crc_fold \
+        $(BUILDDIR)/test_crc_fast_x86 $(BUILDDIR)/test_pinned_negative $(BUILDDIR)/test_rec_cf_emit $(BUILDDIR)/test_ternlog_gates $(BUILDDIR)/test_crc_fold \
         $(BUILDDIR)/test_crc_fold_prop $(BUILDDIR)/test_crc_fold_byteid \
         $(BUILDDIR)/test_crc_fold_combo $(BUILDDIR)/test_crc_fold_gate
 ifeq ($(ARCH),x86_64)
@@ -386,6 +386,7 @@ ifeq ($(ARCH),x86_64)
 	./$(BUILDDIR)/test_crc_fast_x86
 	./$(BUILDDIR)/test_pinned_negative
 	./$(BUILDDIR)/test_rec_cf_emit
+	./$(BUILDDIR)/test_ternlog_gates
 	./$(BUILDDIR)/test_crc_fold
 	./$(BUILDDIR)/test_crc_fold_prop open
 	./$(BUILDDIR)/test_crc_fold_prop closed
@@ -645,6 +646,9 @@ $(BUILDDIR)/test_recover_closedform: tests/test_recover_closedform.c $(BUILDDIR)
 
 $(BUILDDIR)/test_rec_cf_emit: tests/test_rec_cf_emit.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_rec_cf_emit.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_ternlog_gates: tests/test_ternlog_gates.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_ternlog_gates.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_pipe: tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_pipe.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)

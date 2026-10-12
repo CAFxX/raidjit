@@ -82,6 +82,86 @@ int plan_any_nontrivial(const plan_t *pl)
     return 0; /* P_XOR: all-{0,1} by construction */
 }
 
+/* Single source of truth for "the generic P_MULACC/P_DELTA nibble body
+ * would emit at least one VPTERNLOGD for a ternlog twin". Mirrors
+ * mulacc_column()'s emission condition in src/x86_64/jit.c exactly: the
+ * flag is consulted only for a coefficient outside {0,1} (the c==1 move/
+ * xor path and the GFNI affine path never consult it) at a (row, column)
+ * that is NOT the row's first contributing column (there the accumulator
+ * is known zero and the update is a move/xor, never a 3-input fold).
+ * P_MULACC passes a per-row first_col (first column with a nonzero entry,
+ * -1 for an empty row); P_DELTA passes NULL (accumulators seed from
+ * oldpar -- always xor), so for P_DELTA this reduces exactly to
+ * plan_any_nontrivial. A mismatch in either direction is a bug: too weak
+ * re-opens the F16 phantom path (lead L6), too strong kills legitimate
+ * ternlog candidates the benchmark should see. */
+static int plan_has_foldable_triple(const plan_t *pl)
+{
+    if (pl->kind != P_MULACC && pl->kind != P_DELTA)
+        return 0;
+    if (!pl->mat)
+        return 1; /* unproven: stay conservative (matches plan_any_nontrivial) */
+    int ncols = pl->kind == P_DELTA ? pl->nchanged : pl->n_in;
+    for (int j = 0; j < pl->n_out; j++) {
+        /* first contributing column, as the backend computes first_col[j];
+         * stays -1 for P_DELTA (backend passes NULL there). */
+        int first = -1;
+        if (pl->kind == P_MULACC) {
+            for (int i = 0; i < ncols; i++)
+                if (pl->mat[(size_t)j * (size_t)ncols + (size_t)i]) {
+                    first = i;
+                    break;
+                }
+        }
+        for (int i = 0; i < ncols; i++) {
+            uint8_t c = pl->mat[(size_t)j * (size_t)ncols + (size_t)i];
+            if (c != 0 && c != 1 && i != first)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* Single source of truth for "the rec_cf closed-form body would emit at
+ * least one VPTERNLOGD for a ternlog twin". Mirrors gen_body_rec_cf()'s
+ * syndrome phase in src/x86_64/jit.c exactly: rec_cf_synd_accum() folds
+ * acc ^= r1^r2 into one VPTERNLOGD only for a syndrome coefficient
+ * outside {0,1} (the c==1 move/xor path and the GFNI affine path never
+ * consult the flag) at a survivor position past the syndrome's first
+ * contributing column (first=1 moves/xors into the zeroed accumulator).
+ * The nf==1 cinv phase and the nf==2 combine phase (rec_cf_scale) never
+ * emit VPTERNLOGD. Only consulted for ternlog bases: a non-ternlog
+ * rec_cf candidate never consults the flag, so the F16 postcondition
+ * cannot fire for it. */
+static int rec_cf_syndrome_has_foldable_triple(const struct rec_cf_data *cfd)
+{
+    if (cfd->nf == 1) {
+        int first = -1;
+        for (int s = 0; s < cfd->ns; s++)
+            if (first < 0 && cfd->ecoef[s])
+                first = s;
+        for (int s = 0; s < cfd->ns; s++) {
+            uint8_t c = cfd->ecoef[s];
+            if (c != 0 && c != 1 && s != first)
+                return 1;
+        }
+        return 0;
+    }
+    const uint8_t *ecs[2] = { cfd->ecoef1, cfd->ecoef2 };
+    for (int k = 0; k < 2; k++) {
+        int first = -1;
+        for (int s = 0; s < cfd->ns; s++)
+            if (first < 0 && ecs[k][s])
+                first = s;
+        for (int s = 0; s < cfd->ns; s++) {
+            uint8_t c = ecs[k][s];
+            if (c != 0 && c != 1 && s != first)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 static int plan_need_regs_inner(isa_t isa, mul_t mul, const plan_t *pl,
                                 int U, int remat, int pipe)
 {
@@ -1065,12 +1145,14 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
      * empirically whether the 3-input XOR wins (fewer uops but r1+r2 live
      * simultaneously, increasing register pressure). Only for P_MULACC/
      * P_DELTA: the ternlog flag is only consulted in mulacc_column().
-     * Skip when the plan has no nontrivial coefficients (e.g. a degenerate
-     * XOR-only P_DELTA): ternlog would never be consulted and the backend
-     * phantom postcondition would reject the candidate (BUG-COMBO-E1X86-01
-     * auto-path instance). */
+     * Skip when the plan has no foldable triple (a nontrivial coefficient
+     * past the row's first contributing column -- the exact condition
+     * under which the backend emits VPTERNLOGD): without one the twin
+     * would be a phantom rejected by the F16 postcondition (lead L6).
+     * For P_DELTA the backend passes first_col=NULL, so this reduces
+     * exactly to the old plan_any_nontrivial gate. */
     if ((pl->kind == P_MULACC || pl->kind == P_DELTA) &&
-        plan_any_nontrivial(pl)) {
+        plan_has_foldable_triple(pl)) {
         int ntemp = n;
         for (int i = 0; i < ntemp && n < maxout; i++) {
             if (out[i].isa == ISA_AVX512 && out[i].mul == MUL_NIBBLE &&
@@ -1342,6 +1424,17 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                 if (out[i].xorbit || out[i].xorsched || out[i].permi2b ||
                     out[i].remat || out[i].mshift || out[i].pipe ||
                     out[i].rec_cf)
+                    continue;
+                /* A ternlog base takes the rec_cf closed-form body, whose
+                 * VPTERNLOGD condition is the syndrome foldable-triple
+                 * predicate (not the generic mulacc one): without a
+                 * foldable triple in the syndrome the clone is a phantom
+                 * the F16 postcondition rejects (lead L6: the rec_cf
+                 * clones of the ternlog twins for raid6(4) recover
+                 * {0+1}/{0+2}/{1+2}). Non-ternlog bases never consult
+                 * the flag, so they need no check. */
+                if (out[i].ternlog &&
+                    !rec_cf_syndrome_has_foldable_triple(cfd))
                     continue;
                 /* rec_cf is a recovery-only twin; the plan must be a
                  * recovery plan (rec_cf_data only exists for those). */
