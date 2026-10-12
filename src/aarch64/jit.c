@@ -2462,15 +2462,21 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             { cand->remat, TWIN_APPLIED_REMAT, "remat" },
             { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
             { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
-            /* Lead L3 defense in depth: permi2b/mshift are rejected by
+            /* Lead L3 defense in depth: permi2b/mshift/ternlog are rejected by
              * the front gates above (no aarch64 code path reads them),
              * but the postcondition must not silently pass them if a
              * future change ever admits them past the gates. Mirrors
              * the x86_64 table. */
             { cand->mshift, TWIN_APPLIED_MSHIFT, "mshift" },
             { cand->permi2b, TWIN_APPLIED_PERMI2B, "permi2b" },
+            { cand->ternlog, TWIN_APPLIED_TERNLOG, "ternlog" },
             { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
             { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
+            /* crc_fold has NO front gate on aarch64: the backend never
+             * emits a CRC fold nor sets TWIN_APPLIED_CRC_FOLD, and
+             * fused_crc_interleave_ok is closed here. This row is the
+             * only guard against a live F16 phantom for crc_fold=1. */
+            { cand->crc_fold, TWIN_APPLIED_CRC_FOLD, "crc_fold" },
         };
         for (size_t ti = 0; ti < sizeof(twins)/sizeof(twins[0]); ti++) {
             if (twins[ti].req && !(cg.twin_applied & twins[ti].bit)) {
