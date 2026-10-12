@@ -13,8 +13,8 @@ wall time.
 
 ## Design
 
-New module `src/prune.c` / `src/prune.h`, called from `rj_compile`
-(`src/api.c`) after all versions are built and **before** `bench_select`:
+New module [src/prune.c](../src/prune.c) / [src/prune.h](../src/prune.h), called from `rj_compile`
+([src/api.c](../src/api.c)) after all versions are built and **before** `bench_select`:
 
 ```
 plan_candidates -> jit_build_version x N -> prune_versions -> bench_select
@@ -88,11 +88,11 @@ twin itself is never pruned by this rule).
 
 The planner's static uop model is x86-generic, but Intel vs AMD port
 pressures differ (VPTERNLOGD port count, GFNI throughput, 512-bit
-frequency effects, shuffle-port width). `src/plan.c` therefore carries
+frequency effects, shuffle-port width). [src/plan.c](../src/plan.c) therefore carries
 a small uarch-aware cost model, used by the prune gate above and
 exposed for heuristic candidate ordering:
 
-- **Uarch tag** (`rj_uarch_t`, `src/cpu.h`): derived from CPUID vendor
+- **Uarch tag** (`rj_uarch_t`, [src/cpu.h](../src/cpu.h)): derived from CPUID vendor
   + family/model on x86-64 -- Intel vs AMD at minimum, extended to
   families where port data differs (Skylake-X, Ice Lake,
   Sapphire Rapids, Zen3/4/5). Other architectures report
@@ -110,11 +110,11 @@ exposed for heuristic candidate ordering:
   Intel/AMD documentation) or, for `bw_bpc`, a conservative static
   figure at the low end of published single-core streaming numbers
   (DDR4-era classes: 8 B/cyc; DDR5-era classes: 12 B/cyc), with
-  per-value sources in the table comment in `src/plan.c`. All figures
+  per-value sources in the table comment in [src/plan.c](../src/plan.c). All figures
   are est., NOT measured -- no benchmark feeds them. The
   `RJ_UARCH_UNKNOWN` entry reproduces the old generic roofline
   (`uops/3.5 + mem/64`), so unmodeled machines behave as before.
-- **Cost function** (`plan_uarch_cost`, declared in `src/plan.h`): a
+- **Cost function** (`plan_uarch_cost`, declared in [src/plan.h](../src/plan.h)): a
   roofline blend (#31) of a compute leg and a bandwidth leg.
   The compute leg re-weights the static `(uops, mem)` model by the
   candidate's characteristic op mix (structural per
@@ -139,14 +139,14 @@ it is exact given the uop delta. The roofline leg
 economics for the AVX-512 nibble twin (identical bandwidth leg), and
 the averaged `plan_uarch_cost` comparison for other twin shapes. The
 blended cost function is the heuristic intended for candidate
-ordering (wiring it into `heuristic_select` in `src/bench.c` is a
+ordering (wiring it into `heuristic_select` in [src/bench.c](../src/bench.c) is a
 follow-up; that file is outside the #31 scope).
 
 ### Why this narrow (rejection of the broader rule)
 
 A broader rule was implemented first: triple dominance within the same
 (isa, mul) class, across U and in both twin directions. The adversarial
-test matrix (`tests/test_prune.c`, Parts 2+3) REJECTED it on 2026-10-02
+test matrix ([tests/test_prune.c](../tests/test_prune.c), Parts 2+3) REJECTED it on 2026-10-02
 — it pruned real benchmark winners:
 
 - **P_XOR U-invariance**: the model reports identical uops/B and mem/B
@@ -211,7 +211,7 @@ Deliberately **not** pruned (all verified against the rule):
   statically better (6-7 vs 5-6 uops per (i,j,u); extra vmov for
   vpermi2b's index clobber), so no dominance argument applies. The
   twin is CPUID-gated on VBMI
-  (`src/x86_64/cpu.c`: leaf 7 ECX bit 1 + avx512f + ZMM OS state) and
+  ([src/x86_64/cpu.c](../src/x86_64/cpu.c): leaf 7 ECX bit 1 + avx512f + ZMM OS state) and
   left entirely to `bench_select`'s empirical noise rule.
   Measured on AMD EPYC 9D25 (track Bx86, `B2_duel.log`): the twin
   loses in all 6 duels — cache-fit gaps -0.7%/-1.9%/-10%
@@ -220,7 +220,7 @@ Deliberately **not** pruned (all verified against the rule):
   — verdict REJECTED-WITH-EVIDENCE on this host. Since the 2026-10-03 B2
   follow-up the twin is no longer enumerated in stage-1 (that cost +50%
   stage-1 builds: 192 vs 128 candidates on custom(4,2) encode):
-  `src/api.c` builds it from the stage-1 winner and duels it with the
+  [src/api.c](../src/api.c) builds it from the stage-1 winner and duels it with the
   standard `bench_select` protocol (+1 build + 1 duel, only when the
   winner is an AVX-512 MUL_NIBBLE MULACC/DELTA candidate with a
   nontrivial coefficient on a VBMI host), preserving the per-host
@@ -255,7 +255,7 @@ Two mechanisms make future violations LOUD instead of silent:
    (with a verbose log under `PRUNE_VERBOSE`). A model/codegen change
    that makes a P_XOR twin look dominant cannot silently start pruning
    it.
-2. **The Part-3 argmin tripwire.** `tests/test_prune.c` Part 3 asserts,
+2. **The Part-3 argmin tripwire.** [tests/test_prune.c](../tests/test_prune.c) Part 3 asserts,
    on the UNPRUNED run, that the argmin-time candidate is not in the
    pruned set -- in addition to winner equality. Any future
    model/codegen change that makes a pruned version the argmin fails
@@ -279,7 +279,7 @@ microarchitecture family -- not just per code change:
    vary by family). A twin pair that is safely prunable on AMD EPYC 9D25
    can have a different argmin on Intel Ice Lake, AMD Zen 5, or an ARM
    Neoverse core.
-2. `tests/test_prune.c` Part 3 therefore qualifies the rule for the
+2. [tests/test_prune.c](../tests/test_prune.c) Part 3 therefore qualifies the rule for the
    host it ran on, not for the rule in the abstract. Deploying raidjit
    on a new microarchitecture family (different vendor, or a new
    microarchitecture from the same vendor -- e.g. Zen 4 -> Zen 5)
@@ -310,7 +310,7 @@ later consumers of the API get it for free). The contract is precisely
 "non-empty AND != `"0"`": `"1"`, `"false"`, `"00"`, `"0 "` (trailing
 space) all disable pruning; only `""` (empty/unset) and `"0"` leave it
 enabled. Either mechanism disables pruning for that call (returns `nv`
-unchanged). Tested in `tests/test_prune.c` (including the
+unchanged). Tested in [tests/test_prune.c](../tests/test_prune.c) (including the
 `"false"`/`"00"`/`"0 "` cases).
 
 ### API (for the survivor-set track)
@@ -332,7 +332,7 @@ calls it on its version list before benchmarking.
 
 ## Falsifiable ship criterion
 
-1. **Zero flips + argmin tripwire**: `tests/test_prune.c` Part 3 runs
+1. **Zero flips + argmin tripwire**: [tests/test_prune.c](../tests/test_prune.c) Part 3 runs
    pruned vs unpruned `select_by_time` over a topology x length matrix
    (P_XOR n_out=1, P_XOR n_out=2 with the VPTERNLOGD twin, P_HORNER,
    P_MULACC, P_DELTA, a prefetch_dist!=0 config, and large recovery
@@ -353,10 +353,10 @@ calls it on its version list before benchmarking.
    not asserted: noise alone flips those even with pruning disabled.)
    "No winner change" is therefore a statement about the validated
    corpus/host, not a theorem; `RJ_NO_PRUNE` is the escape hatch.
-2. **Measured compile-time reduction**: `tools/perf_guard
-   --compare` over the 18-config corpus: base = `RJ_NO_PRUNE=1` run,
+2. **Measured compile-time reduction**: [tools/perf_guard](../tools/perf_guard/)
+   `--compare` over the 18-config corpus: base = `RJ_NO_PRUNE=1` run,
    new = pruning-enabled run (both committed under
-   `tools/perf_guard/`, methodology in
+   [tools/perf_guard/](../tools/perf_guard/), methodology in
    `tools/perf_guard/COMPILE_TIME_NOTE.md`). Per-size GB/s medians
    must stay within the base [min,max] bands (throughput parity --
    pruning must not change what wins); per-config compile_s medians

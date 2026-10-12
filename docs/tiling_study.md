@@ -36,7 +36,7 @@ uncounted overhead (~3 uops/tile) erases it, and mem/B is ~5× worse.
 
 ## P1: Output-row tiling — BUILT (accounting variant), REJECTED
 
-Forked `src/x86_64/jit.c` (`/tmp/proto/jit_tile.c`, not committed):
+Forked [src/x86_64/jit.c](../src/x86_64/jit.c) (`/tmp/proto/jit_tile.c`, not committed):
 P_HORNER restructured as `for tile jt: for i: for u: for j in tile` with
 remapped accumulators `(j-jt)*U+u` (subset of the normal range, no regfile
 conflict) and per-tile stores. **Scope notes:** only the P_HORNER branch

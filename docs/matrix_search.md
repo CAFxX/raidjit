@@ -5,12 +5,12 @@
 
 ## What it is
 
-`src/matrix_search.c` / `src/matrix_search.h`: a plan-time search for
+[src/matrix_search.c](../src/matrix_search.c) / [src/matrix_search.h](../src/matrix_search.h): a plan-time search for
 low-bitweight MDS generator matrices over GF(2^8). `rj_topo_rs()` (and
 `rj_topo_raid6()`, which shared the same default) emit the searched
 matrix **outright** — there is no opt-in, and no constructor hardcodes
 any fixed matrix (`rs_default_matrix()` survives as a non-static helper
-in `src/gf.c`, used only by tests — see Uncovered topologies).
+in [src/gf.c](../src/gf.c), used only by tests — see Uncovered topologies).
 
 **2.0 is a deliberate parity-format change.** The 1.0 search minimized
 a static nibble-backend uops model whose fixed point was the
@@ -19,7 +19,7 @@ The 2.0 objective (below) is different and finds strictly lighter
 matrices that are *not* Vandermonde, so the emitted bytes change. There
 is no backward compatibility: the parity format is whatever the search
 emits. Downstream tests that pinned the old format's consequences (e.g.
-`tests/test_remat.c`'s `P_HORNER` strategy expectations) are the
+[tests/test_remat.c](../tests/test_remat.c)'s `P_HORNER` strategy expectations) are the
 tripwire firing as designed — they must be updated deliberately, not
 worked around.
 
@@ -35,7 +35,7 @@ is
 
 (`matrix_search_bitweight()`; pinned constants: `wt(0)=0`, `wt(1)=8`,
 `wt(2)=11`, `wt(3)=19`, `wt(4)=14`, `wt(128)=30` — hand-derived in
-`tests/test_matrix_search.c`, and `wt(c) > 8` for every other nonzero
+[tests/test_matrix_search.c](../tests/test_matrix_search.c), and `wt(c) > 8` for every other nonzero
 `c`, so 1 is the unique minimizer).
 
 **Why this objective.** In a bit-level (gate-level) XOR schedule each 1
@@ -62,7 +62,7 @@ is static and deterministic; it is never presented as a measurement.
      verified by the full MDS check, first success wins; on total
      failure the seed is skipped, never emitted unproven).
 - **Why seeds 0 and 1 are MDS by proof.** `ord(2) = 51` in
-  GF(2^8)/0x11B (src/gf.c documents this; an earlier version of this
+  GF(2^8)/0x11B ([src/gf.c](../src/gf.c) documents this; an earlier version of this
   note wrongly said 255 — corrected 2026-10-06). Seed 0: a 2x2 minor on
   rows r1<r2, columns i1<i2 factors as
   `2^(r1*k2+r2*k1) * (2^((r2-r1)(i2-i1)) - 1)` with `k_t = ndata-1-i_t`,
@@ -153,10 +153,10 @@ the unique optimum under both objectives).
 covered (npar <= 3, ndata <= 51, ndata+npar <= 256); `rj_topo_rs`
 returns NULL outside it exactly as before. The old generator survives
 in two places: `rs_default_matrix()` is still a non-static function in
-`src/gf.c` (declared in `src/gf.h`) — the canonical historical-default
-implementation, legitimately used by `tests/test_remat.c` (custom
+[src/gf.c](../src/gf.c) (declared in [src/gf.h](../src/gf.h)) — the canonical historical-default
+implementation, legitimately used by [tests/test_remat.c](../tests/test_remat.c) (custom
 RS(6,4), outside the search envelope) — and the search's seed 0 plus
-the static copy in `tests/test_matrix_search.c` replicate its formula
+the static copy in [tests/test_matrix_search.c](../tests/test_matrix_search.c) replicate its formula
 (`M[j][i] = 2^(j*(ndata-1-i))`) for seeding and old-vs-new weight
 comparison.
 
@@ -164,7 +164,7 @@ comparison.
 
 Ship iff **all** of these hold:
 
-1. `tests/test_matrix_search.c` passes: every searched matrix in the
+1. [tests/test_matrix_search.c](../tests/test_matrix_search.c) passes: every searched matrix in the
    envelope is proven MDS by full minor enumeration (minor count ==
    C(ndata+npar, npar)), the independent solver agrees, the weight
    table pins match, and the searched weight is strictly below the old
@@ -179,7 +179,7 @@ Ship iff **all** of these hold:
 
 ## Tests
 
-`tests/test_matrix_search.c` (7 groups, all must pass):
+[tests/test_matrix_search.c](../tests/test_matrix_search.c) (7 groups, all must pass):
 
 - **mds_proof**: searched matrices for 8 shapes incl. envelope corners
   (51,2), (51,3), (255,1) proven MDS by full enumeration; minor counts
@@ -214,18 +214,18 @@ Ship iff **all** of these hold:
 
 ### Mutation evidence (all performed, all reverted)
 
-- **E** — `src/matrix_search.c`: bitweight table forced constant
+- **E** — [src/matrix_search.c](../src/matrix_search.c): bitweight table forced constant
   (`bitw[c] = 8` for all nonzero c): the greedy degenerates (no strict
   improvement is ever possible), the winner is seed 0 = the historical
   default, and `bitweight_beats_old` FAILS on all six strict-<
   checks (e.g. `(8,2): new weight 128 not < old weight 128` under the
   mutated table). The table pins in `bitweight_table` fail first.
   Mutation reverted; suite green.
-- **F** — `src/matrix_search.c`: weight-table column computation
+- **F** — [src/matrix_search.c](../src/matrix_search.c): weight-table column computation
   perturbed (column k built from `1u << ((k+1) % 8)` instead of
   `1u << k`): `bitweight_table` FAILS on the pinned constants
   (`wt(2) = 14, want 11`). Mutation reverted; suite green.
-- **G** — `src/matrix_search.c`: `forbidden_values` neutered to
+- **G** — [src/matrix_search.c](../src/matrix_search.c): `forbidden_values` neutered to
   "nothing forbidden": the greedy 1-izes every entry into a non-MDS
   all-ones matrix; the full-enumeration proof gate catches it and falls
   back to the verified seed (defense in depth holds — `mds_proof`
@@ -266,7 +266,7 @@ The 1.0 search (2026-10-02 – 2026-10-06) minimized a static encode-cost
 model: the real encode plan built by `plan_build` (so the
 P_XOR/P_HORNER/P_MULACC strategy choice was the planner's actual code),
 evaluated under a cost model transcribed 1:1 from the x86-64 nibble
-backend (`src/x86_64/jit.c`) at reference U=8, vl=64. Its analytical
+backend ([src/x86_64/jit.c](../src/x86_64/jit.c)) at reference U=8, vl=64. Its analytical
 result: the search's fixed point was the historical default
 (byte-identical on the whole envelope — proven empirically by a dense
 tripwire, with a one-count bound + placement-constraint + Horner-floor

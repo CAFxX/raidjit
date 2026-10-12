@@ -3,12 +3,12 @@
 `rj_topo_raid6(ndata)` dispatches to the fastest **measured** code for that
 `ndata` among the applicable codes (RDP / EVENODD / Liberation / RS).
 This file is the machine-readable record of the winners; the C table in
-`src/xorcode.c` (`xorcode_default_for_ndata()`) is transcribed from it,
-and `tests/test_xorcode.c` parses the block below and checks agreement,
+[src/xorcode.c](../src/xorcode.c) (`xorcode_default_for_ndata()`) is transcribed from it,
+and [tests/test_xorcode.c](../tests/test_xorcode.c) parses the block below and checks agreement,
 so the two cannot drift.
 
 **Status: MEASURED (2026-10-02, AMD EPYC 9D25, AVX-512+VBMI+BITALG+GFNI).
-Two full sweeps + an interleaved A/B; see `docs/xor_codes.md` §4 for the
+Two full sweeps + an interleaved A/B; see [docs/xor_codes.md](xor_codes.md) §4 for the
 numbers. Result: RS is the fastest measured code at every ndata —
 no XOR code shows a stable, repeatable win (sweep 1 suggested
 liberation at ndata=3,7; sweep 2 and the interleaved A/B reversed
@@ -16,7 +16,7 @@ those; at 512 KiB RS wins everywhere by 1.3–2×).**
 
 **Re-measurement on merged tree (2026-10-02, Integration 1):** Re-ran
 the §4 protocol on the merged tree (A3 xorsched/CSE active) via
-`tools/duel_xorcode.c` (5 interleaved rounds, ndata 3..13, 512 KiB and
+[tools/duel_xorcode.c](../tools/duel_xorcode.c) (5 interleaved rounds, ndata 3..13, 512 KiB and
 8 MiB). **Result: still all-RS.** At 512 KiB (cache-fit) RS wins
 everywhere by 1.2–1.8×, consistent across runs. At 8 MiB (streaming)
 the measurements were not stable/repeatable on the shared 2-vCPU VM
@@ -115,7 +115,7 @@ Liberation needs `w*(ndata+2) <= 256` with `w` = smallest prime >=
 `max(ndata,3)` (`ndata` <= 13). `rj_topo_raid6()` requires `3 <= ndata <=
 51` (RS MDS envelope); outside it returns NULL as before.
 
-Table constraint (enforced by `tests/test_xorcode.c::test_default_table`):
+Table constraint (enforced by [`tests/test_xorcode.c::test_default_table`](../tests/test_xorcode.c)):
 a non-RS entry must name a code whose constructor accepts the
 corresponding ndata — RDP needs `ndata+1` prime, EVENODD needs `ndata`
 prime, Liberation needs `w*(ndata+2) <= 256`. As defense in depth,

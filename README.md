@@ -30,7 +30,7 @@ rj_get_fn(r)(survivors /* ptrs in increasing disk order */,
              rebuilt /* 2 ptrs, increasing failed order */, len);
 ```
 
-`make` builds the static lib, all tests, and `examples/demo.c`.
+`make` builds the static lib, all tests, and [examples/demo.c](examples/demo.c).
 `make test` runs the full suite. `make test-asan` rebuilds with
 ASan+UBSan. `make test-qemu` runs the ISA matrix under qemu-user.
 
@@ -40,7 +40,7 @@ ASan+UBSan. `make test-qemu` runs the ISA matrix under qemu-user.
   `rj_topo_custom(ndata, npar, matrix)` (row-major `M[j][i]`,
   `parity[j] = XOR_i data[i]*M[j][i]` in GF(2^8)/0x11B).
   `rj_topo_raid6(n)` dispatches to the benchmark-selected default code for
-  that `ndata` (recorded in `docs/xor_code_default.md`; currently RS at
+  that `ndata` (recorded in [docs/xor_code_default.md](docs/xor_code_default.md); currently RS at
   every ndata — see below); `rj_topo_raid6_rs(n)` is the explicit RS
   RAID-6, `rj_topo_rdp(p)` / `rj_topo_evenodd(p)` / `rj_topo_liberation(k)`
   are the XOR array codes (RDP, EVENODD, Liberation).
@@ -55,13 +55,13 @@ ASan+UBSan. `make test-qemu` runs the ISA matrix under qemu-user.
   expanded indices `d*R .. d*R+R-1` for `rj_op_recover`. Every parity row
   is a pure XOR of input rows, so these topologies lower to the existing
   `P_XOR` plan path automatically. Full construction details:
-  `docs/xor_codes.md`.
+  [docs/xor_codes.md](docs/xor_codes.md).
 - **Ops**: `rj_op_encode()`; `rj_op_recover(failed[], n)` — failed disk
   indices `0..ndata+npar-1`; the op owns a sorted copy, free with
   `rj_op_free`. Recovery is lowered to survivor linear combinations by a
   Gauss-Jordan solver at compile time. When more survivors exist than
   strictly needed, the cheapest measured survivor set is selected at
-  plan time (see `docs/survivor_sets.md`); the winning rows are recorded
+  plan time (see [docs/survivor_sets.md](docs/survivor_sets.md)); the winning rows are recorded
   in the plan desc as `[rows 0+2]`. Set `RJ_NO_SURVIVOR_SELECT=1` to
   disable survivor-set selection and take the legacy single-subset
   (all-rows) recovery path. `rj_op_parity_update(changed[], n)` —
@@ -168,13 +168,13 @@ desc) that routes `len % group == 0` to the twin and every other length
 to the general version; if the twin loses, nothing changes. The twin is
 validated at group multiples before it is allowed to win, so a wrong
 twin fails compilation instead of shipping. Details and the falsifiable
-ship criterion: `docs/length_dispatch.md`.
+ship criterion: [docs/length_dispatch.md](docs/length_dispatch.md).
 
 ## Correctness limits (hard guarantees)
 
 - **MDS envelope of the default matrix.** `M[j][i] = 2^(j*(ndata-1-i))`
   with `ord(2) = 51`. The matrix bytes are emitted by the plan-time
-  generator-matrix search (`docs/matrix_search.md`), which proves MDS
+  generator-matrix search ([docs/matrix_search.md](docs/matrix_search.md)), which proves MDS
   by exact minor enumeration for every emitted matrix. The named
   constructors deliver true Reed-Solomon semantics (every ≤ npar erasure
   set recoverable) only for `npar ≤ 3` and `ndata ≤ 51` (`npar ≤ 1` has
@@ -194,7 +194,7 @@ ship criterion: `docs/length_dispatch.md`.
   `VMOVDQU32` (AVX512F-only), so AVX512F-without-BW CPUs are supported.
   SVE requires HWCAP_SVE; RVV requires the V extension.
 - Thread-safe: `rj_compile` shares one piece of process-wide mutable
-  state — the generator-matrix search cache in `src/matrix_search.c`
+  state — the generator-matrix search cache in [src/matrix_search.c](src/matrix_search.c)
   (one entry per (ndata, npar), written once per shape). It is guarded
   by a C11 `atomic_flag` spinlock and the search itself is deterministic,
   so concurrent first-calls compute identical bytes. Generated code
@@ -224,32 +224,32 @@ plan kind, ISA, mul, unroll, LMUL, NT, prefetch; only the multiply
 instruction differs) is no-worse on µops/byte, memory/byte, and code
 size and strictly better on at least one — and only for plan kinds
 `P_MULACC`/`P_DELTA`, where the twin direction is validated (see
-`docs/candidate_pruning.md`). No winner change has been observed on the
+[docs/candidate_pruning.md](docs/candidate_pruning.md)). No winner change has been observed on the
 validated corpus/host; that is an empirical result, not a theorem —
 the rule is safe iff no pruned version would be the argmin-time
-candidate, and `tests/test_prune.c` Part 3 asserts exactly that as a
+candidate, and [tests/test_prune.c](tests/test_prune.c) Part 3 asserts exactly that as a
 tripwire on every run, so a future model/codegen change that breaks
 the precondition fails loudly instead of flipping winners silently.
 Set `RJ_NO_PRUNE=1` to disable pruning entirely.
 
 ## Testing
 
-- `test_emit`: differential emitter test — every emitted encoding checked
+- [test_emit](tests/test_emit.c): differential emitter test — every emitted encoding checked
   byte-for-byte against GNU as reference vectors (30 vectors incl. all
   high-register EVEX permutations, compressed-displacement boundaries).
-- `test_affine`: GFNI affine layout validated on hardware (all 256
+- [test_affine](tests/test_affine.c): GFNI affine layout validated on hardware (all 256
   constants × 64 inputs); transposed layout as negative control.
-- `test_correct`: encode/recover against independent scalar oracles,
+- [test_correct](tests/test_correct.c): encode/recover against independent scalar oracles,
   unaligned offsets, vector/tail boundaries, MDS-envelope pinning.
-- `test_matrix`: 195,874-run exhaustive matrix — every ISA level
+- [test_matrix](tests/test_matrix.c): 195,874-run exhaustive matrix — every ISA level
   (incl. simulated AVX512F-without-BW/GFNI and SSE2-only CPUs) ×
   topologies × every failure subset up to the parity count × unaligned
   offsets × guard pages × decode-and-encode chains. Zero failures.
-- `test_select` (16 cases): selection unit tests incl. tie-breaks,
+- [test_select](tests/test_select.c) (16 cases): selection unit tests incl. tie-breaks,
   adaptive-window math, NaN rejection.
-- `test_benchreject`: corrupts a candidate's constant pool and requires
+- [test_benchreject](tests/test_benchreject.c): corrupts a candidate's constant pool and requires
   the benchmark to reject it before timing.
-- `test_cet`: `endbr64`/`ud2`/shadow-stack behavior, CPUID/XCR0 gating.
+- [test_cet](tests/test_cet.c): `endbr64`/`ud2`/shadow-stack behavior, CPUID/XCR0 gating.
 - `make test-asan`: full suite under ASan+UBSan. `make test-qemu`:
   matrix under qemu-user for qemu64/+ssse3, Haswell, Skylake-Server,
   Icelake-Server, aarch64, riscv64 (QEMU 8.2 TCG lacks AVX-512/GFNI
@@ -258,21 +258,21 @@ Set `RJ_NO_PRUNE=1` to disable pruning entirely.
   backend, RISC-V backend, and generated-code audits for all three ISAs
   covering 415 disassembled kernels) audited the implementation; all
   findings were addressed and re-tested.
-- `test_codegen_shape`: generated-code shape assertions (duplicate-load
+- [test_codegen_shape](tests/test_codegen_shape.c): generated-code shape assertions (duplicate-load
   elimination, table dedup, `vzeroupper`, VPTERNLOGD, pointer hoisting,
   coefficient-aware allocation) — every assertion red-green verified.
-- `test_nt`: NT-store twins — shape (no fence in jitted code, ≥1 NT
+- [test_nt](tests/test_nt.c): NT-store twins — shape (no fence in jitted code, ≥1 NT
   store), output equality, caller-side fence modeled after each call.
-- `test_pdelta_edge`: P_DELTA adversarial coverage — max-width updates,
+- [test_pdelta_edge](tests/test_pdelta_edge.c): P_DELTA adversarial coverage — max-width updates,
   200-disk topologies, guard pages, input immutability, aliasing, NT+fence.
-- `test_boundaries`: systematic 0/1/VL−1/VL/VL+1 main/tail seam tests.
-- `test_rvv_lmul`: RVV LMUL axis — enumeration, register alignment,
+- [test_boundaries](tests/test_boundaries.c): systematic 0/1/VL−1/VL/VL+1 main/tail seam tests.
+- [test_rvv_lmul](tests/test_rvv_lmul.c): RVV LMUL axis — enumeration, register alignment,
   group scaling, table-load narrowing, empirical selection.
-- `test_rvv_f6`, `test_pxor_ternlog`: RVV counted-loop and VPTERNLOGD
+- [test_rvv_f6](tests/test_rvv_f6.c), [test_pxor_ternlog](tests/test_pxor_ternlog.c): RVV counted-loop and VPTERNLOGD
   shape + differential tests.
-- `test_aarch64_emit`, `test_aarch64_remat`, `test_riscv_remat`,
-  `test_riscv_prefetch`, `test_sve_eor3`, `test_sve_pdelta`,
-  `test_scan_align`, `test_remat`: backend-specific emitter,
+- [test_aarch64_emit](tests/test_aarch64_emit.c), [test_aarch64_remat](tests/test_aarch64_remat.c), [test_riscv_remat](tests/test_riscv_remat.c),
+  [test_riscv_prefetch](tests/test_riscv_prefetch.c), [test_sve_eor3](tests/test_sve_eor3.c), [test_sve_pdelta](tests/test_sve_pdelta.c),
+  [test_scan_align](tests/test_scan_align.c), [test_remat](tests/test_remat.c): backend-specific emitter,
   rematerialization, prefetch, LMUL, and alignment tests.
 
 ## Known limitations

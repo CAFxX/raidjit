@@ -54,8 +54,8 @@ documented rejection with evidence:
    A tie inside the noise window resolves by the existing tie-break
    (uops/byte, mem/byte, code size), which the smaller notail version wins
    on code size.
-4. `tools/perf_guard` on the 18-config corpus is REPORTED, not gating.
-   The 2026-10-02 post-change run (`tools/perf_guard/
+4. [tools/perf_guard](../tools/perf_guard/) on the 18-config corpus is REPORTED, not gating.
+   The 2026-10-02 post-change run ([tools/perf_guard](../tools/perf_guard/)/
    post_2026-10-02_A2remediation.json`, comparison script
    `compare_m2.py`, verdicts in `m2_comparison_2026-10-02.log`) shows
    the baseline pass-to-pass bands are dominated by winner-selection
@@ -73,12 +73,12 @@ documented rejection with evidence:
    64 KiB / 1 MiB cells split below-band / in-band — noise, not a
    regression signature.
 5. `make test`, `make test-asan`, `make test-qemu` green, including the new
-   `tests/test_dispatch.c` with mutation/red-green evidence.
+   [tests/test_dispatch.c](../tests/test_dispatch.c) with mutation/red-green evidence.
 
 Rejection (twin loses or ties-but-loses-tie-break) is a complete outcome:
 report the measured numbers and stop.
 
-## 4. Portable C dispatcher (src/dispatch.c, src/dispatch.h)
+## 4. Portable C dispatcher ([src/dispatch.c](../src/dispatch.c), [src/dispatch.h](../src/dispatch.h))
 
 `rj_fn` carries no context pointer, so a per-`rj_jit` C dispatcher cannot be
 a single static function closing over its variants. The portable solution
@@ -147,7 +147,7 @@ segfault into *silent wrong output* (the stale entry would route into
 another plan's variants). Always re-fetch via `rj_get_fn` after
 re-compiling. Debug builds abort loudly on use-after-free-before-reuse
 (assert in the trampoline, zero cost under NDEBUG); slot reuse itself is
-NOT detectable — the contract in `src/dispatch.h` is the only protection.
+NOT detectable — the contract in [src/dispatch.h](../src/dispatch.h) is the only protection.
 
 **Why not a JIT stub?** A few bytes of arch-specific dispatch code would be
 faster (no extra call), but the track explicitly requires a portable C
@@ -184,12 +184,12 @@ single-kernel numbers — it is whatever the shootout measured:
 benchmark picks the twin empirically); `jit_build_version()` threads it
 into each backend's `cg_t`, which omits, when set:
 
-- x86-64 (`src/x86_64/jit.c`): the `ja tail_lab` becomes `ja done_lab`;
+- x86-64 ([src/x86_64/jit.c](../src/x86_64/jit.c)): the `ja tail_lab` becomes `ja done_lab`;
   the `tail_lab` bind / `cmp` / `gen_tail` sequence is not emitted;
   `need_logexp` is forced to 0 (log/exp tables exist only for the scalar
   tail). The R15 pool-base setup is unaffected: `need_mask` stays 1 for
   the vector body, so `need_r15` still holds.
-- AArch64 (`src/aarch64/jit.c`): the counted loop's `cbz xN, tail` becomes
+- AArch64 ([src/aarch64/jit.c](../src/aarch64/jit.c)): the counted loop's `cbz xN, tail` becomes
   `cbz xN, done`; tail bind/cmp/`gen_tail` omitted; the x19 save/restore
   for the P_HORNER scalar tail is skipped. `need_logexp` is deliberately
   NOT gated: it doubles as the "constant pool is needed" signal for
@@ -197,7 +197,7 @@ into each backend's `cg_t`, which omits, when set:
   the pool base — gating it broke the pool setup (caught by QEMU; the
   tables allocate lazily and are never emitted when `gen_tail` doesn't
   run, so keeping the flag costs nothing).
-- RISC-V (`src/riscv/jit.c`): after the counted full-group loop, the
+- RISC-V ([src/riscv/jit.c](../src/riscv/jit.c)): after the counted full-group loop, the
   remainder computation, strip-mining loop and single-chunk tail are
   omitted — control falls through to `done_lab`. (There is no scalar tail
   or log/exp pool on this backend.)
@@ -244,7 +244,7 @@ just prologue/epilogue.
 `cand_t`/`version_t` gain `int maskedtail`, disjoint from `notail` and
 `predtail` (`jit_build_version` asserts all three pairwise). When set on
 AVX-512, `gen_function` emits `gen_tail_masked` instead of the scalar
-tail. New emitters (`src/x86_64/emit.c`):
+tail. New emitters ([src/x86_64/emit.c](../src/x86_64/emit.c)):
 
 - `em_kmovq_km` — `KMOVQ k, m64` (VEX.0F.W1 90 /r), loads the 64-bit tail
   mask from the constant pool into an opmask register.
@@ -253,7 +253,7 @@ tail. New emitters (`src/x86_64/emit.c`):
   read as zero; stores use `{k1}` (merging) so bytes past the tail are
   never written. The `VMOVDQU8` (F2) form is mandatory: `VMOVDQA64`
   masks at 64-bit granularity, which is wrong for byte tails (caught by
-  `tests/test_maskedtail.c` during development).
+  [tests/test_maskedtail.c](../tests/test_maskedtail.c) during development).
 - `em_vpshufb_masked` — masked nibble shuffle `{k1}{z}` (for the future
   nibble/GFNI masked-tail gates; implemented, byte-exact vs GAS 2.42,
   not yet wired into codegen).
@@ -276,7 +276,7 @@ chunk:
 Chunk starts are always 64-byte aligned; the unaligned `vmovdqu8` forms
 are used (no penalty at aligned addresses), and masked-off lanes never
 fault (verified empirically with a guard-page probe on AMD EPYC 9D25,
-`tests/test_maskedtail.c`).
+[tests/test_maskedtail.c](../tests/test_maskedtail.c)).
 `need_r15` is ORed with `maskedtail` (the mask table needs the pool
 base; P_XOR otherwise never uses r15 — a missing OR segfaulted during
 development). `need_logexp` is forced to 0 for the twin (no scalar
@@ -286,7 +286,7 @@ separate benchmark gate (not implemented -- the nibble split needs
 tlo/thi plus dual table lookups live in the tail, a larger register
 and code change than the GFNI affine).
 
-## 7. Benchmark integration (src/bench.c, src/api.c)
+## 7. Benchmark integration ([src/bench.c](../src/bench.c), [src/api.c](../src/api.c))
 
 Two-stage, all inside `rj_compile` when `o.benchmark` is on:
 
@@ -378,7 +378,7 @@ stripe times at the guarded sizes (64 KiB ≈ microseconds). (A future
 optimization: JIT the dispatch into the prologue — rejected for now as
 triplicated arch surface; see §4.)
 
-## 9. Tests (tests/test_dispatch.c)
+## 9. Tests ([tests/test_dispatch.c](../tests/test_dispatch.c))
 
 - **White-box selection** (no JIT): mock variants with recording stubs;
   assert `rj_dispatcher_pick` routes `len % group == 0` (incl. `len = 0`)
@@ -403,7 +403,7 @@ triplicated arch surface; see §4.)
   (simulating a wide-vector backend) through `bench_select`. Red-green:
   against the old fixed-`vmax` buffer sizing this trips ASan
   (heap-buffer-overflow in the validation fill loop — log in
-  `tests/evidence/m1_asan_red_oldcode.log`); against the fixed sizing
+  [tests/evidence/m1_asan_red_oldcode.log](../tests/evidence/m1_asan_red_oldcode.log)); against the fixed sizing
   it passes.
 - **Agreement**: when the dispatcher is installed, general-only `fn`
   (via a `benchmark=0` compile of the same plan) and dispatched `fn`
@@ -431,11 +431,11 @@ triplicated arch surface; see §4.)
   `TAIL_SCALAR` variant to multiples (derived `TAIL_SCALAR_MULT`; see
   §12), and that `rj_dispatcher_create` accepts a variant set whose
   admit-everything variant is a lone `TAIL_SCALAR` (no masked twin).
-  (`tests/test_dispatch.c:test_admits`, `test_length_aware_routing`)
+  ([`tests/test_dispatch.c:test_admits`](../tests/test_dispatch.c), `test_length_aware_routing`)
 - **Predtail twin source mapping**: `test_twin_source_mapping` pins
   `twin.desc == winner.desc + " predtail"` for a predtail twin built from
   the winner, mirroring the notail pin.
-- **Predtail codegen** (`tests/test_sve_predtail.c`, new; QEMU SVE at
+- **Predtail codegen** ([tests/test_sve_predtail.c](../tests/test_sve_predtail.c), new; QEMU SVE at
   flag values 128/256/512 — two distinct VLs, 128B and 256B, since
   qemu-user 8.2.2 clamps flag=512 to the 2048-bit max): shape tests
   (exactly one `WHILELT p1.b,xzr,x13`;
@@ -482,7 +482,7 @@ triplicated arch surface; see §4.)
 
 ### 11.0 OUT-OF-BRIEF CHANGE — KEPT DELIBERATELY (integrator: read this first)
 
-`src/aarch64/jit.c` reads the SVE vector length via `cntb` inline asm at
+[src/aarch64/jit.c](../src/aarch64/jit.c) reads the SVE vector length via `cntb` inline asm at
 JIT-build time instead of `cpu->sve_vl` (from `prctl(PR_SVE_GET_VL)`).
 This hunk is **out of the track's brief** (it changes ALL versions, not
 just the notail twin) and is kept deliberately as a latent-bug fix.
@@ -504,10 +504,10 @@ Integration 1, is recorded here so nobody "simplifies" it again:
   via `cntb` at runtime, so `niter = len/(128*U)` was 0 for
   len < 128*U and the tailless twin emitted nothing (twin mismatch at
   every admissible length). Restoring the hunk fixed it; the
-  companion fix was in `tests/test_xorsched.c`, whose `uop_divisor`
+  companion fix was in [tests/test_xorsched.c](../tests/test_xorsched.c), whose `uop_divisor`
   trusted prctl — it now uses each version's own `group_bytes`
   (the JIT's ground truth), the same pattern as
-  `tests/test_boundaries.c:sve_vl_bytes`.
+  [tests/test_boundaries.c](../tests/test_boundaries.c).
 - It was latent because the old `cg.group` was unused by the SVE loop —
   `group_bytes` made the VL load-bearing for dispatch, and the twin was
   validated at wrong lengths and produced garbage (caught by QEMU).
@@ -522,16 +522,16 @@ Integration 1, is recorded here so nobody "simplifies" it again:
   must re-verify their sources").
 ### 11.1 File list
 
-New: `src/dispatch.c`, `src/dispatch.h`, `docs/length_dispatch.md` (this
-file), `tests/test_dispatch.c`.
-Modified: `src/api.c` (shootout + dispatcher wiring at the entry point),
-`src/jit.h` (`version_t.notail`/`group_bytes` fields; `jit_build_version`
+New: [src/dispatch.c](../src/dispatch.c), [src/dispatch.h](../src/dispatch.h), [docs/length_dispatch.md](length_dispatch.md) (this
+file), [tests/test_dispatch.c](../tests/test_dispatch.c).
+Modified: [src/api.c](../src/api.c) (shootout + dispatcher wiring at the entry point),
+[src/jit.h](../src/jit.h) (`version_t.notail`/`group_bytes` fields; `jit_build_version`
 threads `cand_t.notail` into each backend's `cg_t` — its signature is
-unchanged), `src/plan.h` (`cand_t.notail` twin dimension),
-`src/bench.c`/`src/bench.h` (per-version validation lengths, per-version
-timing sizes and byte totals), `src/x86_64/jit.c`, `src/aarch64/jit.c`,
-`src/riscv/jit.c` (notail codegen), `Makefile` (build `dispatch.c`, new
-test incl. qemu targets), `README.md` (one paragraph on length dispatch).
+unchanged), [src/plan.h](../src/plan.h) (`cand_t.notail` twin dimension),
+[src/bench.c](../src/bench.c)/[src/bench.h](../src/bench.h) (per-version validation lengths, per-version
+timing sizes and byte totals), [src/x86_64/jit.c](../src/x86_64/jit.c), [src/aarch64/jit.c](../src/aarch64/jit.c),
+[src/riscv/jit.c](../src/riscv/jit.c) (notail codegen), [Makefile](../Makefile) (build `dispatch.c`, new
+test incl. qemu targets), [README.md](../README.md) (one paragraph on length dispatch).
 New: `AGENTS.md` (process lesson from the `cands[]`/`vs[]` index-confusion
 catch — escape protocol).
 
@@ -543,7 +543,7 @@ both the x86-64 k1 twin and the SVE `whilelt` twin). It was measured at
 tail lengths -- so it should serve tail lengths, not compete on GB/s
 noise at lengths where its tail never runs.
 
-The mechanism (in `src/dispatch.h` / `src/dispatch.c`, ISA-agnostic):
+The mechanism (in [src/dispatch.h](../src/dispatch.h) / [src/dispatch.c](../src/dispatch.c), ISA-agnostic):
 
 - `TAIL_MASKED` admits ONLY tail lengths (`len % group != 0`).
 - When a `TAIL_MASKED` variant is installed, `rj_dispatcher_create`
