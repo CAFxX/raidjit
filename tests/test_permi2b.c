@@ -983,18 +983,23 @@ out:
  * The vpermi2b branch fires only for coefficients outside {0,1}, so on
  * an all-trivial plan (reachable: P_DELTA with an all-{0,1} delta
  * matrix -- plan_build forces P_DELTA for parity_update even then) the
- * twin is byte-identical to plain and the duel is vacuous: the twin
- * could "win" on noise and install under a misleading +permi2b desc.
- * This pins api_permi2b_duel_eligible (the real api.c predicate)
- * table-driven: the all-trivial P_DELTA plan must read ineligible
- * while nontrivial MULACC/DELTA plans with the same winner shape stay
- * eligible, and every non-shape axis still gates. Red-green: removing
- * the plan_any_nontrivial term from the predicate flips the
- * all-trivial case to eligible (shown by mutation run).
+ * twin's code path is unreachable: it is genuinely vacuous there.
+ * Requesting it directly must therefore fail cleanly at the F16
+ * phantom-twin postcondition (lead L5) -- no vacuous +permi2b version
+ * can ever be built or installed, which is the stronger form of the
+ * property the duel-skip guarantees at the API level. This pins
+ * api_permi2b_duel_eligible (the real api.c predicate) table-driven:
+ * the all-trivial P_DELTA plan must read ineligible while nontrivial
+ * MULACC/DELTA plans with the same winner shape stay eligible, and
+ * every non-shape axis still gates. Red-green: removing the
+ * plan_any_nontrivial term from the predicate flips the all-trivial
+ * case to eligible (shown by mutation run).
  * The e2e leg compiles the all-trivial plan end-to-end and asserts the
  * duel never runs there (no "permi2b twin" progress line) -- the
  * white-box table is the mutation-capable pin, the e2e the public-API
- * one. */
+ * one. The direct-build leg asserts the fail-closed backstop: a
+ * permi2b pin on the all-trivial plan is rejected with the phantom
+ * twin error instead of installing a vacuous twin. */
 static void test_duel_eligibility(void)
 {
     rj_cpu_info cpu;
@@ -1033,10 +1038,11 @@ static void test_duel_eligibility(void)
                   "duel-eligibility: duel NOT skipped for all-trivial "
                   "P_DELTA plan (vacuous duel can install a "
                   "byte-identical twin under +permi2b on noise)");
-            /* Mechanism premise: on this plan the twin really is
-             * byte-identical to plain (the permi2b branch never fires),
-             * so a duel win here would install noise under a
-             * misleading desc. */
+            /* Mechanism premise, fail-closed form (lead L5): on this
+             * plan the permi2b twin's code path is unreachable, so the
+             * pin is genuinely vacuous and the F16 phantom-twin
+             * postcondition must reject the direct build cleanly --
+             * never install a vacuous twin under +permi2b. */
             {
                 rj_options bo;
                 rj_options_default(&bo);
@@ -1059,32 +1065,25 @@ static void test_duel_eligibility(void)
                     version_t v0, v1;
                     memset(&v0, 0, sizeof(v0));
                     memset(&v1, 0, sizeof(v1));
-                    if (jit_build_version(&pl, &cands[ci], &cpu, &bo,
-                                          &v0, err, sizeof(err)) ||
-                        jit_build_version(&pl, &tc, &cpu, &bo, &v1, err,
-                                          sizeof(err))) {
-                        printf("FAIL duel-eligibility twin build: %s\n",
-                               err);
-                        failures++;
-                    } else {
-                        CHECK(v0.code_size == v1.code_size &&
-                                  memcmp(v0.mem, v1.mem, v0.code_size) ==
-                                      0,
-                              "duel-eligibility: twin differs from plain "
-                              "on the all-trivial plan (the vacuous-duel "
-                              "premise is wrong)");
-                        CHECK(strstr(v1.desc, "+permi2b") != NULL,
-                              "duel-eligibility: twin lacks the +permi2b "
-                              "tag whose misleading install this gates");
-                        if (v0.code_size == v1.code_size &&
-                            memcmp(v0.mem, v1.mem, v0.code_size) == 0)
-                            printf("duel-eligibility: all-trivial twin "
-                                   "byte-identical to plain (%zu B) "
-                                   "despite %s\n",
-                                   v0.code_size, v1.desc);
-                        jit_free_version(&v0);
-                        jit_free_version(&v1);
-                    }
+                    /* The plain build must succeed (control). */
+                    CHECK(jit_build_version(&pl, &cands[ci], &cpu, &bo,
+                                            &v0, err, sizeof(err)) == 0,
+                          "duel-eligibility plain build: %s", err);
+                    /* The vacuous twin build must fail cleanly at the
+                     * phantom-twin postcondition. */
+                    int rc = jit_build_version(&pl, &tc, &cpu, &bo, &v1,
+                                               err, sizeof(err));
+                    CHECK(rc != 0,
+                          "duel-eligibility: vacuous permi2b twin built "
+                          "instead of failing closed");
+                    CHECK(strstr(err, "phantom twin") != NULL,
+                          "duel-eligibility: vacuous permi2b rejection "
+                          "is not the phantom-twin backstop: %s", err);
+                    if (rc != 0)
+                        printf("duel-eligibility: vacuous permi2b twin "
+                               "rejected cleanly (%s)\n", err);
+                    jit_free_version(&v0);
+                    jit_free_version(&v1);
                 }
             }
             /* End-to-end through the public API: the duel must never

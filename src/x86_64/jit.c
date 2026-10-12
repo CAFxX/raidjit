@@ -261,6 +261,13 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
         cg->pool = np;
         cg->pool_cap = new_cap;
     }
+    /* L2 (const-pool alignment-gap determinism): the gap [pool_len, off)
+     * is copied verbatim into the emitted image, so it must not carry
+     * heap history. Zero it here at the single point where the gap is
+     * created. Gaps are never executed or read (entries are loaded at
+     * their aligned offsets), so no executed/read byte changes and the
+     * 64-byte alignment contract is preserved. */
+    memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
@@ -3075,6 +3082,16 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 vmax = cg.msh;
             }
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry.
+                 * The remat twin's code path starts here in register
+                 * allocation (no persistent table regs; the tbl
+                 * scratch instead) -- taken for every remat build,
+                 * including all-trivial plans where no per-coefficient
+                 * pool reload ever fires in the body. Marking only the
+                 * body reload sites made the F16 postcondition misfire
+                 * on all-trivial plans; the body sites remain as the
+                 * per-use instances of the same path. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 /* Rematerialize: tables reloaded from pool into tbl
                  * on each use; no hreg. */
                 cg.tbl = cg.t + 6;
@@ -3093,6 +3110,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         } else {
             cg.t2 = cg.t + 1;
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry
+                 * (see the MUL_NIBBLE branch above); the GFNI remat
+                 * path likewise starts in register allocation. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 cg.tbl = cg.t + 2;
                 vmax = cg.tbl;
             } else {

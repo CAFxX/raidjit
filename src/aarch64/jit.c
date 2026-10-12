@@ -148,6 +148,13 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
         cg->pool = np;
         cg->pool_cap = new_cap;
     }
+    /* L2 (const-pool alignment-gap determinism): the gap [pool_len, off)
+     * is copied verbatim into the emitted image, so it must not carry
+     * heap history. Zero it here at the single point where the gap is
+     * created. Gaps are never executed or read (entries are loaded at
+     * their aligned offsets), so no executed/read byte changes and the
+     * 64-byte alignment contract is preserved. */
+    memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
@@ -1982,6 +1989,16 @@ static void compute_regs(cg_t *cg)
         cg->hreg = malloc((size_t)2 * (size_t)n_out * sizeof(*cg->hreg));
         if (!cg->hreg) { cg->oom = 1; return; }
         if (cg->cand.remat) {
+            /* BUG_t5_remat (lead L5): effect marker at mode entry.
+             * The remat twin's code path starts here in register
+             * allocation (no persistent table regs; hreg[] stays -1,
+             * tables reloaded from the pool into tbl_lo on each use)
+             * -- taken for every remat build, including all-trivial
+             * plans where no per-coefficient pool reload ever fires
+             * in the body. Marking only the body reload site made the
+             * F16 postcondition misfire on all-trivial plans; the body
+             * site remains as the per-use instance of the same path. */
+            cg->twin_applied |= TWIN_APPLIED_REMAT;
             /* Rematerialize: no persistent table regs; hreg[] stays -1
              * and is never read (gen_const_setup and the body both
              * branch on cand.remat; the c_ldpool assert would fire if a

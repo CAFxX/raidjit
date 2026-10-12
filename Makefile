@@ -69,6 +69,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_tailduel $(BUILDDIR)/test_b4_prefetch \
         $(BUILDDIR)/test_prefetch_calib \
         $(BUILDDIR)/test_traps $(BUILDDIR)/test_planner_fuzz \
+        $(BUILDDIR)/test_constpool_determinism \
         $(BUILDDIR)/test_ports \
         $(BUILDDIR)/test_ui_meta \
         $(BUILDDIR)/test_recover_closedform \
@@ -153,6 +154,7 @@ _test-qemu-aarch64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_nt
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_b4_prefetch
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_traps
+	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_constpool_determinism
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_pdelta
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_pdelta_edge
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_boundaries
@@ -243,6 +245,7 @@ _test-qemu-riscv64: $(TESTS)
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_nt
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_b4_prefetch
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_traps
+	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_constpool_determinism
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pdelta
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_pdelta_edge
 	QEMU_LD_PREFIX=/usr/riscv64-linux-gnu $(QEMU_riscv64) -cpu $(QEMU_RVV_CPU) ./$(BUILDDIR)/test_boundaries
@@ -412,6 +415,7 @@ endif
 	./$(BUILDDIR)/test_b4_prefetch
 	./$(BUILDDIR)/test_prefetch_calib
 	./$(BUILDDIR)/test_traps
+	./$(BUILDDIR)/test_constpool_determinism
 	./$(BUILDDIR)/test_planner_fuzz
 	./$(BUILDDIR)/test_ports
 	./$(BUILDDIR)/test_ui_meta
@@ -534,6 +538,9 @@ $(BUILDDIR)/test_prefetch_calib: tests/test_prefetch_calib.c $(BUILDDIR)/libraid
 
 $(BUILDDIR)/test_traps: tests/test_traps.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_traps.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+
+$(BUILDDIR)/test_constpool_determinism: tests/test_constpool_determinism.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_constpool_determinism.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_nt: tests/test_nt.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_nt.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
