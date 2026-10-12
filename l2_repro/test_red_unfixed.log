@@ -1,0 +1,9 @@
+FAIL cand 16 (isa=1 U=4): image differs at offset 2016 (pool region): 0xb4 vs 0x4b
+FAIL cand 17 (isa=1 U=3): image differs at offset 1632 (pool region): 0xb4 vs 0x4b
+FAIL cand 18 (isa=1 U=2): image differs at offset 1248 (pool region): 0xb4 vs 0x4b
+FAIL cand 19 (isa=1 U=1): image differs at offset 928 (pool region): 0xb4 vs 0x4b
+FAIL cand 20 (isa=0 U=4): image differs at offset 2464 (pool region): 0xb4 vs 0x4b
+FAIL cand 21 (isa=0 U=3): image differs at offset 1952 (pool region): 0xb4 vs 0x4b
+FAIL cand 22 (isa=0 U=2): image differs at offset 1440 (pool region): 0xb4 vs 0x4b
+FAIL cand 23 (isa=0 U=1): image differs at offset 992 (pool region): 0xb4 vs 0x4b
+pool-determinism: 32 candidates with pools A/B-compared, MISMATCHES FOUND

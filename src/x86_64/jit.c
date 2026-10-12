@@ -261,6 +261,13 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
         cg->pool = np;
         cg->pool_cap = new_cap;
     }
+    /* L2 (const-pool alignment-gap determinism): the gap [pool_len, off)
+     * is copied verbatim into the emitted image, so it must not carry
+     * heap history. Zero it here at the single point where the gap is
+     * created. Gaps are never executed or read (entries are loaded at
+     * their aligned offsets), so no executed/read byte changes and the
+     * 64-byte alignment contract is preserved. */
+    memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {

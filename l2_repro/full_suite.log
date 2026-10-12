@@ -1,0 +1,92 @@
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_correct tests/test_correct.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_benchreject tests/test_benchreject.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_select tests/test_select.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_matrix tests/test_matrix.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_nt tests/test_nt.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_pdelta tests/test_pdelta.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_large_mds tests/test_large_mds.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_aarch64_emit tests/test_aarch64_emit.c src/aarch64/emit.c -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_pressure tests/test_pressure.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_sve_pdelta tests/test_sve_pdelta.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_aarch64_remat tests/test_aarch64_remat.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_sve_predtail tests/test_sve_predtail.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_riscv_remat tests/test_riscv_remat.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_sve_eor3 tests/test_sve_eor3.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_riscv_prefetch tests/test_riscv_prefetch.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_riscv_zvbc tests/test_riscv_zvbc.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_riscv_zvbb tests/test_riscv_zvbb.c src/riscv/emit.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_rvv_f6 tests/test_rvv_f6.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_rvv_lmul tests/test_rvv_lmul.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_riscv_maskedtail_emit tests/test_riscv_maskedtail_emit.c src/riscv/emit.c -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_rvv_maskedtail tests/test_rvv_maskedtail.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_pdelta_edge tests/test_pdelta_edge.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_boundaries tests/test_boundaries.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_aarch64_shape tests/test_aarch64_shape.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prune tests/test_prune.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_dispatch tests/test_dispatch.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_xorsched tests/test_xorsched.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_xorsched_e2e tests/test_xorsched_e2e.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_xorbit tests/test_xorbit.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_matrix_search tests/test_matrix_search.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_xorcode tests/test_xorcode.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_notail_xorsched tests/test_notail_xorsched.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_survivor tests/test_survivor.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_tailduel tests/test_tailduel.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_b4_prefetch tests/test_b4_prefetch.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_prefetch_calib tests/test_prefetch_calib.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_planner_fuzz tests/test_planner_fuzz.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_ports tests/test_ports.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_ui_meta tests/test_ui_meta.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_recover_closedform tests/test_recover_closedform.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_pipe tests/test_pipe.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_crc tests/test_crc.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -DRJ_CRC_HAVE_ZLIB=1 -o build-x86_64/test_crc_fast tests/test_crc_fast.c build-x86_64/libraidjit.a -lm -lz
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_fused tests/test_fused.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_striping tests/test_striping.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_planid tests/test_planid.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_batched tests/test_batched.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_lrc tests/test_lrc.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_lrc_local tests/test_lrc_local.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_twin_audit tests/test_twin_audit.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_emitter_oom tests/test_emitter_oom.c src/x86_64/emit.c -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_bench_facility tests/test_bench_facility.c
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_emit tests/test_emit.c src/x86_64/emit.c -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_affine tests/test_affine.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_cet tests/test_cet.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_remat tests/test_remat.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_pxor_ternlog tests/test_pxor_ternlog.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_permi2b tests/test_permi2b.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_mshift tests/test_mshift.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -DRJ_CRC_HAVE_ZLIB=1 -o build-x86_64/test_crc_fast_x86 tests/test_crc_fast_x86.c build-x86_64/libraidjit.a -lm -lz -lpthread
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_pinned_negative tests/test_pinned_negative.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_rec_cf_emit tests/test_rec_cf_emit.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_crc_fold tests/test_crc_fold.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_crc_fold_prop tests/test_crc_fold_prop.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_crc_fold_combo tests/test_crc_fold_combo.c build-x86_64/libraidjit.a -lm
+gcc -O2 -std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -o build-x86_64/test_crc_fold_gate tests/test_crc_fold_gate.c build-x86_64/libraidjit.a -lm
+./build-x86_64/test_aarch64_emit
+PASS: 118 checks, 0 failures
+./build-x86_64/test_riscv_maskedtail_emit
+test_riscv_maskedtail_emit: src/riscv/emit.c:472: em_vmsltu_vx: Assertion `vd == 0' failed.
+PASS test_riscv_maskedtail_emit
+./build-x86_64/test_emit
+test_emit: src/x86_64/emit.c:207: emit_mrm: Assertion `x < 0 || (x < 16 && x != 4)' failed.
+emitter differential: all OK
+crc_fold emitters: all OK
+./build-x86_64/test_affine
+affine bytes: 62 f3 fd 48 ce d1 00
+TRANSPOSE MISMATCH c=1 i=0
+current layout: OK, transpose layout: WRONG
+affine: all OK
+./build-x86_64/test_cet
+cet: cpu brand: AMD EPYC 9D25 126-Core Processor
+cet: cet_ss=1, setssbsy faulted: OS did not enable shadow stack (OS enablement decides)
+cet: all OK
+./build-x86_64/test_scan_align
+scan_align: all OK
+./build-x86_64/test_remat
+ok remat rs(6,3) nibble U=8 (ntriv=2)
+FAIL test_remat_case:173: rs(6,3) all-trivial nibble U=8 build: remat twin requested but its code path was not taken (phantom twin)
+1 FAILURES
+make: *** [Makefile:378: test] Error 1
+MAKE_TEST_EXIT=2
