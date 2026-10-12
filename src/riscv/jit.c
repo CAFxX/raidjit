@@ -2321,6 +2321,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             cg.r2 = cg.r1 + L;
             cg.mask = cg.r2 + L;
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry.
+                 * The remat twin's code path starts here in register
+                 * allocation (no persistent table regs; hreg[] stays
+                 * -1, tables reloaded from the pool into tbl on each
+                 * use) -- taken for every remat build, including
+                 * all-trivial plans where no per-coefficient pool
+                 * reload ever fires in the body. Marking only the body
+                 * reload site made the F16 postcondition misfire on
+                 * all-trivial plans; the body site remains as the
+                 * per-use instance of the same path. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 /* Rematerialize: no persistent table regs; hreg[] stays
                  * -1 and is never read (gen_const_setup and the body
                  * both branch on cand.remat, and the asserts at the

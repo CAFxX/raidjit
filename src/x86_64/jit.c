@@ -3075,6 +3075,16 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 vmax = cg.msh;
             }
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry.
+                 * The remat twin's code path starts here in register
+                 * allocation (no persistent table regs; the tbl
+                 * scratch instead) -- taken for every remat build,
+                 * including all-trivial plans where no per-coefficient
+                 * pool reload ever fires in the body. Marking only the
+                 * body reload sites made the F16 postcondition misfire
+                 * on all-trivial plans; the body sites remain as the
+                 * per-use instances of the same path. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 /* Rematerialize: tables reloaded from pool into tbl
                  * on each use; no hreg. */
                 cg.tbl = cg.t + 6;
@@ -3093,6 +3103,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         } else {
             cg.t2 = cg.t + 1;
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry
+                 * (see the MUL_NIBBLE branch above); the GFNI remat
+                 * path likewise starts in register allocation. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 cg.tbl = cg.t + 2;
                 vmax = cg.tbl;
             } else {

@@ -1982,6 +1982,16 @@ static void compute_regs(cg_t *cg)
         cg->hreg = malloc((size_t)2 * (size_t)n_out * sizeof(*cg->hreg));
         if (!cg->hreg) { cg->oom = 1; return; }
         if (cg->cand.remat) {
+            /* BUG_t5_remat (lead L5): effect marker at mode entry.
+             * The remat twin's code path starts here in register
+             * allocation (no persistent table regs; hreg[] stays -1,
+             * tables reloaded from the pool into tbl_lo on each use)
+             * -- taken for every remat build, including all-trivial
+             * plans where no per-coefficient pool reload ever fires
+             * in the body. Marking only the body reload site made the
+             * F16 postcondition misfire on all-trivial plans; the body
+             * site remains as the per-use instance of the same path. */
+            cg->twin_applied |= TWIN_APPLIED_REMAT;
             /* Rematerialize: no persistent table regs; hreg[] stays -1
              * and is never read (gen_const_setup and the body both
              * branch on cand.remat; the c_ldpool assert would fire if a
