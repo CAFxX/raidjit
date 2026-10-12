@@ -62,6 +62,7 @@ PORTABLE_TESTS = $(BUILDDIR)/test_correct $(BUILDDIR)/test_benchreject \
         $(BUILDDIR)/test_rvv_maskedtail \
         $(BUILDDIR)/test_pdelta_edge \
         $(BUILDDIR)/test_boundaries $(BUILDDIR)/test_aarch64_shape \
+        $(BUILDDIR)/test_aarch64_phantom_gates \
         $(BUILDDIR)/test_prune $(BUILDDIR)/test_dispatch \
         $(BUILDDIR)/test_xorsched $(BUILDDIR)/test_xorsched_e2e $(BUILDDIR)/test_xorbit \
         $(BUILDDIR)/test_matrix_search $(BUILDDIR)/test_xorcode \
@@ -170,6 +171,7 @@ _test-qemu-aarch64: $(TESTS)
 	# QEMU coverage that matters pre-backend.
 	RJ_CRC_SKIP_HUGE=1 QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_crc_fast
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_shape
+	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_aarch64_phantom_gates
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_dispatch
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max,sve-default-vector-length=256 ./$(BUILDDIR)/test_dispatch
 	QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU_aarch64) -cpu max ./$(BUILDDIR)/test_xorsched
@@ -397,6 +399,7 @@ endif
 	./$(BUILDDIR)/test_pdelta
 	./$(BUILDDIR)/test_pdelta_edge
 	./$(BUILDDIR)/test_boundaries
+	./$(BUILDDIR)/test_aarch64_phantom_gates
 	./$(BUILDDIR)/test_large_mds
 	./$(BUILDDIR)/test_pressure
 	./$(BUILDDIR)/test_select
@@ -559,6 +562,8 @@ $(BUILDDIR)/test_boundaries: tests/test_boundaries.c $(BUILDDIR)/libraidjit.a $(
 
 $(BUILDDIR)/test_aarch64_shape: tests/test_aarch64_shape.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_aarch64_shape.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
+$(BUILDDIR)/test_aarch64_phantom_gates: tests/test_aarch64_phantom_gates.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ tests/test_aarch64_phantom_gates.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
 
 $(BUILDDIR)/test_prune: tests/test_prune.c $(BUILDDIR)/libraidjit.a $(HDRS) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ tests/test_prune.c $(BUILDDIR)/libraidjit.a $(LDFLAGS)
