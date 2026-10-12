@@ -110,3 +110,22 @@ Status: body implementations complete (2026-10-10). Builds/tests deferred (load 
 - `src/xorsched.c`: cost model ISA extensions
 - `src/plan.c`: enumeration gate extension
 >>>>>>> fc87cba (xorbit-arm-rv: AArch64/RISC-V backends, cost model, verification fixes)
+
+---
+
+## Bug-queue triage (2026-10-12, triage worker, read-only)
+
+**Base:** `crc-fast` @ `ad602f088d4dcc22483f163aca99dc3b8b60e77b`. Index:
+`hidden_files/bug_triage_2026-10-12.md`. Verdicts prepended to each bug file.
+Registry: `~/workspace/system/work-registry/raidjit-bugqueue-triage.json` (done).
+
+**Tally:** FIXED 13 · OPEN 4 · INVALID 4 · UNTRIAGED 18 (all 0-byte placeholders
+under `codegen_review_bugs/` — populate or remove).
+
+**Key result:** hint commits verified in-tree (claims hold) — `3f0e22b` (F03/F04/F05/F16),
+`30cdb7a` (riscv arity, 7/7 sites 8-arg), `67e97c0` (GFNI×ISA L1 rule). The 4 OPEN bugs are
+all **wasm-tree lag**: `raidjit-wasm` @ `ec2349e` still lacks the BUG_t1_529 xorbit-on-x86
+ban (OPEN: E1-XORBIT-X86 MAJOR, E1X86-02 MODERATE) and the `67e97c0` GFNI×ISA rule
+(OPEN: TRAP-001/003 CRITICAL — reproducer still aborts via the WASM path, main path clean).
+**Next action:** backport those two L1 rules into the wasm tree's `src/planid.c` (or re-sync
+`src/` wholesale), then rebuild the WASM module. No fix lanes were opened by this sweep.
