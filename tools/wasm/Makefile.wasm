@@ -1,8 +1,8 @@
 # Makefile.wasm — builds the raidjit WASM modules (SPEC.md §S3, §S8).
 #
 # Three per-ISA compile modules + one Capstone disassembler module, all
-# -sSINGLE_FILE=1 (self-contained, file://-safe). This makefile is invoked
-# by the top-level Makefile's `wasm` target (see Makefile).
+# -sSINGLE_FILE=1 (self-contained, file://-safe). No native build impact:
+# this makefile is standalone and never included by the top-level Makefile.
 #
 # Usage:
 #   make -f tools/wasm/Makefile.wasm            # everything -> tools/wasm/out/
@@ -28,12 +28,13 @@ COMMON_SRCS := $(REPO)/src/gf.c $(REPO)/src/plan.c $(REPO)/src/topo.c \
   $(REPO)/src/xorcode.c $(REPO)/src/survivor.c $(REPO)/src/prefetch_calib.c \
   $(REPO)/src/planid.c $(REPO)/src/crc.c $(REPO)/src/striping.c \
   $(REPO)/src/api_crc.c $(REPO)/src/fused.c $(REPO)/src/api_batched.c \
-  $(REPO)/src/crc_fast.c \
+  $(REPO)/src/ui_meta.c \
   $(WASM_DIR)rjw_api.c $(WASM_DIR)vendor/cJSON.c
 
 EMFLAGS := -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
   -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
-  -sEXPORTED_FUNCTIONS=_rjw_compile,_rjw_code_bytes,_rjw_const_bytes,_rjw_free_string,_malloc,_free \
+  -sWASM_BIGINT=1 \
+  -sEXPORTED_FUNCTIONS=_rjw_compile,_rjw_code_bytes,_rjw_const_bytes,_rjw_free_string,_rjw_meta_schema,_rjw_meta_valid,_malloc,_free \
   -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
   -sEXPORT_NAME=RaidjitX86
 
@@ -83,6 +84,7 @@ disasm: check-env $(OUT)
 	  -o $(OUT)/disasm.js \
 	  -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
 	  -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
+	  -sWASM_BIGINT=1 \
 	  -sEXPORTED_FUNCTIONS=_dj_disasm,_dj_free_string,_malloc,_free \
 	  -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
 	  -sEXPORT_NAME=Disasm

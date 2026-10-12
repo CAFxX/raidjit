@@ -261,6 +261,14 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
         cg->pool = np;
         cg->pool_cap = new_cap;
     }
+    /* The alignment gap [pool_len, off) is padding: zero it so the
+     * emitted const blob is deterministic (malloc/realloc leave it
+     * uninitialized). WASM-only: native output stays byte-identical.
+     * The gap is never read by generated code. */
+#ifdef RJ_WASM
+    if (off > cg->pool_len)
+        memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
+#endif
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {

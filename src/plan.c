@@ -835,7 +835,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
                     size_t prefetch_dist)
 {
     int n = 0;
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(RJW_AARCH64)
     /* AArch64: NEON baseline, SVE/SVE2 if present. Nibble method for all
      * multiplies (TBL). SVE is VL-agnostic: conservative unrolls.
      * The SVE backend maps logical vector reg r to z(16+r) for r<16 and
@@ -895,7 +895,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             }
         }
     }
-#elif defined(__riscv)
+#elif defined(__riscv) || defined(RJW_RISCV)
     /* RISC-V: RVV if present. Nibble method via vrgather, Zvbc
      * carryless twin when the CPU reports both Zvbc and Zvkg.
      * VL-agnostic. */

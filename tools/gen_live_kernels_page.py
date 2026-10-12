@@ -45,9 +45,15 @@ function compileKernel(mod, optsObj) {
   let rp;
   try { rp = mod._rjw_compile(p); }
   catch (e) { mod._free(p); return { ok: false, err: "trap: " + e.message }; }
-  const res = JSON.parse(mod.UTF8ToString(rp));
+  let res;
+  try {
+    res = JSON.parse(mod.UTF8ToString(rp));
+  } catch (e) {
+    mod._rjw_free_string(rp); mod._free(p);
+    return { ok: false, err: "bad JSON from rjw_compile: " + e.message };
+  }
   mod._rjw_free_string(rp); mod._free(p);
-  if (!res.ok) return res;
+  if (!res || typeof res !== "object" || !res.ok) return res || { ok: false, err: "bad result" };
   const lenp = mod._malloc(8);
   const cp = mod._rjw_code_bytes(lenp);
   const clen = mod.getValue(lenp, "i32");
@@ -62,14 +68,26 @@ function compileKernel(mod, optsObj) {
 
 /* ---- disassembly ---- */
 async function disassemble(arch, bytes) {
-  const d = await getDisasm();
+  let d;
+  try { d = await getDisasm(); }
+  catch (e) { return { error: "disasm module load failed: " + e.message }; }
   const p = d._malloc(bytes.length || 1);
   if (bytes.length) d.HEAPU8.set(bytes, p);
+  // arch is const char*: allocate; base_addr is uint64_t: pass BigInt.
+  const ap = d.stringToNewUTF8(arch);
   let rp;
-  try { rp = d._dj_disasm(arch, p, bytes.length, 0); }
-  catch (e) { d._free(p); return { error: "trap: " + e.message }; }
-  const arr = JSON.parse(d.UTF8ToString(rp));
-  d._dj_free_string(rp); d._free(p);
+  try { rp = d._dj_disasm(ap, p, bytes.length, 0n); }
+  catch (e) { d._free(ap); d._free(p); return { error: "trap: " + e.message }; }
+  if (!rp) { d._free(ap); d._free(p); return { error: "dj_disasm returned NULL" }; }
+  let arr;
+  try {
+    arr = JSON.parse(d.UTF8ToString(rp));
+  } catch (e) {
+    d._dj_free_string(rp); d._free(ap); d._free(p);
+    return { error: "bad JSON from dj_disasm: " + e.message };
+  }
+  d._dj_free_string(rp); d._free(ap); d._free(p);
+  if (!Array.isArray(arr)) return { error: "dj_disasm did not return an array" };
   return { insns: arr };
 }
 /* objdump-style normalization (SPEC: byte equality is the invariant) */
@@ -77,46 +95,280 @@ function fmtHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 }
 function renderDisasm(insns) {
-  return insns.map(e => {
-    const addr = e.addr.toString(16).padStart(4, "0");
-    let line = addr + ":\t" + e.bytes + "\t" + e.mnemonic;
-    if (e.op_str) line += "\t" + e.op_str;
-    return line;
-  }).join("\n");
+  const tbl = el("table", { class: "disasm" });
+  const head = el("tr");
+  const hdrs = [
+    ["offset", "Byte offset of the instruction from the start of the generated code"],
+    ["bytes", "Machine-code bytes of the instruction (hex)"],
+    ["instruction", "Disassembled instruction (mnemonic + operands)"],
+  ];
+  for (const [h, tip] of hdrs)
+    head.appendChild(el("th", { title: tip }, h));
+  tbl.appendChild(head);
+  for (const e of insns) {
+    const tr = el("tr");
+    tr.appendChild(el("td", { class: "off" },
+      e.addr.toString(16).padStart(4, "0")));
+    tr.appendChild(el("td", { class: "bytes" }, e.bytes));
+    tr.appendChild(el("td", { class: "insn" },
+      e.mnemonic + (e.op_str ? " " + e.op_str : "")));
+    tbl.appendChild(tr);
+  }
+  return tbl;
 }
 
-/* ---- option model ---- */
-const TARGETS = {
-  x86:     ["avx512-gfni", "avx2", "sse"],
-  aarch64: ["sve2", "neon"],
-  riscv:   ["rvv", "rvv-zvbc32e", "rvv-zicbop"],
-};
+/* ---- option model ----
+ * All validation metadata comes from the library via the WASM API
+ * (rjw_meta_schema / rjw_meta_valid). The page queries; it does not
+ * reimplement. See src/ui_meta.c for the single source of truth. */
 const DISASM_ARCH = { x86: "x86_64", aarch64: "aarch64", riscv: "riscv64" };
+/* Metadata caches: schema per ISA module, validity per state key. The
+ * metadata doesn't change during a session. */
+const schemaCache = {};
+const validCache = {};
+function metaCall(mod, fn, arg) {
+  let p = 0, rp = 0;
+  try {
+    if (arg !== undefined) {
+      p = mod.stringToNewUTF8(arg);
+      rp = mod[fn](p);
+    } else {
+      rp = mod[fn]();
+    }
+    return mod.UTF8ToString(rp);
+  } finally {
+    if (rp) mod._rjw_free_string(rp);
+    if (p) mod._free(p);
+  }
+}
+/* Fetch the static schema for an ISA module (cached). */
+async function getSchema(isa) {
+  if (schemaCache[isa]) return schemaCache[isa];
+  const mod = await getModule(isa);
+  const s = JSON.parse(metaCall(mod, "_rjw_meta_schema"));
+  schemaCache[isa] = s;
+  return s;
+}
+/* Fetch dynamic validity for a pane state (cached by state key).
+ * Returns {twins: {id: bool}, fields: {mul: {options: [...]},
+ * lmul: {enabled: bool}}}. */
+async function getValid(P) {
+  const s = P.state;
+  const isaVer = (!s.candAuto && s.cand.isaVer) ? s.cand.isaVer : null;
+  const key = JSON.stringify([s.isa, s.target, isaVer,
+    s.lastPlan && s.lastPlan.strategy, s.lastPlan && s.lastPlan.n_out,
+    s.lastPlan && s.lastPlan.xor_sched,
+    s.op.kind === "recover"]);
+  if (validCache[key]) return validCache[key];
+  const mod = await getModule(s.isa);
+  const st = {
+    isaVer: isaVer,
+    target: s.target,
+    strategy: s.lastPlan && s.lastPlan.strategy,
+    n_out: s.lastPlan && s.lastPlan.n_out,
+    xor_sched: s.lastPlan && s.lastPlan.xor_sched,
+    isRecover: s.op.kind === "recover",
+  };
+  const v = JSON.parse(metaCall(mod, "_rjw_meta_valid", JSON.stringify(st)));
+  validCache[key] = v;
+  return v;
+}
+/* Twin list and exclusivity groups from the schema. Falls back to the
+ * schema of the pane's ISA module. */
+async function getTwins(isa) {
+  const s = await getSchema(isa);
+  return s.twins;
+}
+function twinGroupMembers(twins, group) {
+  return twins.filter(t => t.group === group).map(t => t.id);
+}
 const CTORS = {
   raid0: ["ndata"], raid1: [], raid5: ["ndata"], raid6: ["ndata"],
   raid6_rs: ["ndata"], rdp: ["p"], evenodd: ["p"], liberation: ["k"],
   rs: ["ndata", "npar"], lrc: ["k", "h", "r"], lrc_azure: [],
   lrc_optimal: ["k", "h", "r"], custom: ["ndata", "npar", "matrix_hex"],
 };
-const TWINS = ["nt", "ternlog", "remat", "notail", "predtail", "maskedtail",
-               "permi2b", "xorsched", "xorbit", "mshift", "pipe"];
-/* pairwise-exclusive body twins */
-const BODY_TWINS = ["xorsched", "xorbit", "permi2b", "mshift", "pipe", "remat"];
+/* Tooltip text for twin checkboxes: what each kernel variant does. */
+const TWIN_TIPS = {
+  xorsched: "xorsched: cross-row XOR scheduling — finds XOR subexpressions shared across output rows and computes each once (common-subexpression elimination across rows).",
+  xorbit: "xorbit: bit-sliced GF multiplication — replaces table/shuffle-based Galois-field multiplies with XOR + bit operations on bit planes. Only offered where no fast byte-shuffle exists (never on x86).",
+  permi2b: "permi2b: x86-only multiply variant that routes the GF reduction through a 2-byte permute instead of the default nibble path.",
+  mshift: "mshift: x86-only multiply variant that implements the GF reduction with multi-shift/OR sequences instead of shuffles.",
+  pipe: "pipe: software-pipelined loop — overlaps loads, multiplies and stores across loop iterations to hide latency.",
+  remat: "remat: rematerialization — recomputes intermediate values instead of spilling them to the stack when registers run short.",
+  rec_cf: "rec_cf: closed-form single/double-erasure recovery — uses an algebraic shortcut (shared syndromes) instead of the generic recovery solver.",
+  notail: "notail: assumes the length is an exact multiple of the vector width — emits no tail loop. Only valid for such lengths.",
+  predtail: "predtail: SVE predicated tail — handles the final partial vector with SVE predicates (whilelt), no scalar cleanup.",
+  maskedtail: "maskedtail: masked tail — handles the final partial vector with AVX-512/RVV write masks (branchless clamp), no scalar cleanup.",
+  nt: "nt: non-temporal stores — writes bypass the cache (streaming stores). Helps for large buffers that will not be re-read soon.",
+  ternlog: "ternlog: folds XOR trees with the AVX-512 VPTERNLOGD three-input boolean instruction instead of separate XORs.",
+};
+/* Tooltip text for topology parameters. */
+const TOPO_TIPS = {
+  ndata: "Number of data disks (RAID members holding data).",
+  npar: "Number of parity disks (redundant members).",
+  p: "RDP/EVENODD prime parameter p: the array has p-1 data disks plus 2 parity disks (p must be prime).",
+  k: "Number of data blocks (liberation/LRC).",
+  h: "Number of heavy (global) parity blocks (LRC).",
+  r: "Locality parameter: each local group covers r data blocks (LRC).",
+  matrix_hex: "Custom generator matrix as hex bytes: exactly 2*ndata*npar chars (row-major).",
+};
+/* Tooltip text for the result table keys. */
+const ROW_TIPS = {
+  desc: "Human-readable description of the compiled kernel.",
+  plan_id: "Internal plan identifier selecting this exact kernel variant.",
+  target: "CPU target the kernel was compiled for (instruction-set level).",
+  topology: "The erasure-coding topology (RAID level / code) used.",
+  operation: "The operation: encode (compute parity), recover (rebuild failed disks), or parity_update (delta update).",
+  strategy: "The code-generation strategy chosen by the planner (e.g. xor, mulacc, horner).",
+  isa: "Instruction set the emitted machine code uses.",
+  mul: "Galois-field multiply implementation used in the kernel.",
+  unroll: "Loop unroll factor: how many vector-width chunks are processed per loop iteration (0 = planner's choice).",
+  lmul: "RISC-V vector LMUL: how many vector registers are grouped (1/2/4/8).",
+  twins: "Kernel variants ('twins') pinned for this compile; (none) means the planner's default.",
+  code_size: "Size of the generated machine code in bytes.",
+  const_size: "Size of the constant pool (lookup tables, etc.) in bytes.",
+  "uops/byte (static)": "Static-model estimate of micro-ops per input byte — for comparing variants, NOT a measured benchmark. Lower is better.",
+  "mem/byte (static)": "Static-model estimate of memory traffic per input byte — for comparing variants, NOT a measured benchmark.",
+  "code sha256": "SHA-256 of the generated machine code: identical code hashes identically.",
+  selection: "How this candidate was chosen (auto heuristic vs pinned).",
+  exec_validated: "Whether the kernel was executed and validated (always false here — this page is compile-only).",
+};
+/* Per-ctor default parameters. Every entry must satisfy the backend
+ * validity envelope (rjw_api.c), so that switching constructors always
+ * lands on a compilable configuration — never a rejected one.
+ * rdp/evenodd need p prime >= 3 (p=5 -> 4 data disks, as in the archived
+ * doc's rdp-4 sample); rs needs npar >= 1; lrc/lrc_optimal need
+ * k>=2,h>=1,r>=2 (doc's lrc-8-2-2 / lrc-opt-20-2-4 samples); custom needs
+ * a matrix_hex of exactly 2*ndata*npar hex chars (any bytes accepted). */
+const CTOR_DEFAULTS = {
+  raid0: { p1: 4 }, raid1: {}, raid5: { p1: 4 }, raid6: { p1: 4 },
+  raid6_rs: { p1: 4 }, rdp: { p1: 5 }, evenodd: { p1: 5 }, liberation: { p1: 4 },
+  rs: { p1: 4, p2: 2 }, lrc: { p1: 8, p2: 2, p3: 2 }, lrc_azure: {},
+  lrc_optimal: { p1: 20, p2: 2, p3: 4 },
+  custom: { p1: 6, p2: 2, matrix_hex: "010101020103010401050106" },
+};
+function ctorDefaults(ctor) {
+  return Object.assign({ ctor: ctor }, CTOR_DEFAULTS[ctor] || { p1: 4 });
+}
+function isPrime(n) {
+  n = n | 0;
+  if (n < 2) return false;
+  for (let i = 2; i * i <= n; i++) if (n % i === 0) return false;
+  return true;
+}
+/* Repair a topology object so it satisfies the backend validity envelope
+ * (rjw_api.c). Stale deep links — e.g. saved when the page defaulted p=4
+ * for every ctor, or hand-crafted with an unknown ctor — self-heal to the
+ * per-ctor defaults instead of showing a backend rejection for a
+ * configuration the user never chose. */
+function sanitizeTopology(t) {
+  const d = ctorDefaults(t && t.ctor);
+  if (!CTORS[d.ctor]) return ctorDefaults("raid5");
+  if (!t || typeof t !== "object") return d;
+  const p1 = t.p1 | 0, p2 = t.p2 | 0, p3 = t.p3 | 0;
+  let ok;
+  switch (d.ctor) {
+    case "rdp": case "evenodd": ok = isPrime(p1); break;
+    case "liberation": ok = p1 >= 2; break;
+    case "rs": ok = p1 >= 1 && p2 >= 1; break;
+    case "lrc": case "lrc_optimal": ok = p1 >= 2 && p2 >= 1 && p3 >= 2; break;
+    case "custom":
+      ok = p1 >= 1 && p2 >= 1 && typeof t.matrix_hex === "string" &&
+           t.matrix_hex.length === 2 * p1 * p2;
+      break;
+    case "raid1": case "lrc_azure": ok = true; break;
+    default: ok = p1 >= 1; break; /* raid0/raid5/raid6/raid6_rs */
+  }
+  if (!ok) return d;
+  const out = { ctor: d.ctor };
+  const par = CTORS[d.ctor];
+  if (par[0] !== "matrix_hex") out.p1 = p1;
+  if (par[1] && par[1] !== "matrix_hex") out.p2 = p2;
+  if (par[2] && par[2] !== "matrix_hex") out.p3 = p3;
+  if (par.includes("matrix_hex")) out.matrix_hex = t.matrix_hex;
+  return out;
+}
+/* Twin/ISA/plan validity is queried from the library via getValid().
+ * The tables below are GONE: TWIN_ISA_OK, TWIN_PLAN_OK, mulIsaOk were
+ * deleted. The page no longer reimplements validation. */
+const strategyCache = {};
+function strategyKey(s) {
+  return JSON.stringify([s.topology, s.op.kind]);
+}
+/* Probe the plan kind with an auto compile (cheap, compile-only). Returns
+ * {strategy, xor_sched, n_out} or null on failure. */
+async function probeStrategy(P) {
+  const s = P.state;
+  const key = strategyKey(s);
+  if (strategyCache[key]) return strategyCache[key];
+  let mod;
+  try { mod = await getModule(s.isa); } catch (e) { return null; }
+  const doc = await buildDoc({ ...s, candAuto: true });
+  const r = compileKernel(mod, doc);
+  if (r.ok && r.strategy) {
+    const plan = { strategy: r.strategy, xor_sched: r.plan_xor_sched | 0,
+      n_out: r.plan_n_out | 0,
+      isRecover: s.op && s.op.kind === "recover" };
+    strategyCache[key] = plan;
+    return plan;
+  }
+  return null;
+}
+
+/* Effective ISA for a pane: the pinned isaVer wins when set, otherwise the
+ * target implies it. Used for the metadata query state. */
+function effIsa(s) {
+  if (!s.candAuto && s.cand.isaVer) return s.cand.isaVer;
+  const t = s.target;
+  if (t === "avx512-gfni") return "avx512";
+  if (t === "avx2") return "avx2";
+  if (t === "sse") return "sse";
+  if (t === "sve2") return "sve";
+  if (t === "neon") return "neon";
+  return "rvv";
+}
+/* Sanitize twins against the library metadata: uncheck any selected twin
+ * the library reports as invalid for the current state. Async because it
+ * queries the WASM module. Returns true if anything was unchecked. */
+async function sanitizeTwins(P) {
+  const s = P.state;
+  const v = await getValid(P);
+  const twins = await getTwins(s.isa);
+  let changed = false;
+  for (const t of twins) {
+    if (s.twins[t.id] && !v.twins[t.id]) {
+      s.twins[t.id] = false;
+      changed = true;
+    }
+  }
+  /* Reset mul if the current selection is not in the valid options. */
+  if (s.cand.mul && s.cand.mul !== "auto" &&
+      !v.fields.mul.options.includes(s.cand.mul)) {
+    s.cand.mul = "auto";
+    changed = true;
+  }
+  return changed;
+}
 
 function defaultPane() {
   return {
     isa: "x86", target: "avx512-gfni", cpu: {},
-    topology: { ctor: "raid5", p1: 4 },
+    topology: ctorDefaults("raid5"),
     op: { kind: "encode" },
     candAuto: true,
     cand: { mul: "auto", U: 0, lmul: 1, prefetch_dist: 0 },
     twins: {},
+    lastPlan: null,
     options: { loop_align: 0, emit_endbr: false, emit_shadow_stack: false },
   };
 }
 
-/* Build the rjw_compile option document from pane state. */
-function buildDoc(p) {
+/* Build the rjw_compile option document from pane state. twins is the
+ * twin ID list from the schema. */
+async function buildDoc(p) {
+  const schema = await getSchema(p.isa);
+  const twins = schema.twins.map(t => t.id);
   const top = { ctor: p.topology.ctor };
   const par = CTORS[p.topology.ctor];
   ["p1", "p2", "p3"].forEach((k, i) => {
@@ -126,16 +378,23 @@ function buildDoc(p) {
   const op = { kind: p.op.kind };
   if (p.op.kind === "recover") {
     op.failed = parseIdxList(p.op.failed);
+    if (!op.failed.length) throw new Error("recover needs a non-empty 'failed' disk list");
     if (p.op.rows) op.rows = parseIdxList(p.op.rows);
   } else if (p.op.kind === "parity_update") {
     op.changed = parseIdxList(p.op.changed);
+    if (!op.changed.length) throw new Error("parity_update needs a non-empty 'changed' disk list");
   }
   let cand = "auto";
   if (!p.candAuto) {
     cand = { mul: p.cand.mul === "auto" ? undefined : p.cand.mul,
-             U: p.cand.U | 0, lmul: p.cand.lmul | 0,
+             U: p.cand.U | 0,
+             /* lmul is RVV-only (backend rejects it elsewhere): only send
+              * it for riscv; 0 means "default" to the backend. The lmul
+              * selector is hidden for non-RVV ISAs, so sending the stored
+              * default 1 would reject a configuration the user never chose. */
+             lmul: p.isa === "riscv" ? (p.cand.lmul | 0) : 0,
              prefetch_dist: p.cand.prefetch_dist | 0 };
-    for (const t of TWINS) cand[t] = !!p.twins[t];
+    for (const t of twins) cand[t] = !!p.twins[t];
     if (p.cand.isaVer) cand.isa = p.cand.isaVer;
   }
   const doc = { v: 1, target: p.target, topology: top, op: op, cand: cand,
@@ -158,13 +417,44 @@ function b64urlDecode(s) {
   while (s.length % 4) s += "=";
   return decodeURIComponent(escape(atob(s)));
 }
+/* Normalize a deep-linked pane state: fill every sub-object from the
+ * defaults so a partially-specified link can never crash page init
+ * (buildDoc/buildPane assume complete state), and repair the topology
+ * against the backend validity envelope. Unknown ISA/ctor/op fall back
+ * to defaults. */
+const OP_KINDS = ["encode", "recover", "parity_update"];
+const MODULE_ISAS = ["x86", "aarch64", "riscv"];
+function normalizeState(o) {
+  const d = defaultPane();
+  if (!o || typeof o !== "object" || !MODULE_ISAS.includes(o.isa)) return d;
+  /* Target is validated against the schema on refresh; accept as-is here
+   * so deep links don't break before the module loads. */
+  const target = (typeof o.target === "string") ? o.target : null;
+  const op = (o.op && typeof o.op === "object") ? o.op : {};
+  return {
+    isa: o.isa,
+    target: target,
+    cpu: (o.cpu && typeof o.cpu === "object") ? o.cpu : {},
+    topology: sanitizeTopology(o.topology),
+    op: {
+      kind: OP_KINDS.includes(op.kind) ? op.kind : "encode",
+      failed: op.failed, rows: op.rows, changed: op.changed,
+    },
+    candAuto: o.candAuto !== false,
+    cand: Object.assign({}, d.cand, (o.cand && typeof o.cand === "object") ? o.cand : {}),
+    twins: (o.twins && typeof o.twins === "object") ? o.twins : {},
+    options: Object.assign({}, d.options, (o.options && typeof o.options === "object") ? o.options : {}),
+  };
+}
 function readHash() {
   const h = location.hash.replace(/^#/, "");
   const out = {};
   for (const part of h.split("&")) {
     const [k, v] = part.split("=");
     if ((k === "a" || k === "b") && v) {
-      try { out[k] = JSON.parse(b64urlDecode(v)); } catch (e) { /* ignore */ }
+      try {
+        out[k] = normalizeState(JSON.parse(b64urlDecode(v)));
+      } catch (e) { /* ignore malformed links */ }
     }
   }
   return out;
@@ -184,11 +474,12 @@ function el(tag, attrs, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
-function select(opts, val) {
+function select(opts, val, isDisabled) {
   const s = el("select");
   for (const o of opts) {
     const op = el("option", { value: o }, o);
     if (o === val) op.selected = true;
+    if (isDisabled && isDisabled(o)) op.disabled = true;
     s.appendChild(op);
   }
   return s;
@@ -202,35 +493,41 @@ function buildPane(state) {
   const P = { state: state, root: root };
   /* ISA + target */
   const row1 = el("div", { class: "row" });
-  row1.appendChild(el("label", {}, "ISA "));
+  row1.appendChild(el("label", { title: "ISA: the CPU architecture family the kernel is compiled for" }, "ISA "));
   P.isaSel = select(["x86", "aarch64", "riscv"], state.isa);
+  P.isaSel.title = "ISA: the CPU architecture family the kernel is compiled for";
   row1.appendChild(P.isaSel);
-  row1.appendChild(el("label", {}, " Target "));
-  P.targetSel = select(TARGETS[state.isa], state.target);
+  row1.appendChild(el("label", { title: "Target: the instruction-set level (e.g. AVX-512 with GFNI, SVE2, RVV). Options come from the library." }, " Target "));
+  /* Populated from the library schema by refreshPane (async). */
+  P.targetSel = select([], state.target);
+  P.targetSel.title = "Target: the instruction-set level (e.g. AVX-512 with GFNI, SVE2, RVV). Options come from the library.";
   row1.appendChild(P.targetSel);
   root.appendChild(row1);
   /* topology */
   const rowT = el("div", { class: "row" });
-  rowT.appendChild(el("label", {}, "Topology "));
+  rowT.appendChild(el("label", { title: "Topology: the erasure-coding layout (RAID level / code family)" }, "Topology "));
   P.ctorSel = select(Object.keys(CTORS), state.topology.ctor);
+  P.ctorSel.title = "Topology: the erasure-coding layout (RAID level / code family)";
   rowT.appendChild(P.ctorSel);
   P.topoParams = el("span");
   rowT.appendChild(P.topoParams);
   root.appendChild(rowT);
   /* op */
   const rowO = el("div", { class: "row" });
-  rowO.appendChild(el("label", {}, "Operation "));
+  rowO.appendChild(el("label", { title: "Operation: encode computes parity from data; recover rebuilds failed disks; parity_update applies a data delta to parity" }, "Operation "));
   P.opSel = select(["encode", "recover", "parity_update"], state.op.kind);
+  P.opSel.title = "Operation: encode computes parity from data; recover rebuilds failed disks; parity_update applies a data delta to parity";
   rowO.appendChild(P.opSel);
   P.opParams = el("span");
   rowO.appendChild(P.opParams);
   root.appendChild(rowO);
   /* candidate */
   const rowC = el("div", { class: "row" });
-  P.autoChk = el("input", { type: "checkbox" });
+  P.autoChk = el("input", { type: "checkbox",
+    title: "Auto candidate: let the planner's heuristic pick the best kernel variant (uncheck to pin specific variants and parameters)" });
   P.autoChk.checked = state.candAuto;
   rowC.appendChild(P.autoChk);
-  rowC.appendChild(el("label", {}, " auto candidate (heuristic)"));
+  rowC.appendChild(el("label", { title: "Auto candidate: let the planner's heuristic pick the best kernel variant (uncheck to pin specific variants and parameters)" }, " auto candidate (heuristic)"));
   root.appendChild(rowC);
   P.candBox = el("div", { class: "cand" });
   root.appendChild(P.candBox);
@@ -242,51 +539,73 @@ function buildPane(state) {
   root.appendChild(P.status);
   P.cfgTable = el("table", { class: "cfg" });
   root.appendChild(P.cfgTable);
-  P.disasm = el("pre", { class: "disasm" });
+  P.disasm = el("div", { class: "disasm" });
   root.appendChild(P.disasm);
 
-  P.isaSel.onchange = () => {
+  P.isaSel.onchange = async () => {
     state.isa = P.isaSel.value;
-    state.target = TARGETS[state.isa][0];
-    refreshPane(P); scheduleCompile(P);
+    const schema = await getSchema(state.isa);
+    state.target = schema.targets[0];
+    await sanitizeTwins(P);
+    await refreshPane(P); scheduleCompile(P);
   };
-  P.targetSel.onchange = () => { state.target = P.targetSel.value;
-    scheduleCompile(P); };
-  P.ctorSel.onchange = () => { state.topology = { ctor: P.ctorSel.value,
-    p1: 4 }; refreshPane(P); scheduleCompile(P); };
-  P.opSel.onchange = () => { state.op = { kind: P.opSel.value };
-    refreshPane(P); scheduleCompile(P); };
+  P.targetSel.onchange = async () => { state.target = P.targetSel.value;
+    await sanitizeTwins(P);
+    await refreshPane(P); scheduleCompile(P); };
+  P.ctorSel.onchange = () => { state.topology = ctorDefaults(P.ctorSel.value);
+    state.lastPlan = null;
+    refreshPane(P).then(() => scheduleCompile(P));
+    probeStrategy(P).then(async pl => { if (pl) { state.lastPlan = pl;
+      await sanitizeTwins(P); await refreshPane(P); } }); };
+  P.opSel.onchange = () => { const kind = P.opSel.value;
+    state.op = kind === "recover" ? { kind, failed: "0" } :
+      kind === "parity_update" ? { kind, changed: "0" } : { kind };
+    state.lastPlan = null;
+    refreshPane(P).then(() => scheduleCompile(P));
+    probeStrategy(P).then(async pl => { if (pl) { state.lastPlan = pl;
+      await sanitizeTwins(P); await refreshPane(P); } }); };
   P.autoChk.onchange = () => { state.candAuto = P.autoChk.checked;
-    refreshPane(P); scheduleCompile(P); };
+    refreshPane(P).then(() => scheduleCompile(P));
+    if (!state.candAuto && !state.lastPlan) {
+      probeStrategy(P).then(async pl => { if (pl) { state.lastPlan = pl;
+        await sanitizeTwins(P); await refreshPane(P); } });
+    } };
   refreshPane(P);
   return P;
 }
 
-function refreshPane(P) {
+async function refreshPane(P) {
   const s = P.state;
-  /* target options follow ISA */
+  const schema = await getSchema(s.isa);
+  const valid = await getValid(P);
+  /* target options follow ISA (from the library schema) */
   P.targetSel.innerHTML = "";
-  for (const t of TARGETS[s.isa]) {
+  for (const t of schema.targets) {
     const o = el("option", { value: t }, t);
     if (t === s.target) o.selected = true;
     P.targetSel.appendChild(o);
+  }
+  /* If the current target is not in the schema (e.g. stale deep link),
+   * fall back to the first target. */
+  if (!schema.targets.includes(s.target)) {
+    s.target = schema.targets[0];
   }
   /* topology params */
   P.topoParams.innerHTML = "";
   const par = CTORS[s.topology.ctor];
   ["p1", "p2", "p3"].forEach((k, i) => {
     if (i < par.length && par[i] !== "matrix_hex") {
-      P.topoParams.appendChild(el("label", {}, " " + par[i] + " "));
+      P.topoParams.appendChild(el("label", { title: TOPO_TIPS[par[i]] || par[i] }, " " + par[i] + " "));
       const inp = el("input", { type: "number", value: s.topology[k] || 0,
-        min: 0, style: "width:5em" });
+        min: 0, style: "width:5em", title: TOPO_TIPS[par[i]] || par[i] });
       inp.onchange = () => { s.topology[k] = parseInt(inp.value, 10) || 0;
         scheduleCompile(P); };
       P.topoParams.appendChild(inp);
     }
   });
   if (par.includes("matrix_hex")) {
-    P.topoParams.appendChild(el("label", {}, " matrix_hex "));
-    const ta = el("textarea", { rows: 2, cols: 40 });
+    P.topoParams.appendChild(el("label", { title: TOPO_TIPS.matrix_hex }, " matrix_hex "));
+    const ta = el("textarea", { rows: 2, cols: 40, title: TOPO_TIPS.matrix_hex });
     ta.value = s.topology.matrix_hex || "";
     ta.onchange = () => { s.topology.matrix_hex = ta.value.trim();
       scheduleCompile(P); };
@@ -295,71 +614,95 @@ function refreshPane(P) {
   /* op params */
   P.opParams.innerHTML = "";
   if (s.op.kind === "recover") {
-    P.opParams.appendChild(el("label", {}, " failed "));
-    const fi = el("input", { value: s.op.failed || "0", style: "width:8em" });
+    P.opParams.appendChild(el("label", { title: "Failed disk indices to rebuild, comma- or space-separated (e.g. 0,2)" }, " failed "));
+    const fi = el("input", { value: s.op.failed || "0", style: "width:8em",
+      title: "Failed disk indices to rebuild, comma- or space-separated (e.g. 0,2)" });
     fi.onchange = () => { s.op.failed = fi.value; scheduleCompile(P); };
     P.opParams.appendChild(fi);
-    P.opParams.appendChild(el("label", {}, " rows (opt) "));
-    const ri = el("input", { value: s.op.rows || "", style: "width:8em" });
+    P.opParams.appendChild(el("label", { title: "Optional: restrict recovery to these output row indices (empty = all)" }, " rows (opt) "));
+    const ri = el("input", { value: s.op.rows || "", style: "width:8em",
+      title: "Optional: restrict recovery to these output row indices (empty = all)" });
     ri.onchange = () => { s.op.rows = ri.value; scheduleCompile(P); };
     P.opParams.appendChild(ri);
   } else if (s.op.kind === "parity_update") {
-    P.opParams.appendChild(el("label", {}, " changed "));
-    const ci = el("input", { value: s.op.changed || "0", style: "width:8em" });
+    P.opParams.appendChild(el("label", { title: "Changed data disk indices whose delta is applied to parity, comma- or space-separated" }, " changed "));
+    const ci = el("input", { value: s.op.changed || "0", style: "width:8em",
+      title: "Changed data disk indices whose delta is applied to parity, comma- or space-separated" });
     ci.onchange = () => { s.op.changed = ci.value; scheduleCompile(P); };
     P.opParams.appendChild(ci);
   }
-  /* candidate box */
+  /* candidate box (all constraints from the library schema/metadata) */
   P.candBox.innerHTML = "";
   P.twinBox.innerHTML = "";
   if (!s.candAuto) {
     const c = s.cand;
     const r1 = el("div", { class: "row" });
-    const isaVers = s.isa === "x86" ? ["avx512", "avx2", "sse"] :
-      s.isa === "aarch64" ? ["sve", "neon"] : [];
+    const isaVers = schema.isaVers;
     if (isaVers.length) {
-      r1.appendChild(el("label", {}, "isa "));
+      r1.appendChild(el("label", { title: "Pin the exact ISA revision (e.g. avx512 vs avx2); auto lets the target decide" }, "isa "));
       const iv = select(["auto"].concat(isaVers),
         c.isaVer || "auto");
-      iv.onchange = () => { c.isaVer = iv.value === "auto" ? undefined
-        : iv.value; scheduleCompile(P); };
+      iv.title = "Pin the exact ISA revision (e.g. avx512 vs avx2); auto lets the target decide";
+      iv.onchange = async () => { c.isaVer = iv.value === "auto" ? undefined
+        : iv.value; await sanitizeTwins(P); await refreshPane(P);
+        scheduleCompile(P); };
       r1.appendChild(iv);
     }
-    r1.appendChild(el("label", {}, "mul "));
-    const mul = select(["auto", "nibble", "gfni", "zvbc"], c.mul || "auto");
+    r1.appendChild(el("label", { title: "Galois-field multiply implementation: nibble (shuffle tables), gfni (x86 GFNI), zvbc (RISC-V Zvbc); auto lets the planner choose" }, "mul "));
+    const mulOpts = valid.fields.mul.options;
+    const mul = select(mulOpts, mulOpts.includes(c.mul) ? c.mul : "auto");
+    mul.title = "Galois-field multiply implementation: nibble (shuffle tables), gfni (x86 GFNI), zvbc (RISC-V Zvbc); auto lets the planner choose";
     mul.onchange = () => { c.mul = mul.value; scheduleCompile(P); };
     r1.appendChild(mul);
-    r1.appendChild(el("label", {}, " U (0=auto) "));
-    const u = el("input", { type: "number", value: c.U || 0, min: 0, max: 8,
-      style: "width:4em" });
+    r1.appendChild(el("label", { title: "Loop unroll factor: vector-width chunks per iteration (0 = planner's choice). Higher reuses registers across more data; too high spills." }, " U (0=auto) "));
+    const u = el("input", { type: "number", value: c.U || 0,
+      min: schema.fields.U.min, max: schema.fields.U.max,
+      style: "width:4em",
+      title: "Loop unroll factor: vector-width chunks per iteration (0 = planner's choice). Higher reuses registers across more data; too high spills." });
     u.onchange = () => { c.U = parseInt(u.value, 10) || 0; scheduleCompile(P); };
     r1.appendChild(u);
-    if (s.isa === "riscv") {
-      r1.appendChild(el("label", {}, " lmul "));
-      const l = select(["1", "2", "4", "8"], String(c.lmul || 1));
+    if (valid.fields.lmul.enabled) {
+      r1.appendChild(el("label", { title: "RISC-V vector LMUL: groups 1/2/4/8 vector registers into one logical vector — wider vectors per instruction" }, " lmul "));
+      const lmulOpts = schema.fields.lmul.options.map(String);
+      const l = select(lmulOpts, String(c.lmul || 1));
+      l.title = "RISC-V vector LMUL: groups 1/2/4/8 vector registers into one logical vector — wider vectors per instruction";
       l.onchange = () => { c.lmul = parseInt(l.value, 10); scheduleCompile(P); };
       r1.appendChild(l);
     }
-    r1.appendChild(el("label", {}, " prefetch_dist "));
+    r1.appendChild(el("label", { title: "Software prefetch distance in iterations ahead (0 = disabled). Only helps for large streaming buffers." }, " prefetch_dist "));
     const pf = el("input", { type: "number", value: c.prefetch_dist || 0,
-      min: 0, style: "width:6em" });
+      min: schema.fields.prefetch_dist.min, style: "width:6em",
+      title: "Software prefetch distance in iterations ahead (0 = disabled). Only helps for large streaming buffers." });
     pf.onchange = () => { c.prefetch_dist = parseInt(pf.value, 10) || 0;
       scheduleCompile(P); };
     r1.appendChild(pf);
     P.candBox.appendChild(r1);
-    /* twin checkboxes with mutual-exclusion grey-out */
-    for (const t of TWINS) {
-      const lab = el("label", { class: "twin" });
-      const cb = el("input", { type: "checkbox" });
-      cb.checked = !!s.twins[t];
-      cb.onchange = () => { s.twins[t] = cb.checked; refreshPane(P);
+    /* twin checkboxes with mutual-exclusion grey-out.
+     * Validity comes from the library (valid.twins); exclusivity groups
+     * come from the schema. */
+    const twins = schema.twins;
+    const bodyMembers = twinGroupMembers(twins, 1).map(t => t);
+    const tailMembers = twinGroupMembers(twins, 2).map(t => t);
+    for (const t of twins) {
+      const id = t.id;
+      const lab = el("label", { class: "twin",
+        title: TWIN_TIPS[id] || ("Twin: " + id + " (kernel variant)") });
+      const cb = el("input", { type: "checkbox",
+        title: TWIN_TIPS[id] || ("Twin: " + id + " (kernel variant)") });
+      cb.checked = !!s.twins[id];
+      cb.onchange = () => { s.twins[id] = cb.checked; refreshPane(P);
         scheduleCompile(P); };
-      /* grey out body twins excluded by another selected body twin */
-      if (BODY_TWINS.includes(t)) {
-        const other = BODY_TWINS.some(o => o !== t && s.twins[o]);
-        cb.disabled = other && !s.twins[t];
+      /* grey out twins excluded by another selected twin in the same
+       * exclusivity group, or reported invalid by the library */
+      const twinOk = !!valid.twins[id];
+      let excl = false;
+      if (t.group === 1) {
+        excl = bodyMembers.some(o => o !== id && s.twins[o]);
+      } else if (t.group === 2) {
+        excl = tailMembers.some(o => o !== id && s.twins[o]);
       }
-      lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + t));
+      cb.disabled = (excl && !s.twins[id]) || !twinOk;
+      lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + id));
       P.twinBox.appendChild(lab);
     }
   }
@@ -377,7 +720,7 @@ async function runPane(P) {
   P.status.textContent = "compiling…";
   P.status.className = "status busy";
   let doc;
-  try { doc = buildDoc(s); }
+  try { doc = await buildDoc(s); }
   catch (e) { P.status.textContent = "option error: " + e.message;
     P.status.className = "status err"; return; }
   let mod;
@@ -388,7 +731,7 @@ async function runPane(P) {
   if (!r.ok) {
     P.status.textContent = "build failed: " + r.err;
     P.status.className = "status err";
-    P.cfgTable.innerHTML = ""; P.disasm.textContent = "";
+    P.cfgTable.innerHTML = ""; P.disasm.innerHTML = "";
     writeHash(panes.map(q => q.state));
     return;
   }
@@ -416,14 +759,29 @@ async function runPane(P) {
   P.cfgTable.innerHTML = "";
   for (const [k, v] of rows) {
     const tr = el("tr");
-    tr.appendChild(el("td", { class: "k" }, k));
+    tr.appendChild(el("td", { class: "k", title: ROW_TIPS[k] || k }, k));
     tr.appendChild(el("td", {}, String(v)));
     P.cfgTable.appendChild(tr);
   }
   P.status.textContent = "ok";
   P.status.className = "status ok";
+  /* capture plan kind for twin grey-out; refresh if it changed */
+  if (r.strategy) {
+    const plan = { strategy: r.strategy, xor_sched: r.plan_xor_sched | 0,
+      n_out: r.plan_n_out | 0 };
+    const key = strategyKey(s);
+    if (!s.lastPlan || s.lastPlan.strategy !== plan.strategy ||
+        s.lastPlan.xor_sched !== plan.xor_sched) {
+      s.lastPlan = plan;
+      strategyCache[key] = plan;
+      await sanitizeTwins(P);
+      await refreshPane(P);
+    }
+  }
   const d = await disassemble(DISASM_ARCH[s.isa], r.code);
-  P.disasm.textContent = d.error ? d.error : renderDisasm(d.insns);
+  P.disasm.innerHTML = "";
+  if (d.error) P.disasm.textContent = d.error;
+  else P.disasm.appendChild(renderDisasm(d.insns));
   writeHash(panes.map(q => q.state));
 }
 
@@ -477,11 +835,21 @@ label{margin-right:.2em}
 table.cfg{border-collapse:collapse;margin:.5em 0;font-size:.85em}
 table.cfg td{border:1px solid #ddd;padding:.15em .5em;vertical-align:top}
 td.k{font-weight:bold;white-space:nowrap}
-pre.disasm{background:#f6f6f6;padding:.8em;overflow:auto;font-size:.8em;
-  max-height:40em}
+div.disasm{overflow:auto;max-height:40em}
+table.disasm{border-collapse:collapse;font-family:monospace;font-size:.8em;
+  background:#f6f6f6}
+table.disasm th,table.disasm td{padding:.1em .7em;vertical-align:top;
+  text-align:left;white-space:pre}
+table.disasm th{border-bottom:1px solid #bbb}
+table.disasm td.off{color:#666;text-align:right}
+table.disasm td.bytes{color:#064}
 .status{font-weight:bold;margin:.3em 0}
 .status.busy{color:#a60}.status.ok{color:#070}.status.err{color:#a00}
 .twin{display:inline-block;margin:.15em .6em .15em 0;font-size:.85em}
+.twin input:disabled{cursor:not-allowed;opacity:.45}
+.twin:has(input:disabled){color:#999;cursor:not-allowed}
+select option:disabled{color:#999}
+input:disabled{cursor:not-allowed}
 .cand{margin:.3em 0}
 .toolbar{margin:.5em 0}
 .note{font-size:.85em;color:#555;max-width:72em}
@@ -490,15 +858,10 @@ code{background:#f0f0f0;padding:0 .2em}
 </head>
 <body>
 <h1>raidjit live kernel explorer</h1>
-<p class="note">Compiles kernels live in your browser via WebAssembly
-(planner + emitters for x86-64 / AArch64 / RISC-V, plus a Capstone
-disassembler). Nothing is executed: the modules are compile-only, and
-correctness is argued by byte-identity with the native build
-(<code>tools/wasm/parity/</code>). <code>uops/byte</code> figures are
-static-model estimates, not measurements.</p>
+<p class="note">raidjit is a JIT compiler that generates optimized machine code for RAID erasure coding (encoding, recovery, parity update) on x86-64, AArch64, and RISC-V. This page compiles kernels live in your browser: pick an ISA, topology, and operation below, then optionally pin kernel variants ("twins") to compare the generated assembly and cost-model estimates. <b>uops/byte</b> is a static-model estimate of per-byte cost, not a measured benchmark — lower is better when comparing variants of the same kernel. Nothing here is executed: compilation only, no benchmarking.</p>
 <div class="toolbar">
-<label><input type="checkbox" id="ab-toggle"> side-by-side A/B comparison</label>
-<button id="copy-link">copy link</button>
+<label title="Open a second pane to compare two configurations side by side (e.g. with and without a twin)"><input type="checkbox" id="ab-toggle"> side-by-side A/B comparison</label>
+<button id="copy-link" title="Copy the URL of the current configuration(s) so it can be shared or bookmarked">copy link</button>
 </div>
 <div id="panes"></div>
 <script>
