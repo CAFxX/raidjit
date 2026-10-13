@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-# LRC locality-aware recovery — coordinator checkpoint
+# LRC locality-aware recovery — coordinator checkpoint (2026-10-10)
 
 ## Status (2026-10-10, load 14+ blocking builds)
 
@@ -52,8 +51,7 @@ and cost-model drift.
 
 - e93d28f: spec + implementation
 - 5dcf9eb: fix failed-local-parity survival check
-=======
-# xorbit AArch64/RISC-V Implementation Checkpoint
+# xorbit AArch64/RISC-V Implementation Checkpoint (merged 2026-10-12, conflict resolved 2026-10-13 — kept both sections, markers dropped)
 
 Status: body implementations complete (2026-10-10). Builds/tests deferred (load backoff).
 
@@ -109,7 +107,7 @@ Status: body implementations complete (2026-10-10). Builds/tests deferred (load 
 - `src/riscv/jit.c`: +~250 lines (helpers, fanout, body, regs, dispatch)
 - `src/xorsched.c`: cost model ISA extensions
 - `src/plan.c`: enumeration gate extension
->>>>>>> fc87cba (xorbit-arm-rv: AArch64/RISC-V backends, cost model, verification fixes)
+---
 
 ---
 
