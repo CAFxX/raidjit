@@ -519,12 +519,14 @@ static void local_pick_static(rj_topology *t, const char *tag, int k, int h,
 
 /* Red-green wiring for the RJ_SUBSET_PRUNE_INVERT test-only hook:
  * the hook inverts the pareto comparator inside survivor_shortlist, so
- * the pinned local-pick assertions must fail loudly under it (red) and
- * hold without it (green). Exercised at both the subset level (the
- * shortlist directly) and the product level (survivor_select's static
- * path, which shortlists internally). setenv/unsetenv around the red
- * assertions only, so the green outcome is the default -- the same
- * pattern test_survivor.c's mutation_invert uses. */
+ * the subset-level pinned local-pick assertions must fail loudly under
+ * it (red) and hold without it (green). At the product level the LRC
+ * locality rule takes the shortlist out of the decision path: the rule
+ * is intentionally robust to cost inversion, so the local row must
+ * still win with the hook set (green under inversion -- the behavior
+ * change from the LRC rule documented below). setenv/unsetenv around
+ * the inverted assertions only, so the green outcome is the default --
+ * the same pattern test_survivor.c's mutation_invert uses. */
 static void prune_invert_redgreen(rj_topology *t, const char *tag, int h,
                                   int fail_disk, int local_row)
 {

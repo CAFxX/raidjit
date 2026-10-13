@@ -35,8 +35,11 @@
  *     boundary/tail lengths. Any version may win the benchmark;
  *     correctness must not depend on the subset.
  *  4. mutation evidence: RJ_SUBSET_PRUNE_INVERT (test-only hook)
- *     flips the shortlist and the product pick (M1); corrupting one
- *     subset's solve is caught by the end-to-end check (M2); the P2
+ *     flips the shortlist (M1 unit level); the product pick on
+ *     rs(6,3)/f0 stays [rows 0] under inversion -- the LRC locality
+ *     rule pins the local row despite cost inversion (M1 product
+ *     level: falsifiable pin of the LRC/hook interaction); corrupting
+ *     one subset's solve is caught by the end-to-end check (M2); the P2
  *     significance gate is unit-tested pure (noise flip falls back to
  *     today, genuine win ships, today-winning/absent cases unchanged).
  *  5. dispatcher integration: rj_compile with benchmark=1 over a
@@ -68,12 +71,30 @@
  *     domain). The referee predicate is pure and unit-tested
  *     red-green. Red-green for the strict comparator: under
  *     RJ_SUBSET_PRUNE_INVERT (which drops the today anchor) on
- *     rs(6,3)/f0 the flip is deterministic (P_XOR vs P_MULACC). The
+ *     rs(6,3)/f02 the flip is structural on the inverted side -- the
+ *     inverted shortlist keeps only the dominated {1+2} (a
+ *     single-subset pool, so the inverted winner is [rows 1+2] by
+ *     construction) -- while the exhaustive side rests on the measured
+ *     gap: the keeplist probe gives static ratios of ~1.05x uops /
+ *     ~1.10x mem for {1+2} vs {0+1}, and the referee measured ~1.18x
+ *     (54.54 vs 46.27 GB/s) against a 15.8% noise window on this
+ *     machine. That margin is thin and load-dependent: the exhaustive
+ *     winner avoids the dominated subset only while the gap clears
+ *     the window -- a flake on a heavily loaded box fails loudly, it
+ *     is not a correctness hole. (f0 was
+ *     the original case: its P_XOR-vs-P_MULACC gap made the flip
+ *     deterministic until the LRC locality rule -- which pins f0's
+ *     winner despite cost inversion, by design -- took the shortlist
+ *     out of the decision path. f02's two data-disk failures share
+ *     one local group, so the LRC rule cannot fire and the shortlist
+ *     decides.) The
  *     full flip -> head-to-head -> referee -> loud-FAIL path is
  *     pinned by tripwire_referee_fires: the flip reaches the referee
  *     through the real bench plumbing, the referee adjudicates
- *     (a firing assertion would be load-flaky: the ~3x static gap
- *     is only ~1.2x measured vs 25-31% windows on a loaded machine),
+ *     (a firing assertion would be load-flaky: the ~1.05x/~1.10x
+ *     static gap (uops/mem, keeplist probe) is only ~1.18x measured
+ *     vs a 15.8% window on this machine, and the verdict flipped with
+ *     box state),
  *     the loud FAIL fires iff the verdict fired, and the
  *     verdict==1 -> loud-FAIL link is unit-pinned.
  *
@@ -1051,18 +1072,36 @@ static void e2e_all_subsets(const char *tag, rj_topology *t, const int *F,
 /* ---------------- Part 4: mutation evidence ---------------- */
 
 /* M1: RJ_SUBSET_PRUNE_INVERT flips the pareto comparator (test-only
- * hook). Green pins shortlist=={{0}}; red must give {{1},{2}} and the
- * product compile must then pick a non-{0} subset (a suboptimal pick
- * the green test catches).
+ * hook). Green pins shortlist=={{0}}; red must give {{1},{2}} at the
+ * shortlist level (proven by the direct survivor_shortlist calls
+ * below -- the mechanism-level red-green proof that the shortlist pins
+ * a real outcome).
  *
- * Soundness note on the green product assertion below (C5d): it is
- * probabilistic only in the pathological case. The shortlist keeps
- * only {0} here, so the product has a single subset to choose from --
- * the winner's desc is "[rows 0]" by construction, not by benchmark
- * luck. (On multi-subset cases the P2 significance gate additionally
- * collapses noise flips back to today's subset; a genuine
- * above-noise win by another subset would change the desc, which is
- * the documented tripwire behavior, not a test bug.) */
+ * Product level, post-LRC: the winner on rs(6,3)/f0 is pinned by the
+ * LRC locality rule, not the shortlist. rs(6,3)'s all-ones P row is a
+ * pure-XOR partitioning row, so the single-disk failure admits a
+ * pure-local cover and survivor_select restricts keep[] to {0} before
+ * the shortlist ever runs. The rule is intentionally robust to cost
+ * inversion (see test_lrc.c::prune_invert_redgreen: "even with
+ * inverted costs, the local row must still win"), so the inverted
+ * product compile must STILL pick [rows 0] -- the inversion flips the
+ * shortlist underneath, but the LRC rule pins the product outcome.
+ * This is a falsifiable pin of the LRC/hook interaction, not a
+ * vacuous assertion: if the LRC rule ever stopped firing here, the
+ * inverted compile would pick a P_MULACC subset and the CHECK would
+ * fail. The end-to-end flip demonstration lives in the re-homed
+ * tripwire_redgreen (rs(6,3)/f02), where the shortlist -- not the LRC
+ * rule -- decides.
+ *
+ * Soundness note on the product assertions below (C5d): they are
+ * probabilistic only in the pathological case. The LRC locality rule
+ * keeps only {0} here (the shortlist never runs on this case), so the
+ * product has a single subset to choose from -- the winner's desc is
+ * "[rows 0]" by construction, not by benchmark luck. (On multi-subset
+ * cases the P2 significance gate additionally collapses noise flips
+ * back to today's subset; a genuine above-noise win by another subset
+ * would change the desc, which is the documented tripwire behavior,
+ * not a test bug.) */
 static void mutation_invert(void)
 {
     rj_topology *t = rj_topo_rs(6, 3);
@@ -1100,9 +1139,14 @@ static void mutation_invert(void)
             survivor_free_subsets(subs, nsub);
         }
 
-        /* product-level: with the hook the winner must NOT be [rows 0];
-         * without it, it must be. (benchmark=1, cheap single-subset
-         * cases so the compile is fast.) */
+        /* product-level: the LRC locality rule pins the winner to
+         * [rows 0] with AND without the hook -- the rule is
+         * intentionally robust to cost inversion (see the M1 header
+         * and test_lrc.c::prune_invert_redgreen). The comparator flip
+         * is proven at the shortlist level above; the end-to-end flip
+         * demonstration lives in tripwire_redgreen (rs(6,3)/f02).
+         * (benchmark=1, cheap single-subset cases so the compile is
+         * fast.) */
         rj_options topts;
         memset(&topts, 0, sizeof(topts));
         topts.benchmark = 1;
@@ -1116,8 +1160,9 @@ static void mutation_invert(void)
         if (jr) {
             rj_info info;
             rj_get_info(jr, &info);
-            CHECK(strstr(info.desc, "[rows 0]") == NULL,
-                  "mut1: inverted winner must not be [rows 0] (%s)",
+            CHECK(strstr(info.desc, "[rows 0]") != NULL,
+                  "mut1: inverted winner must still be [rows 0] -- LRC "
+                  "rule pins the local row despite cost inversion (%s)",
                   info.desc);
             rj_free(jr);
         }
@@ -2009,59 +2054,76 @@ static void tripwire(void)
 
 /* Red-green for the tripwire: under RJ_SUBSET_PRUNE_INVERT the
  * shortlist drops the today anchor (and inverts pareto), so the
- * strict comparison MUST flip. Uses rs(6,3)/f0: inverted keeps only
- * the P_MULACC {{1},{2}} while exhaustive keeps all three and the raw
- * bench winner is the P_XOR {0} -- a ~3x static gap no noise bridges,
- * so the flip is deterministic. If the strict comparator ever stops
- * failing here, it has lost its teeth. (The green path's referee is
- * pure logic unit-tested in tripwire_referee_units.) */
+ * strict comparison MUST flip. Uses rs(6,3)/f02: the two data-disk
+ * failures share the single local group, so the LRC locality rule
+ * cannot fire (its cover needs distinct local rows) and the shortlist
+ * decides. Inverted, the shortlist keeps only the dominated {1+2} --
+ * a single-subset pool, so the inverted winner is [rows 1+2] by
+ * construction -- while the exhaustive side rests on the measured
+ * gap clearing the noise window (static ~1.05x uops / ~1.10x mem,
+ * measured ~1.18x vs 15.8% window on this machine: observed, thin
+ * margin -- a flake on a heavily loaded box fails loudly, not a
+ * correctness hole). The inverted side of the flip is structural;
+ * the exhaustive side is empirical. (f0
+ * was the original case, with the same structural shape via the
+ * P_XOR-vs-P_MULACC gap; the LRC rule -- intentionally robust to cost
+ * inversion -- now pins f0's winner before the shortlist runs, so the
+ * probe moved to f02. See M1's header.) If the strict comparator ever
+ * stops failing here, it has lost its teeth. (The green path's referee
+ * is pure logic unit-tested in tripwire_referee_units.) */
 static void tripwire_redgreen(void)
 {
     rj_topology *t = rj_topo_rs(6, 3);
-    const int F[1] = { 0 };
+    const int F[2] = { 0, 2 };
     char rs[64], re[64];
     setenv("RJ_SUBSET_PRUNE_INVERT", "1", 1);
-    int ok1 = tripwire_compile("rs(6,3)/f0", t, F, 1, 0, 1, 0, rs,
+    int ok1 = tripwire_compile("rs(6,3)/f02", t, F, 2, 0, 1, 0, rs,
                                sizeof(rs));
     unsetenv("RJ_SUBSET_PRUNE_INVERT");
-    int ok2 = tripwire_compile("rs(6,3)/f0", t, F, 1, 1, 1, 0, re,
+    int ok2 = tripwire_compile("rs(6,3)/f02", t, F, 2, 1, 1, 0, re,
                                sizeof(re));
     if (ok1 && ok2) {
         CHECK(strcmp(rs, re) != 0,
               "tripwire red: inverted shortlist must flip the winner "
               "(short=%s exh=%s)",
               rs, re);
-        CHECK(strstr(re, "[rows 0]") != NULL,
-              "tripwire red: exhaustive raw winner is {0} (%s)", re);
-        CHECK(strstr(rs, "[rows 0]") == NULL,
-              "tripwire red: inverted winner is not {0} (%s)", rs);
+        CHECK(strstr(rs, "[rows 1+2]") != NULL,
+              "tripwire red: inverted winner is the dominated {1+2} "
+              "(%s)",
+              rs);
+        CHECK(strstr(re, "[rows 1+2]") == NULL,
+              "tripwire red: exhaustive raw winner is not the dominated "
+              "{1+2} (%s)",
+              re);
     }
     rj_topo_free(t);
 }
 
 /* The full referee path, end to end, through the real bench
  * plumbing: under RJ_SUBSET_PRUNE_INVERT the strict comparator flips
- * (shortlisted {{1},{2}} vs exhaustive {0}), the flip reaches
- * tripwire_head_to_head, and tripwire_referee adjudicates the
- * measured gap against the measured noise window.
+ * (shortlisted {{1+2}} vs exhaustive {0+1}/{0+2} on rs(6,3)/f02 -- the
+ * re-homed tripwire_redgreen case, where the shortlist decides because
+ * the LRC rule cannot fire), the flip reaches tripwire_head_to_head,
+ * and tripwire_referee adjudicates the measured gap against the
+ * measured noise window.
  *
- * DEVIATION (documented, 2026-10-03): the review finding asked to
- * assert the referee FIRES here (verdict == 1), on the theory that
- * the P_XOR-vs-P_MULACC ~3x STATIC gap "must exceed any sane
- * window". Measured on this machine it does not: the ~3x static
- * (uops) gap is only ~1.15-1.2x in measured GB/s (43.40 vs 50.17 and
- * 55.87 vs 67.02 across two runs), while the loaded machine's
- * measured noise window is 25-31% -- so the referee CORRECTLY
- * adjudicates "within noise" (verdict 0). A verdict==1 assertion
- * would be load-flaky by construction (it would pass on a quiet
- * machine and fail on a loaded one), and asserting it here would
- * bless a falsehood. Instead this probe pins what IS deterministic:
+ * DEVIATION (documented, 2026-10-03; re-homed f0 -> f02 2026-10-13): the
+ * review finding asked to assert the referee FIRES here (verdict == 1), on
+ * the theory that the STATIC gap "must exceed any sane window".
+ * Measured on rs(6,3)/f02 it is load-dependent, not a fixed property: the
+ * keeplist probe gives static ratios of only ~1.05x (uops) / ~1.10x (mem)
+ * for {1+2} vs {0+1}, and the measured gap is ~1.18x on the INVERT path
+ * (54.54 vs 46.27 GB/s, window 15.8% -- FIRED, verdict 1 this run) and ~1.04x
+ * on the green path (55.77 vs 53.53, window 10.1% -- within noise,
+ * verdict 0). Both verdicts occur on the same box in the same run, so
+ * asserting either one would be load-flaky by construction. Instead this
+ * probe pins what IS deterministic:
  * (a) the flip reaches the referee through real benches (the verdict
  * adjudicates, never an internal error); (b) the verdict -> loud-FAIL
  * wiring is consistent (exactly one loud FAIL iff the referee
  * fired); (c) the referee==1 -> loud-FAIL link itself, as a pure
- * unit. On a quiet machine (P5's job) the same probe would observe
- * verdict == 1 and the loud FAIL firing.
+ * unit. The loud FAIL firing in (b) is exactly the mechanism the
+ * P4-domain tripwire_case probes rely on in production.
  *
  * Red-green coverage note: tripwire_redgreen pins the strict
  * comparator's flip, and tripwire_referee_units pins the pure referee
@@ -2072,14 +2134,14 @@ static void tripwire_redgreen(void)
 static void tripwire_referee_fires(void)
 {
     rj_topology *t = rj_topo_rs(6, 3);
-    const int F[1] = { 0 };
+    const int F[2] = { 0, 2 };
     setenv("RJ_SUBSET_PRUNE_INVERT", "1", 1);
     /* (a) through the real bench plumbing: the flip must reach the
      * referee and the referee must adjudicate (0 or 1), not fail
      * internally (2/3). */
     char rs[64], re[64];
     double ga = 0, gb = 0, window = 0;
-    int v = tripwire_verdict("rs(6,3)/f0", t, F, 1, 0, rs, sizeof(rs),
+    int v = tripwire_verdict("rs(6,3)/f02", t, F, 2, 0, rs, sizeof(rs),
                              re, sizeof(re), &ga, &gb, &window);
     unsetenv("RJ_SUBSET_PRUNE_INVERT");
     CHECK(v == 0 || v == 1,
@@ -2096,7 +2158,7 @@ static void tripwire_referee_fires(void)
      * FAIL iff the referee fired. tripwire_loud is the same wrapper
      * tripwire_case uses, so no second bench run is needed. */
     int before = failures;
-    int ok = tripwire_loud(v, "rs(6,3)/f0", rs, re, ga, gb, window);
+    int ok = tripwire_loud(v, "rs(6,3)/f02", rs, re, ga, gb, window);
     int fired = failures - before;
     failures = before;
     CHECK((v == 1) == (!ok && fired == 1),
@@ -2113,15 +2175,15 @@ static void tripwire_referee_fires(void)
     before = failures;
     printf("SELFTEST tripwire loud-path: the following FAIL line is "
            "intentional (asserts the loud-FAIL wiring)\n");
-    ok = tripwire_loud(1, "selftest-loud-path", "[rows 2]", "[rows 0]",
-                       43.40, 50.17, 0.05);
+    ok = tripwire_loud(1, "selftest-loud-path", "[rows 1+2]", "[rows 0+2]",
+                       46.27, 54.54, 0.158);
     CHECK(!ok && failures - before == 1,
           "tripwire loud/fires: one FAIL (ok=%d fired=%d)", ok,
           failures - before);
     failures = before;
     before = failures;
-    ok = tripwire_loud(0, "selftest-loud-path", "[rows 0]", "[rows 0]",
-                       50.17, 50.17, 0.05);
+    ok = tripwire_loud(0, "selftest-loud-path", "[rows 0+2]", "[rows 0+2]",
+                       54.54, 54.54, 0.158);
     CHECK(ok && failures == before, "tripwire loud/safe: no FAIL");
     rj_topo_free(t);
 }

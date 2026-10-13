@@ -94,7 +94,10 @@ it (`...:rec0.rows2:...`); one failure per group wins both local rows
 tampered topology with the local row zeroed falls back to a global row
 while staying bit-exact (proving the local pick is caused by the local
 row, not the test scaffolding). Under the `RJ_SUBSET_PRUNE_INVERT`
-test hook the local-pick assertions fail loudly (red-green).
+test hook the *subset-level* local-pick assertions fail loudly
+(red-green); the *product-level* local pick still holds under the hook
+because the LRC locality rule bypasses the shortlist where the hook
+lives -- pinned by `prune_invert_redgreen` in `tests/test_lrc.c`.
 
 ## Distance-optimality
 
