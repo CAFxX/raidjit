@@ -30,12 +30,38 @@
  * about every possible access pattern. */
 #include "bench.h"
 #include "ref.h"
+#include "fused.h" /* rj_fn_crc_fold: 4-arg entry for folding versions */
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdalign.h>
 #include <time.h>
 #include <math.h>
+
+/* Call a version's kernel. REDUX crc_fold versions take the 4-argument
+ * entry (fold_state in RCX); calling one 3-argument would feed the
+ * kernel a garbage fold_state pointer and crash. Pass a scratch
+ * fold_state, initialized per the spec §3.2 convention (16 bytes per
+ * stream, 0xFFFFFFFF in the low 32 bits), so validation and
+ * benchmarking actually exercise the fold path. The fold never affects
+ * the output bytes, so the reference comparison stays valid.
+ * Currently x86-64-only: it is the sole folding backend. */
+static void call_version(const version_t *v, const plan_t *pl,
+                         const void **in, void **out, size_t len)
+{
+    if (!v->cand.crc_fold) {
+        v->fn(in, out, len);
+        return;
+    }
+    int nstreams = pl->n_in + pl->n_out;
+    /* n_in + n_out <= RJ_MAX_DISKS (plan.h); 16 bytes per stream. */
+    alignas(64) uint8_t fs[RJ_MAX_DISKS * 16];
+    memset(fs, 0, (size_t)nstreams * 16);
+    for (int s = 0; s < nstreams; s++)
+        ((uint32_t *)(fs + (size_t)s * 16))[0] = 0xFFFFFFFFu;
+    ((rj_fn_crc_fold)(void *)v->fn)(in, out, len, fs);
+}
 
 static uint64_t xrng(uint64_t *s)
 {
@@ -202,7 +228,7 @@ int validate_versions(version_t *vs, int nv, const plan_t *pl,
                     ib[k][b] = (uint8_t)xrng(&s);
             for (int k = 0; k < n_out; k++)
                 memset(ob[k], 0xA5, len);
-            vs[i].fn(in, out, len);
+            call_version(&vs[i], vpl, in, out, len);
             ref_run(vpl, (const uint8_t **)ib, rb, len);
             for (int k = 0; k < n_out && rc == 0; k++)
                 if (memcmp(ob[k], rb[k], len) != 0) {
@@ -231,7 +257,7 @@ int validate_versions(version_t *vs, int nv, const plan_t *pl,
                 memset(ob[k] + 64, 0xA5, ulen);
                 out_u[k] = ob[k] + 64;
             }
-            vs[i].fn(in_u, out_u, ulen);
+            call_version(&vs[i], vpl, in_u, out_u, ulen);
             ref_run(vpl, ib_u, rb, ulen);
             for (int k = 0; k < n_out && rc == 0; k++)
                 if (memcmp((uint8_t *)out_u[k], rb[k], ulen) != 0) {
@@ -269,20 +295,22 @@ int validate_versions(version_t *vs, int nv, const plan_t *pl,
  * cost -- 3 calls at 16 MiB touch far more than 3 at 4 KiB. Always at
  * least 3 calls (page faults, caches), then until 20ms elapse. */
 #define WARMUP_BUDGET_SEC 0.020
-static void warm_version(version_t *v, void **in, void **out, size_t bytes)
+static void warm_version(version_t *v, const plan_t *pl, void **in,
+                         void **out, size_t bytes)
 {
     double t0 = now_sec();
     for (int i = 0; i < 3; i++)
-        v->fn((const void **)in, out, bytes);
+        call_version(v, pl, (const void **)in, out, bytes);
     while (now_sec() - t0 < WARMUP_BUDGET_SEC)
-        v->fn((const void **)in, out, bytes);
+        call_version(v, pl, (const void **)in, out, bytes);
 }
 
 /* One timed call. */
-static double timed_call(version_t *v, void **in, void **out, size_t bytes)
+static double timed_call(version_t *v, const plan_t *pl, void **in,
+                         void **out, size_t bytes)
 {
     double t0 = now_sec();
-    v->fn((const void **)in, out, bytes);
+    call_version(v, pl, (const void **)in, out, bytes);
     double t1 = now_sec();
     return t1 - t0;
 }
@@ -478,14 +506,15 @@ int bench_select(version_t *vs, int nv, const plan_t *pl,
         }
 
         for (int i = 0; i < nv; i++)
-            warm_version(&vs[i], in, out,
+            warm_version(&vs[i], vs[i].plan ? vs[i].plan : pl, in, out,
                          version_call_bytes(&vs[i], bytes));
         /* interleaved rounds: every candidate sees the same machine state
          * per round, so drift cannot favor early candidates */
         for (int r = 0; r < iters; r++)
             for (int i = 0; i < nv; i++)
                 ts[(size_t)i * (size_t)iters + r] = timed_call(
-                    &vs[i], in, out, version_call_bytes(&vs[i], bytes));
+                    &vs[i], vs[i].plan ? vs[i].plan : pl, in, out,
+                    version_call_bytes(&vs[i], bytes));
 
         /* checksum to keep pages hot and prove the calls ran */
         if (n_out > 0)
@@ -719,7 +748,7 @@ int bench_tail_duel(version_t *twin, version_t *general, const plan_t *pl,
                     ib[k][b] = (uint8_t)xrng(&s);
             for (int k = 0; k < n_out; k++)
                 memset(ob[k], 0xA5, len);
-            vs[vi]->fn(in, out, len);
+            call_version(vs[vi], vpl, in, out, len);
             ref_run(vpl, (const uint8_t **)ib, rb, len);
             for (int k = 0; k < n_out && rc == 0; k++)
                 if (memcmp(ob[k], rb[k], len) != 0) {
@@ -755,12 +784,14 @@ int bench_tail_duel(version_t *twin, version_t *general, const plan_t *pl,
         for (int vi = 0; vi < 2; vi++)
             for (int r = 0; r < 3; r++)
                 for (size_t k = 0; k < reps; k++)
-                    vs[vi]->fn(in, out, len);
+                    call_version(vs[vi], vs[vi]->plan ? vs[vi]->plan : pl,
+                                 in, out, len);
         for (int r = 0; r < iters; r++)
             for (int vi = 0; vi < 2; vi++) {
                 double t0 = now_sec();
                 for (size_t k = 0; k < reps; k++)
-                    vs[vi]->fn(in, out, len);
+                    call_version(vs[vi], vs[vi]->plan ? vs[vi]->plan : pl,
+                                 in, out, len);
                 ts[(size_t)vi * (size_t)iters + r] =
                     (now_sec() - t0) / (double)reps;
             }

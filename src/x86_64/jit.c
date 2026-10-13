@@ -13,6 +13,7 @@
 #include "gf.h"
 #include "cpu.h"
 #include "xorsched.h"
+#include "fused.h" /* fused_crc_interleave_ok: the crc_fold uarch gate */
 
 #include <sys/mman.h>
 #include <stdlib.h>
@@ -23,7 +24,7 @@
 
 /* constant-pool entry kinds */
 enum { CK_NIBLO, CK_NIBHI, CK_AFF, CK_MASK, CK_LOG, CK_EXP,
-         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE, CK_MSHIFT };
+         CK_NIBBOTH, CK_OR10, CK_TAILMASK, CK_ONE, CK_MSHIFT, CK_CRCFOLD };
 
 typedef struct {
     em_t em;
@@ -42,6 +43,21 @@ typedef struct {
     int ncent, ccent;
     /* register assignment */
     int t, tlo, thi, r1, r2, tbl, tbl2, t2, mask;
+    /* REDUX crc_fold register pool (cand->crc_fold only; -1 otherwise).
+     * The fold needs N+5 128-bit lanes, disjoint from the encode's
+     * 0..E-1 (E = encode regs used): 5 VEX-bound temps/consts at E..E+4
+     * (VEX.128 PCLMULQDQ addresses only xmm0-15, so the backend rejects
+     * E > 11 cleanly) followed by the N stream states at fold_xs0..E+N+4
+     * (EVEX-only access: em_vpxor_evex128 / em_vmovdqa_ld/st_evex128).
+     * This is bottom-up continuation, not the spec's top-down zmm31
+     * placement: the backend's vmax+1 == plan_need_regs lockstep assert
+     * forces the fold pool to extend the encode's 0-based assignment,
+     * and VEX cannot address the spec's zmm_{32-(N+5)}..zmm31 anyway.
+     * Disjointness, determinism, exact N+5 accounting and fail-closed
+     * filtering are preserved; see the backend gate below. */
+    int fold_xc, fold_xa, fold_xb, fold_xk1, fold_xk2; /* E..E+4 */
+    int fold_xs0;  /* first stream-state reg (E+5); N = n_in + n_out states */
+    int fold_n;
     /* VPMULTISHIFTQB high-nibble control (track I2, mshift twin): the
      * loop-invariant per-lane shift counts (byte j of each 64-bit lane
      * holds 8*j+4). Register-resident: VPMULTISHIFTQB's control is
@@ -95,6 +111,16 @@ typedef struct {
                       * (track B1x86). Disjoint from notail. */
     int permi2b;     /* VPERMI2B nibble twin (track B2) */
     uint8_t logtab[256], exptab[512];
+    int vpternlogd_emitted; /* ternlog twin: count of VPTERNLOGD insns
+                             * emitted. If cand->ternlog was requested but
+                             * zero were emitted, the pin was a no-op and
+                             * jit_build_version rejects it (phantom twin
+                             * fix, BUG_t1_80). */
+    uint32_t twin_applied; /* BUG-COMBO-STATIC-F16: bitmask of TWIN_APPLIED_*
+                            * bits, set when each twin's code path is taken. */
+    int oom; /* sticky OOM flag: set by pool_get on realloc failure.
+              * jit_build_version checks it after codegen and fails
+              * cleanly instead of asserting. */
 } cg_t;
 
 static int is_sse(const cg_t *cg) { return cg->cand.isa == ISA_SSE; }
@@ -139,6 +165,7 @@ static int hoist_inptr(const cg_t *cg, int i)
 
 static size_t pool_get(cg_t *cg, int kind, uint8_t c)
 {
+    if (cg->oom) return 0; /* sticky OOM: fail fast */
     for (int i = 0; i < cg->ncent; i++)
         if (cg->cent[i].kind == kind && cg->cent[i].c == c)
             return cg->cent[i].off;
@@ -212,30 +239,43 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     } else if (kind == CK_LOG) {
         memcpy(tmp, cg->logtab, 256);
         len = 256;
+    } else if (kind == CK_CRCFOLD) {
+        /* REDUX crc_fold multiply constants: 16 bytes holding the 64-bit
+         * constant in both lanes ({K,K}, little-endian), so imm=0x00 and
+         * imm=0x11 both read the right half. c=0 -> K1 = 0xae689191
+         * (x^-128 mod QREF), c=1 -> K2 = 0xccaa009e (x^-64 mod QREF).
+         * Loaded once at kernel entry into fold_xk1/xk2 (hoisted). */
+        uint64_t k = (c == 0) ? 0xae689191ULL : 0xccaa009eULL;
+        memcpy(tmp, &k, 8);
+        memcpy(tmp + 8, &k, 8);
+        len = 16;
     } else { /* CK_EXP */
         memcpy(tmp, cg->exptab, 256);
         len = 256;
     }
     size_t off = (cg->pool_len + 63) & ~(size_t)63;
     if (off + len > cg->pool_cap) {
-        cg->pool_cap = (off + len + 4095) & ~(size_t)4095;
-        cg->pool = realloc(cg->pool, cg->pool_cap);
-        assert(cg->pool);
-    /* The alignment gap [pool_len, off) is padding: zero it so the
-     * emitted const blob is deterministic (malloc/realloc leave it
-     * uninitialized). WASM-only: native output stays byte-identical.
-     * The gap is never read by generated code. */
-#ifdef RJ_WASM
-    if (off > cg->pool_len)
-        memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
-#endif
+        size_t new_cap = (off + len + 4095) & ~(size_t)4095;
+        uint8_t *np = realloc(cg->pool, new_cap);
+        if (!np) { cg->oom = 1; return 0; }
+        cg->pool = np;
+        cg->pool_cap = new_cap;
     }
+    /* L2 (const-pool alignment-gap determinism): the gap [pool_len, off)
+     * is copied verbatim into the emitted image, so it must not carry
+     * heap history. Zero it here at the single point where the gap is
+     * created. Gaps are never executed or read (entries are loaded at
+     * their aligned offsets), so no executed/read byte changes and the
+     * 64-byte alignment contract is preserved. */
+    memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
-        cg->ccent = cg->ccent ? cg->ccent * 2 : 32;
-        cg->cent = realloc(cg->cent, (size_t)cg->ccent * sizeof(*cg->cent));
-        assert(cg->cent);
+        int new_ccent = cg->ccent ? cg->ccent * 2 : 32;
+        void *ncent = realloc(cg->cent, (size_t)new_ccent * sizeof(*cg->cent));
+        if (!ncent) { cg->oom = 1; return 0; }
+        cg->cent = ncent;
+        cg->ccent = new_ccent;
     }
     cg->cent[cg->ncent].kind = kind;
     cg->cent[cg->ncent].c = c;
@@ -281,16 +321,70 @@ static void raw_ldpool(cg_t *cg, int vd, size_t off)
         em_vmovdqa_ld(e, vd, R15, -1, 0, (int)off, cg->vl);
 }
 
+/* ---------------- REDUX crc_fold helpers ----------------
+ * Per-stream 128-bit fold (spec hidden_files/crc_fold_v2_SPEC.md §2):
+ *   W  = S XOR C            (C = 16-byte message chunk)
+ *   S' = CLMUL(W[63:0], K1) XOR CLMUL(W[127:64], K2)
+ * States live in fold_xs0.. (one xmm per stream, whole kernel);
+ * xc/xa/xb/xk1/xk2 are the shared temps/consts. Only called when
+ * cand->crc_fold (implies ISA_AVX512; the backend gate enforces it). */
+
+/* Fold one 16B chunk already in fold_xc into stream s's state. */
+static void gen_fold_chunk(cg_t *cg, int s)
+{
+    em_t *e = &cg->em;
+    int xs = cg->fold_xs0 + s;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    em_vpxor_evex128(e, cg->fold_xc, cg->fold_xc, xs); /* W = C ^ S */
+    em_pclmulqdq(e, cg->fold_xa, cg->fold_xc, cg->fold_xk1, 0x00);
+    em_pclmulqdq(e, cg->fold_xb, cg->fold_xc, cg->fold_xk2, 0x11);
+    em_vpxor_evex128(e, xs, cg->fold_xa, cg->fold_xb); /* S' = A ^ B */
+    cg->uops += 4;
+}
+
+/* Fold the 64B vector in zmm zreg into stream s (4 x 16B chunks). */
+static void gen_fold_zmm(cg_t *cg, int zreg, int s)
+{
+    em_t *e = &cg->em;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    /* BUG-COMBO-STATIC-F16: effect marker -- the crc_fold path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_CRC_FOLD;
+    for (int k = 0; k < 4; k++) {
+        em_vextracti32x4(e, cg->fold_xc, zreg, (unsigned)k);
+        gen_fold_chunk(cg, s);
+    }
+    cg->uops += 4; /* 4 extracts; the chunks' uops counted above */
+}
+
+/* Fold 64B at [b + x*sc + disp] into stream s (4 x 16B loads).
+ * Used where the body consumes an input vector through a memory operand
+ * (no zmm materialization) or skips an unused input column: the bytes
+ * are in memory either way, so the fold observes exactly what the
+ * encode consumes. */
+static void gen_fold_mem(cg_t *cg, int b, int x, int sc, int disp, int s)
+{
+    em_t *e = &cg->em;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    for (int k = 0; k < 4; k++) {
+        em_vmovdqa_ld_evex128(e, cg->fold_xc, b, x, sc, disp + k * 16);
+        gen_fold_chunk(cg, s);
+    }
+    cg->uops += 4; /* 4 loads; the chunks' uops counted in the helper */
+    cg->mem += 64;
+}
+
 static void c_st(cg_t *cg, int b, int x, int sc, int disp, int vs)
 {
     em_t *e = &cg->em;
     if (is_sse(cg)) {
-        if (cg->nt)
+        if (cg->nt) {
             em_movntdq_st_sse(e, b, x, sc, disp, vs);
-        else
+            cg->twin_applied |= TWIN_APPLIED_NT;
+        } else
             em_movdqa_st_sse(e, b, x, sc, disp, vs);
     } else if (cg->nt) {
         em_vmovntdq_st(e, b, x, sc, disp, vs, cg->vl);
+        cg->twin_applied |= TWIN_APPLIED_NT;
     } else {
         em_vmovdqa_st(e, b, x, sc, disp, vs, cg->vl);
     }
@@ -307,6 +401,7 @@ static void c_prefetch_in(cg_t *cg, int ptr_reg)
     if (cg->prefetch_dist) {
         em_prefetch(&cg->em, 1 /*T0*/, ptr_reg, R11, 0,
                     (int)cg->prefetch_dist);
+        cg->twin_applied |= TWIN_APPLIED_PREFETCH;
         cg->uops += 1;
     }
 }
@@ -350,6 +445,10 @@ static void c_vpternlog(cg_t *cg, int vd, int s1, int s2)
     assert(cg->cand.isa == ISA_AVX512);
     em_vpternlog(e, vd, s1, s2, 0x96, cg->vl);
     cg->uops += 1;
+    cg->vpternlogd_emitted++;
+    /* BUG-COMBO-STATIC-F16: effect marker (redundant with the counter, but
+     * keeps the postcondition uniform). */
+    cg->twin_applied |= TWIN_APPLIED_TERNLOG;
 }
 
 /* vd ^= s1 ^ [mem] via VPTERNLOGD (AVX-512 only). Counted as one uop
@@ -367,6 +466,8 @@ static void c_vpternlog_mem(cg_t *cg, int vd, int s1, int b, int x, int sc,
     em_vpternlog_mem(e, vd, s1, b, x, sc, disp, 0x96, cg->vl);
     cg->uops += 1;
     cg->mem += cg->vl;
+    cg->vpternlogd_emitted++;
+    cg->twin_applied |= TWIN_APPLIED_TERNLOG;
 }
 
 /* Folded XOR-with-memory (one uop on every x86 ISA: pxor m128 on SSE,
@@ -448,6 +549,8 @@ static void c_mshift(cg_t *cg, int vd, int s1, int vctrl)
     assert(is_avx512(cg));
     em_vpmultishiftqb(&cg->em, vd, vctrl, s1, cg->vl);
     cg->uops += 1;
+    /* BUG-COMBO-STATIC-F16: effect marker -- the mshift path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_MSHIFT;
 }
 
 /* Nibble split of vsrc into vd_lo/vd_hi: vd_lo = vsrc & 0x0F,
@@ -517,9 +620,33 @@ static void c_vmov(cg_t *cg, int vd, int vs)
 
 /* ---------------- codegen ---------------- */
 
+/* REDUX crc_fold entry: load the N stream states from fold_state and
+ * init the hoisted K1/K2 constants. Called from gen_const_setup before
+ * the tile loop. On entry [RSP] holds the fold_state pointer (pushed by
+ * gen_function's prologue); R15 is the constant-pool base (need_r15 is
+ * forced on for fold kernels). Between entry and exit the states live
+ * only in the fold_xs0.. xmms. */
+static void gen_fold_setup(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    assert(cg->cand.crc_fold && is_avx512(cg));
+    /* R10 = fold_state (16-byte aligned per the driver contract). */
+    em_mov_rm(e, R10, RSP, -1, 0, 0);
+    for (int s = 0; s < cg->fold_n; s++)
+        em_vmovdqa_ld_evex128(e, cg->fold_xs0 + s, R10, -1, 0, s * 16);
+    /* Hoisted constants: xk1 = {K1,K1}, xk2 = {K2,K2} (both lanes, so
+     * imm=0x00 and imm=0x11 both read the right half). */
+    em_vmovdqa_ld_evex128(e, cg->fold_xk1, R15, -1, 0,
+                          (int)pool_get(cg, CK_CRCFOLD, 0));
+    em_vmovdqa_ld_evex128(e, cg->fold_xk2, R15, -1, 0,
+                          (int)pool_get(cg, CK_CRCFOLD, 1));
+}
+
 static void gen_const_setup(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
+    if (cg->cand.crc_fold)
+        gen_fold_setup(cg);
     if (cg->cand.xorbit) {
         /* Bit-program twin: the 0x01 bit-extract mask (the nibble
          * tables are dead on this path). */
@@ -640,6 +767,8 @@ static void mulacc_column(cg_t *cg, int col, int ncols, int u,
              * + 2 vpermi2b + 1-2 xor = 6-7, vs 2 loads + 2 shuf + 1-2 xor
              * = 5-6 for the VPSHUFB path (the model says the twin is
              * marginally worse; measurement decides anyway). */
+            /* BUG-COMBO-STATIC-F16: effect marker -- the permi2b path. */
+            cg->twin_applied |= TWIN_APPLIED_PERMI2B;
             assert(cg->cand.isa == ISA_AVX512);
             c_ldpool(cg, cg->tbl, pool_get(cg, CK_NIBBOTH, c));
             c_vmov(cg, cg->r1, cg->tlo);
@@ -922,6 +1051,8 @@ static int xorbit_inptr(cg_t *cg, int i, int is_delta)
 
 static void gen_body_xorbit(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker -- the xorbit code path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_XORBIT;
     const plan_t *pl = cg->pl;
     const xorbit_t *s = pl->bit_sched;
     assert(s && s->ntemps > 0);
@@ -931,6 +1062,23 @@ static void gen_body_xorbit(cg_t *cg)
     int is_delta = (pl->kind == P_DELTA);
     int inreg = cg->xbt_in, r1 = cg->xbt_r1, r2 = cg->xbt_r2;
     int mask1 = cg->xbt_mask;
+
+    /* Temp-stack liveness (emitter redesign, track A3). Compute def/lastuse
+     * for the temp DAG. For flat temps (current scheduler), all lastuse
+     * are -1 (no temp is used by another temp). The liveness info is
+     * available for future nested-temp support; the flat emission path
+     * below is unchanged and byte-identical to the original. */
+    int *t_def = NULL, *t_lastuse = NULL;
+    int maxlive = 0;
+    if (xorbit_temp_liveness(s, &t_def, &t_lastuse) == 0) {
+        maxlive = xorbit_maxlive(s, t_def, t_lastuse);
+        /* For flat temps, maxlive must be 0. If not, the scheduler
+         * emitted nested temps (future), which the current emission
+         * code does not handle. This is a plan-time invariant check. */
+        assert(maxlive == 0);
+    }
+    free(t_def);
+    free(t_lastuse);
 
     if (!is_delta) {
         /* zero dead output bytes (no atoms in any of their 8 bits) */
@@ -1136,6 +1284,8 @@ static void rec_cf_synd_accum(cg_t *cg, uint8_t c, int acc, int first,
  * the stores below are shared with the generic body. */
 static void gen_body_rec_cf(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker -- the rec_cf code path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_REC_CF;
     const plan_t *pl = cg->pl;
     const struct rec_cf_data *cfd = pl->rec_cf;
     assert(pl->kind == P_MULACC);
@@ -1381,6 +1531,8 @@ static void gen_body(cg_t *cg)
                 }
             }
         } else if (cg->cand.xorsched) {
+        /* BUG-COMBO-STATIC-F16: effect marker -- the xorsched path. */
+        cg->twin_applied |= TWIN_APPLIED_XORSCHED;
         /* XOR-schedule twin: the body follows pl->xor_sched (cross-row
          * CSE) instead of the naive per-row column loop. Phase 1 forms
          * each temp t_k = in_a ^ in_b and fans it out to its user rows;
@@ -1487,19 +1639,41 @@ static void gen_body(cg_t *cg)
             for (int j = 0; j < n_out; j++)
                 if (pl->mat[j * n_in + i])
                     users[nu++] = j;
-            if (!nu)
+            int pr = -1;
+            if (!nu) {
+                /* REDUX crc_fold: the encode skips this input column,
+                 * but the CRC still covers the stream's bytes. Fold
+                 * from memory (the vector is never materialized). */
+                if (cg->cand.crc_fold) {
+                    pr = body_inptr(cg, i, R10);
+                    for (int u = 0; u < U; u++)
+                        gen_fold_mem(cg, pr, R11, 0, u * vl, i);
+                }
                 continue;
-            int pr = body_inptr(cg, i, R10);
+            }
+            pr = body_inptr(cg, i, R10);
             c_prefetch_in(cg, pr);
             for (int u = 0; u < U; u++) {
                 if (nu == 1) {
                     int acc = users[0] * U + u;
-                    if (i == first_in[users[0]])
+                    if (i == first_in[users[0]]) {
                         c_ld(cg, acc, pr, R11, 0, u * vl);
-                    else
+                        /* REDUX crc_fold: acc holds input i's bytes. */
+                        if (cg->cand.crc_fold)
+                            gen_fold_zmm(cg, acc, i);
+                    } else {
                         c_vpxor_mem(cg, acc, acc, pr, R11, 0, u * vl);
+                        /* REDUX crc_fold: memory-operand consume; fold
+                         * input i's bytes from their address. */
+                        if (cg->cand.crc_fold)
+                            gen_fold_mem(cg, pr, R11, 0, u * vl, i);
+                    }
                 } else {
                     c_ld(cg, cg->t, pr, R11, 0, u * vl);
+                    /* REDUX crc_fold: fold input i's vector once (the
+                     * fan-out below only reads it). */
+                    if (cg->cand.crc_fold)
+                        gen_fold_zmm(cg, cg->t, i);
                     for (int k = 0; k < nu; k++) {
                         int acc = users[k] * U + u;
                         if (i == first_in[users[k]])
@@ -1531,12 +1705,24 @@ static void gen_body(cg_t *cg)
         for (int i = 0; i < n_in; i++) {
             int any, neednib;
             mulacc_col_info(pl, i, n_in, &any, &neednib);
-            if (!any)
+            if (!any) {
+                /* REDUX crc_fold: the encode skips this column, but the
+                 * CRC still covers the stream's bytes. */
+                if (cg->cand.crc_fold) {
+                    int pr0 = body_inptr(cg, i, R10);
+                    for (int u = 0; u < U; u++)
+                        gen_fold_mem(cg, pr0, R11, 0, u * vl, i);
+                }
                 continue;
+            }
             int pr = body_inptr(cg, i, R10);
             c_prefetch_in(cg, pr);
             for (int u = 0; u < U; u++) {
                 c_ld(cg, cg->t, pr, R11, 0, u * vl);
+                /* REDUX crc_fold: t holds input i's bytes (fold before
+                 * the nibble split reuses t's lanes). */
+                if (cg->cand.crc_fold)
+                    gen_fold_zmm(cg, cg->t, i);
                 if (neednib && !gfni)
                     nibble_split(cg, cg->tlo, cg->thi, cg->t);
                 mulacc_column(cg, i, n_in, u, first_col);
@@ -1606,11 +1792,17 @@ static void gen_body(cg_t *cg)
                      * uop per u. acc[0] = u never aliases t (= n_out*U),
                      * and the `continue` keeps t dead. */
                     c_ld(cg, 0 * U + u, pr, R11, 0, u * vl);
+                    /* REDUX crc_fold: acc holds input 0's bytes. */
+                    if (cg->cand.crc_fold)
+                        gen_fold_zmm(cg, 0 * U + u, 0);
                     for (int j = 1; j < n_out; j++)
                         c_vmov(cg, j * U + u, 0 * U + u);
                     continue;
                 }
                 c_ld(cg, cg->t, pr, R11, 0, u * vl);
+                /* REDUX crc_fold: fold input i's vector once. */
+                if (cg->cand.crc_fold)
+                    gen_fold_zmm(cg, cg->t, i);
                 for (int j = 0; j < n_out; j++) {
                     uint8_t c = pl->horner_c[j];
                     int acc = j * U + u;
@@ -1621,6 +1813,8 @@ static void gen_body(cg_t *cg)
                         c_vmov(cg, acc, cg->t);
                     } else if (gfni) {
                         if (cg->cand.remat) {
+                            /* BUG-COMBO-STATIC-F16: effect marker. */
+                            cg->twin_applied |= TWIN_APPLIED_REMAT;
                             size_t poff = pool_get(cg, CK_AFF, c);
                             if (!tbl_pool_valid || tbl_pool_off != poff) {
                                 c_ldpool(cg, cg->tbl, poff);
@@ -1635,6 +1829,8 @@ static void gen_body(cg_t *cg)
                     } else {
                         nibble_split(cg, cg->tlo, cg->thi, acc);
                         if (cg->cand.remat) {
+                            /* BUG-COMBO-STATIC-F16: effect marker. */
+                            cg->twin_applied |= TWIN_APPLIED_REMAT;
                             /* NIBLO/NIBHI ping-pong through the single tbl
                              * scratch: each u iteration needs both tables,
                              * so the 2 loads per (i,j,u) are inherent and
@@ -1666,8 +1862,13 @@ static void gen_body(cg_t *cg)
 
     for (int j = 0; j < n_out; j++) {
         em_mov_rm(e, R10, R9, -1, 0, j * 8);
-        for (int u = 0; u < U; u++)
+        for (int u = 0; u < U; u++) {
+            /* REDUX crc_fold: the parity vector is complete in the acc;
+             * fold it before the store (or the zmm's reuse). */
+            if (cg->cand.crc_fold)
+                gen_fold_zmm(cg, j * U + u, n_in + j);
             c_st(cg, R10, R11, 0, u * vl, j * U + u);
+        }
     }
 }
 
@@ -1768,6 +1969,8 @@ static void pipe_horner_compute(cg_t *cg, int col, int data)
  * iteration's stores. ncols == 0 falls back to gen_body. */
 static void gen_body_pipe(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker -- the pipe code path is taken. */
+    cg->twin_applied |= TWIN_APPLIED_PIPE;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U, vl = cg->vl;
@@ -1866,6 +2069,53 @@ static void tail_mul_byte(cg_t *cg, uint8_t c)
 }
 
 /* scalar tail for len % group bytes. r11 = tail_start, rcx = len. */
+/* REDUX crc_fold: fold the whole 16B chunks of the scalar tail region.
+ * Spec §3.4: the kernel folds exactly floor(tl/16)*16 bytes per call;
+ * the vector body covers 64B multiples, so the tail's whole chunks
+ * ([tail_start, tail_start + nchunks*16)) must be folded here -- the
+ * bytes the encode consumed/produced, observed exactly once:
+ *   - input streams: 16B chunks from in[i] (memory; inputs are never
+ *     modified by the kernel);
+ *   - parity streams: 16B chunks from out[j] (the byte loop above
+ *     already computed and stored every tail byte; reloading observes
+ *     exactly the produced bytes).
+ * On entry R11 == RCX (byte loop finished) and [RSP] = tail_start.
+ * The sub-16B remainder is the driver's rj_crc_fold_tail (spec §6);
+ * the kernel never folds partial chunks. */
+static void gen_fold_tail_chunks(cg_t *cg)
+{
+    em_t *e = &cg->em;
+    const plan_t *pl = cg->pl;
+    int n_in = pl->n_in, n_out = pl->n_out;
+    int done = em_label(e), chunk = em_label(e);
+    /* RBX = tail_start; RAX = nchunks = (RCX - tail_start) >> 4. */
+    em_mov_rm(e, RBX, RSP, -1, 0, 0);
+    em_mov_rr(e, RAX, RCX);
+    em_sub_rr(e, RAX, RBX);
+    em_shr_ri(e, RAX, 4);
+    em_test_rr(e, RAX, RAX);
+    em_jcc(e, CC_E, done);
+    em_xor_rr(e, R10, R10); /* R10 = chunk byte offset */
+    em_bind(e, chunk);
+    for (int i = 0; i < n_in; i++) {
+        /* RDX = in[i] + tail_start; fold 16B at [RDX + R10]. */
+        em_mov_rm(e, RDX, R8, -1, 0, i * 8);
+        em_add_rr(e, RDX, RBX);
+        em_vmovdqa_ld_evex128(e, cg->fold_xc, RDX, R10, 0, 0);
+        gen_fold_chunk(cg, i);
+    }
+    for (int j = 0; j < n_out; j++) {
+        em_mov_rm(e, RDX, R9, -1, 0, j * 8);
+        em_add_rr(e, RDX, RBX);
+        em_vmovdqa_ld_evex128(e, cg->fold_xc, RDX, R10, 0, 0);
+        gen_fold_chunk(cg, n_in + j);
+    }
+    em_add_ri(e, R10, 16);
+    em_dec_r(e, RAX);
+    em_jcc(e, CC_NE, chunk);
+    em_bind(e, done);
+}
+
 static void gen_tail(cg_t *cg)
 {
     em_t *e = &cg->em;
@@ -1998,6 +2248,8 @@ static void gen_tail(cg_t *cg)
         em_cmp_rr(e, R11, RCX);
         em_jcc(e, CC_B, lj);
     }
+    if (cg->cand.crc_fold)
+        gen_fold_tail_chunks(cg);
     em_add_ri(e, RSP, 8);
 }
 
@@ -2290,7 +2542,8 @@ static void gen_function(cg_t *cg)
     int need_r15 = cg->pl->kind == P_MULACC ||
                    ((cg->pl->kind == P_DELTA || cg->pl->kind == P_HORNER) &&
                     (cg->need_mask || cg->need_logexp)) ||
-                   cg->maskedtail;
+                   cg->maskedtail || cg->cand.crc_fold;
+    /* crc_fold needs R15 for the K1/K2 constant-pool loads at entry. */
 
     /* Pointer hoisting: decided before the pushes because HH[2..4]
      * (R12-R14) are callee-saved. */
@@ -2308,6 +2561,13 @@ static void gen_function(cg_t *cg)
         em_push_r(e, R13);
         em_push_r(e, R14);
     }
+    /* REDUX crc_fold: the 4th argument (fold_state, RCX on entry) must
+     * survive the whole kernel (entry loads + exit stores). No GPR is
+     * free across body+tail (RSI/RDI are hoisted input pointers, RBX is
+     * the tail accumulator), so spill it to the stack. It is pushed last
+     * and popped first (into R10) at the single done_lab exit. */
+    if (cg->cand.crc_fold)
+        em_push_r(e, RCX);
     /* NOTE: the pushes leave rsp%16 as 0 or 8 inside the body depending
      * on the count (RBX [+R15] [+R12-R14 when nhoist>2]: 1, 2, 4 or 5
      * pushes -> rsp%16 is 0, 8, 8 or 0). This is safe
@@ -2380,6 +2640,14 @@ static void gen_function(cg_t *cg)
         em_bind(e, done_lab);
     }
 
+    /* REDUX crc_fold exit: store the N stream states back to fold_state
+     * (the driver owns the buffer; the kernel only borrows it). R10 =
+     * fold_state, popped LIFO before the other saved registers. */
+    if (cg->cand.crc_fold) {
+        em_pop_r(e, R10);
+        for (int s = 0; s < cg->fold_n; s++)
+            em_vmovdqa_st_evex128(e, R10, -1, 0, s * 16, cg->fold_xs0 + s);
+    }
     if (cg->nhoist > 2) {
         em_pop_r(e, R14);
         em_pop_r(e, R13);
@@ -2409,6 +2677,63 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                       const rj_cpu_info *cpu, const rj_options *opts,
                       version_t *v, char *err, size_t errlen)
 {
+    /* REDUX crc_fold gate (spec §3.6; defense in depth -- the planner's
+     * fused_crc_interleave_ok check in plan_candidates is the primary
+     * filter). A crc_fold=1 candidate must never be built when the gate
+     * is closed on this CPU (e.g. a hand-crafted plan ID reaching
+     * rj_compile_pinned, or a stale planner): reject cleanly, never
+     * wrong code, never an assertion abort. */
+    if (cand->crc_fold && !fused_crc_interleave_ok(cpu)) {
+        snprintf(err, errlen,
+                 "x86_64 backend: crc_fold=1 but the interleaved-CRC "
+                 "uarch gate is closed on this CPU");
+        return -1;
+    }
+    /* REDUX crc_fold backend requirements. The fold is implemented for
+     * the plain AVX-512 vector bodies only (P_XOR naive, P_MULACC,
+     * P_HORNER with MUL_NIBBLE/MUL_GFNI): the fold hooks sit at the
+     * input-vector loads and the parity stores, which the exotic body
+     * twins (pipe/xorbit/xorsched/permi2b/mshift/remat/ternlog and the
+     * masked/predicated tails) restructure or bypass. P_DELTA is out of
+     * scope (spec §3.5: PARITY_UPDATE targets take the scalar CRC path).
+     * nt/prefetch/notail are orthogonal (store policy / prefetch /
+     * empty tail) and stay allowed. Reject incompatible combinations
+     * cleanly -- never wrong code. */
+    if (cand->crc_fold) {
+        if (cand->isa != ISA_AVX512) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 requires ISA_AVX512");
+            return -1;
+        }
+        /* Noop plans have no vector body to fold into; the exit
+         * state-stores would write uninitialized registers. */
+        if (pl->noop) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 incompatible with noop");
+            return -1;
+        }
+        if (cand->mul != MUL_NIBBLE && cand->mul != MUL_GFNI) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 requires MUL_NIBBLE or "
+                     "MUL_GFNI (got %d)", cand->mul);
+            return -1;
+        }
+        if (pl->kind == P_DELTA) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 is ENCODE-only "
+                     "(PARITY_UPDATE takes the scalar CRC path)");
+            return -1;
+        }
+        if (cand->pipe || cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->mshift || cand->remat || cand->maskedtail ||
+            cand->ternlog || cand->predtail) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 incompatible with "
+                     "pipe/xorbit/xorsched/permi2b/mshift/remat/maskedtail/"
+                     "ternlog/predtail twins");
+            return -1;
+        }
+    }
     (void)cpu;
     /* Rematerialization is implemented only for P_HORNER. User-reachable
      * via pinned candidates (WASM API): fail cleanly, never abort. */
@@ -2459,6 +2784,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     if (cand->maskedtail && cand->isa != ISA_AVX512) {
         snprintf(err, errlen,
                  "x86_64 backend: maskedtail needs AVX-512");
+        return -1;
+    }
+    /* nt+maskedtail is rejected: the body stores would be non-temporal
+     * but the masked tail stores are temporal (no masked NT form is
+     * emitted), so the combination is only partial-nt. Native api.c's
+     * mt_ok already requires !nt for the duel; this backend gate is the
+     * defense-in-depth backstop for direct jit_build_version callers
+     * (BUG-COMBO-E1-MASKEDTAIL-NT). */
+    if (cand->maskedtail && cand->nt) {
+        snprintf(err, errlen,
+                 "x86_64 backend: maskedtail excludes nt (partial-nt)");
         return -1;
     }
     /* Masked tail plan-kind gate (mirrors api.c's twin gate and
@@ -2746,6 +3082,16 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                 vmax = cg.msh;
             }
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry.
+                 * The remat twin's code path starts here in register
+                 * allocation (no persistent table regs; the tbl
+                 * scratch instead) -- taken for every remat build,
+                 * including all-trivial plans where no per-coefficient
+                 * pool reload ever fires in the body. Marking only the
+                 * body reload sites made the F16 postcondition misfire
+                 * on all-trivial plans; the body sites remain as the
+                 * per-use instances of the same path. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 /* Rematerialize: tables reloaded from pool into tbl
                  * on each use; no hreg. */
                 cg.tbl = cg.t + 6;
@@ -2764,6 +3110,10 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
         } else {
             cg.t2 = cg.t + 1;
             if (cand->remat) {
+                /* BUG_t5_remat (lead L5): effect marker at mode entry
+                 * (see the MUL_NIBBLE branch above); the GFNI remat
+                 * path likewise starts in register allocation. */
+                cg.twin_applied |= TWIN_APPLIED_REMAT;
                 cg.tbl = cg.t + 2;
                 vmax = cg.tbl;
             } else {
@@ -2779,6 +3129,36 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
             }
         }
     }
+    /* REDUX crc_fold register pool: N+5 lanes continuing the encode's
+     * 0-based assignment (the vmax+1 == want_regs lockstep below forces
+     * bottom-up continuation; see the cg_t field comment for why the
+     * spec's top-down zmm31 placement is not used). E = encode regs.
+     * The 5 VEX-bound temps/consts take E..E+4: VEX.128 PCLMULQDQ
+     * addresses only xmm0-15, so E > 11 is rejected cleanly here
+     * (fail-closed; the planner's 32-bound filter does not know about
+     * the VEX limit). The N stream states take E+5... (EVEX-only). */
+    cg.fold_xc = cg.fold_xa = cg.fold_xb = -1;
+    cg.fold_xk1 = cg.fold_xk2 = -1;
+    cg.fold_xs0 = -1;
+    cg.fold_n = 0;
+    if (cand->crc_fold) {
+        int E = vmax + 1;
+        if (E > 11) {
+            snprintf(err, errlen,
+                     "x86_64 backend: crc_fold=1 needs the 5 VEX temps in "
+                     "xmm0-15 (encode uses %d regs)", E);
+            free(cg.hreg);
+            return -1;
+        }
+        cg.fold_xc = E;
+        cg.fold_xa = E + 1;
+        cg.fold_xb = E + 2;
+        cg.fold_xk1 = E + 3;
+        cg.fold_xk2 = E + 4;
+        cg.fold_n = pl->n_in + pl->n_out;
+        cg.fold_xs0 = E + 5;
+        vmax = E + 4 + cg.fold_n;
+    }
     /* Single source of truth: the planner's filter must agree exactly
      * with this assignment. A drift here once admitted candidates past
      * the regfile, and the emitter wraps reg 32 to 0 silently. The
@@ -2792,7 +3172,7 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
                     : cand->xorsched ? xorsched_need_regs(cand->isa, pl, U)
                                      : plan_need_regs(cand->isa, cand->mul, pl,
                                                      U, cand->remat, cand->pipe,
-                                                     0) +
+                                                     0, cand->crc_fold) +
                                        (cg.msh != 0 ? 1 : 0);
     assert(vmax + 1 == want_regs);
     /* Over-pressure must fail cleanly (return -1), not abort or emit
@@ -2834,7 +3214,56 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     for (size_t i = 0; i < cg.pool_len; i++)
         em_byte(&cg.em, cg.pool[i]);
     em_resolve(&cg.em);
+    /* OOM check: the emitter sets cg.em.err on buffer overflow or
+     * label/fixup realloc failure, and pool_get sets cg.oom on realloc
+     * failure. Either way the generated code is incomplete -- reject
+     * cleanly instead of installing it. Placed before the mem install
+     * so the fail path doesn't leak the mmap'd page. */
+    if (cg.em.err || cg.oom) {
+        snprintf(err, errlen, "x86_64 backend: out of memory during codegen");
+        goto fail;
+    }
     size_t total = cg.em.len;
+
+    /* Phantom twin check (BUG_t1_80, BUG-COMBO-STATIC-F16): if a twin was
+     * requested but its code path was never taken, the pin was a no-op.
+     * Reject with a clean error instead of recording a false twin label.
+     * Placed before the mem install so the fail path doesn't leak the
+     * mmap'd page. The ternlog counter is subsumed by the bit but kept
+     * for its precise "no VPTERNLOGD emitted" message. */
+    if (cand->ternlog && cg.vpternlogd_emitted == 0) {
+        if (err && errlen > 0)
+            snprintf(err, errlen,
+                     "ternlog twin requested but no VPTERNLOGD emitted "
+                     "(plan has no foldable triples)");
+        goto fail;
+    }
+    {
+        struct { int req; uint32_t bit; const char *name; } twins[] = {
+            { cand->nt, TWIN_APPLIED_NT, "nt" },
+            { cand->prefetch_dist != 0, TWIN_APPLIED_PREFETCH, "prefetch" },
+            { cand->remat, TWIN_APPLIED_REMAT, "remat" },
+            { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
+            { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
+            { cand->mshift, TWIN_APPLIED_MSHIFT, "mshift" },
+            { cand->permi2b, TWIN_APPLIED_PERMI2B, "permi2b" },
+            { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
+            { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
+            { cand->crc_fold, TWIN_APPLIED_CRC_FOLD, "crc_fold" },
+        };
+        /* ternlog is checked via its counter above (precise message). */
+        for (size_t ti = 0; ti < sizeof(twins)/sizeof(twins[0]); ti++) {
+            if (twins[ti].req && !(cg.twin_applied & twins[ti].bit)) {
+                if (err && errlen > 0)
+                    snprintf(err, errlen,
+                             "%s twin requested but its code path was not "
+                             "taken (phantom twin)",
+                             twins[ti].name);
+                goto fail;
+            }
+        }
+    }
+    v->twin_applied = cg.twin_applied;
 
     long ps = sysconf(_SC_PAGESIZE);
     size_t memsz = (total + (size_t)ps - 1) & ~((size_t)ps - 1);

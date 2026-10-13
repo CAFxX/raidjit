@@ -12,6 +12,11 @@
  *                            oracle; tests prove the fast path against
  *                            it and the KAT anchors both to the catalog
  *                            check value).
+ *
+ * rj_crc32_fast (src/crc_fast.c) is the standalone fast-CRC API
+ * (Option C): a drop-in replacement for rj_crc32_update with an
+ * identical chaining contract, dispatching to the best per-ISA backend
+ * (spec hidden_files/crc_impl_SPEC.md R1/R2).
  */
 #pragma once
 #include <stddef.h>
@@ -22,3 +27,4 @@ uint32_t rj_crc32_update(uint32_t crc, const void *data, size_t len);
 uint32_t rj_crc32_update_scalar(uint32_t crc, const void *data, size_t len);
 uint32_t rj_crc32_final(uint32_t crc); /* ^ 0xFFFFFFFF */
 uint32_t rj_crc32(const void *data, size_t len); /* one-shot */
+uint32_t rj_crc32_fast(uint32_t crc, const void *data, size_t len);

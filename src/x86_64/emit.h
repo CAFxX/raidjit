@@ -33,6 +33,11 @@ typedef struct {
         int add;    /* extra addend (constant-pool offset) */
     } *fix;
     int nfix, cfix;
+    /* Sticky error flag: set on buffer overflow or label/fixup table
+     * realloc failure (OOM). All em_* functions become no-ops once set;
+     * jit_build_version checks it after codegen and fails cleanly.
+     * (Mirrors the aarch64 emitter's e->err pattern.) */
+    int err;
 } em_t;
 
 void em_init(em_t *e, uint8_t *buf, size_t cap);
@@ -132,6 +137,26 @@ void em_vpternlog_mem(em_t *e, int vd, int s1, int b, int x, int sc, int disp,
                       unsigned imm, int vl);
 void em_vzero(em_t *e, int vd, int vl); /* vd ^= vd */
 void em_vzeroupper(em_t *e); /* VEX.128.0F 77: clear upper vector state */
+/* VPCLMULQDQ: zmm1 = per-128-bit-lane carryless multiply (EVEX.66.0F3A.W1
+ * 44 /r ib). imm selects the 64-bit halves (0x00 = lo*lo, 0x11 = hi*hi).
+ * Requires AVX512F + VPCLMULQDQ. */
+void em_vpclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm);
+/* VEXTRACTI32X4: xmm1 = 128-bit lane imm of zmm2 (EVEX.66.0F3A.W0 39 /r
+ * ib), zero-extended. Requires AVX512F. */
+void em_vextracti32x4(em_t *e, int vd, int vs, unsigned imm);
+/* PCLMULQDQ: xmm1 = carryless multiply of selected 64-bit halves
+ * (VEX.128.66.0F3A.44 /r ib). imm selects the halves (0x00 = lo*lo,
+ * 0x11 = hi*hi). Non-destructive 3-operand: vd=dst(ModRM.reg),
+ * vs1=VEX.vvvv, vs2=ModRM r/m. VEX: all operands must be xmm0-15.
+ * Requires PCLMULQDQ. */
+void em_pclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm);
+/* VPXORD, 128-bit EVEX form (EVEX.66.0F.W0 EF /r): vd = s1 ^ s2,
+ * zeroes bits [511:128] of vd. Requires AVX512F. */
+void em_vpxor_evex128(em_t *e, int vd, int s1, int s2);
+/* VMOVDQA32, 128-bit EVEX forms (EVEX.66.0F.W0 6F/7F /r), 16-byte
+ * aligned. Requires AVX512F. */
+void em_vmovdqa_ld_evex128(em_t *e, int vd, int b, int x, int sc, int disp);
+void em_vmovdqa_st_evex128(em_t *e, int b, int x, int sc, int disp, int vs);
 
 /* --- legacy SSE encodings (no VEX; for the SSE ISA level) --- */
 void em_movdqa_ld_sse(em_t *e, int vd, int b, int x, int sc, int disp);

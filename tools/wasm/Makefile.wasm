@@ -28,7 +28,7 @@ COMMON_SRCS := $(REPO)/src/gf.c $(REPO)/src/plan.c $(REPO)/src/topo.c \
   $(REPO)/src/xorcode.c $(REPO)/src/survivor.c $(REPO)/src/prefetch_calib.c \
   $(REPO)/src/planid.c $(REPO)/src/crc.c $(REPO)/src/striping.c \
   $(REPO)/src/api_crc.c $(REPO)/src/fused.c $(REPO)/src/api_batched.c \
-  $(REPO)/src/ui_meta.c \
+  $(REPO)/src/ui_meta.c $(REPO)/src/crc_fast.c \
   $(WASM_DIR)rjw_api.c $(WASM_DIR)vendor/cJSON.c
 
 EMFLAGS := -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \

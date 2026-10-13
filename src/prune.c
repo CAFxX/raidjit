@@ -215,6 +215,11 @@ static int twin_dominates(const version_t *a, const version_t *b,
      * checked axes -- the closed-form recovery emitter is a different
      * codegen shape (syndrome+combine vs generic MULACC over baked R),
      * not a multiply twin.
+     * crc_fold is pinned (Phase 2): a (crc_fold=1,ternlog=1)/
+     * (crc_fold=0,ternlog=0) pair must never satisfy the twin relation
+     * on the checked axes -- the interleaved CRC fold is a different
+     * codegen shape (per-stream fold state in dedicated vector
+     * registers, fold emitters in the loop body), not a multiply twin.
      * Behavior-preserving for
      * the other axes today: all in-list candidates have
      * notail=0/predtail=0/maskedtail=0, and P_XOR pairs are refused by
@@ -234,6 +239,7 @@ static int twin_dominates(const version_t *a, const version_t *b,
         a->cand.mshift != b->cand.mshift ||
         a->cand.pipe != b->cand.pipe ||
         a->cand.rec_cf != b->cand.rec_cf ||
+        a->cand.crc_fold != b->cand.crc_fold ||
         a->cand.lmul != b->cand.lmul)
         return 0;
 

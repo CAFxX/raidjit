@@ -1,0 +1,14 @@
+emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.11 (a0014542110d6078c3a1a7941fa1ddb3a2281f16)
+emcc -O2 -std=c99 -ffp-contract=off \
+  -DCAPSTONE_HAS_X86 -DCAPSTONE_HAS_AARCH64 -DCAPSTONE_HAS_RISCV \
+  -Itools/wasm/vendor/capstone/include \
+  tools/wasm/vendor/capstone/arch/X86/X86ATTInstPrinter.c tools/wasm/vendor/capstone/arch/X86/X86Disassembler.c tools/wasm/vendor/capstone/arch/X86/X86DisassemblerDecoder.c tools/wasm/vendor/capstone/arch/X86/X86InstPrinterCommon.c tools/wasm/vendor/capstone/arch/X86/X86IntelInstPrinter.c tools/wasm/vendor/capstone/arch/X86/X86Mapping.c tools/wasm/vendor/capstone/arch/X86/X86Module.c tools/wasm/vendor/capstone/arch/AArch64/AArch64BaseInfo.c tools/wasm/vendor/capstone/arch/AArch64/AArch64Disassembler.c tools/wasm/vendor/capstone/arch/AArch64/AArch64DisassemblerExtension.c tools/wasm/vendor/capstone/arch/AArch64/AArch64InstPrinter.c tools/wasm/vendor/capstone/arch/AArch64/AArch64Mapping.c tools/wasm/vendor/capstone/arch/AArch64/AArch64Module.c tools/wasm/vendor/capstone/arch/RISCV/RISCVBaseInfo.c tools/wasm/vendor/capstone/arch/RISCV/RISCVDisassembler.c tools/wasm/vendor/capstone/arch/RISCV/RISCVDisassemblerExtension.c tools/wasm/vendor/capstone/arch/RISCV/RISCVInstPrinter.c tools/wasm/vendor/capstone/arch/RISCV/RISCVMapping.c tools/wasm/vendor/capstone/arch/RISCV/RISCVModule.c tools/wasm/vendor/capstone/MCInst.c tools/wasm/vendor/capstone/MCInstPrinter.c tools/wasm/vendor/capstone/MCInstrDesc.c tools/wasm/vendor/capstone/MCRegisterInfo.c tools/wasm/vendor/capstone/Mapping.c tools/wasm/vendor/capstone/SStream.c tools/wasm/vendor/capstone/cs.c tools/wasm/vendor/capstone/utils.c \
+  tools/wasm/dis_api.c tools/wasm/vendor/cJSON.c \
+  -o tools/wasm/out/disasm.js \
+  -sWASM=1 -sSINGLE_FILE=1 -sSINGLE_FILE_BINARY_ENCODE=0 \
+  -sENVIRONMENT=node,web -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 \
+  -sWASM_BIGINT=1 \
+  -sEXPORTED_FUNCTIONS=_dj_disasm,_dj_free_string,_malloc,_free \
+  -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8,UTF8ToString,getValue,HEAPU8 \
+  -sEXPORT_NAME=Disasm
+emcc: warning: WASM_BIGINT is deprecated (no longer needed. Should only ever be implicitly disabled by -sWASM=0). Please open a bug if you have a continuing need for this setting [-Wdeprecated]

@@ -14,7 +14,10 @@ void em_init(em_t *e, uint8_t *buf, size_t cap)
 
 static void em_u8(em_t *e, unsigned v)
 {
-    assert(e->len < e->cap);
+    /* Buffer overflow (OOM path): set the sticky flag instead of
+     * asserting. All subsequent emits become no-ops; jit_build_version
+     * rejects the build cleanly after codegen. */
+    if (e->err || e->len >= e->cap) { e->err = 1; return; }
     e->buf[e->len++] = (uint8_t)v;
 }
 
@@ -36,10 +39,13 @@ static void em_i64(em_t *e, uint64_t v)
 
 int em_label(em_t *e)
 {
+    if (e->err) return -1;
     if (e->nlab == e->clab) {
-        e->clab = e->clab ? e->clab * 2 : 32;
-        e->lpos = realloc(e->lpos, (size_t)e->clab * sizeof(size_t));
-        assert(e->lpos);
+        int nclab = e->clab ? e->clab * 2 : 32;
+        size_t *np = realloc(e->lpos, (size_t)nclab * sizeof(size_t));
+        if (!np) { e->err = 1; return -1; }
+        e->lpos = np;
+        e->clab = nclab;
         for (int i = e->nlab; i < e->clab; i++)
             e->lpos[i] = (size_t)-1;
     }
@@ -48,16 +54,20 @@ int em_label(em_t *e)
 
 void em_bind(em_t *e, int lab)
 {
+    if (e->err) return;
     assert(lab >= 0 && lab < e->nlab);
     e->lpos[lab] = e->len;
 }
 
 static void em_fixup(em_t *e, size_t at, int lab, int add)
 {
+    if (e->err) return;
     if (e->nfix == e->cfix) {
-        e->cfix = e->cfix ? e->cfix * 2 : 64;
-        e->fix = realloc(e->fix, (size_t)e->cfix * sizeof(*e->fix));
-        assert(e->fix);
+        int ncfix = e->cfix ? e->cfix * 2 : 64;
+        void *nf = realloc(e->fix, (size_t)ncfix * sizeof(*e->fix));
+        if (!nf) { e->err = 1; return; }
+        e->fix = nf;
+        e->cfix = ncfix;
     }
     e->fix[e->nfix].at = at;
     e->fix[e->nfix].lab = lab;
@@ -67,6 +77,7 @@ static void em_fixup(em_t *e, size_t at, int lab, int add)
 
 void em_resolve(em_t *e)
 {
+    if (e->err) return;
     for (int i = 0; i < e->nfix; i++) {
         size_t at = e->fix[i].at;
         int lab = e->fix[i].lab;
@@ -965,4 +976,118 @@ void em_mov_r8r8(em_t *e, int d, int s)
     emit_rex(e, 0, R, X, B);
     em_u8(e, 0x8A);
     em_u8(e, (unsigned)(0xC0 | ((d & 7) << 3) | (s & 7)));
+}
+
+/* VPCLMULQDQ (carryless multiply, quadword granular).
+ * EVEX.66.0F3A.W1 44 /r ib : VPCLMULQDQ zmm1, zmm2, zmm3, imm8.
+ * One 64x64->128 carryless multiply per 128-bit lane:
+ *   imm=0x00: lane = CLMUL(src1[63:0], src2[63:0])
+ *   imm=0x11: lane = CLMUL(src1[127:64], src2[127:64])
+ *   imm=0x01: lane = CLMUL(src1[63:0], src2[127:64])
+ *   imm=0x10: lane = CLMUL(src1[127:64], src2[63:0])
+ * Requires AVX512F + VPCLMULQDQ. (Phase 2 REDUX does not use this for
+ * the CRC fold — the per-stream 128-bit fold uses em_pclmulqdq instead.
+ * Kept for other consumers.) */
+void em_vpclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm)
+{
+    /* dest (vd) in ModRM.reg, src2 (vs2) in r/m, src1 (vs1) in vvvv.
+     * EVEX.R/R' extend reg (vd); EVEX.X/B extend r/m (vs2). */
+    int R = (vd >> 3) & 1;
+    int X = (vs2 >> 4) & 1;
+    int B = (vs2 >> 3) & 1;
+    int R2 = (vd >> 4) & 1;
+    /* WIG: W is ignored; use 0 to match GAS. */
+    emit_evex(e, 3, 0, R, X, B, R2, vs1, 2, 1, 0, 0);
+    em_u8(e, 0x44);
+    em_u8(e, (unsigned)(0xC0 | ((vd & 7) << 3) | (vs2 & 7)));
+    em_u8(e, imm & 0xFF);
+}
+
+/* VEXTRACTI32X4: extract 128 bits from a zmm to an xmm.
+ * EVEX.66.0F3A.W0 39 /r ib : VEXTRACTI32X4 xmm1, zmm2, imm8.
+ * imm8 selects the 128-bit lane (0..3). Dest xmm is zero-extended.
+ * Requires AVX512F. Used by the crc_fold twin to split a 64B vector
+ * into 16B chunks for the sequential single-stream CRC fold. */
+void em_vextracti32x4(em_t *e, int vd, int vs, unsigned imm)
+{
+    /* VEXTRACT is store-like: src (zmm) in ModRM.reg, dest (xmm) in r/m.
+     * EVEX.R/R' extend reg (vs); EVEX.X/B extend r/m (vd).
+     * vvvv unused: 1111b (R=1, V'=1). */
+    int R = (vs >> 3) & 1;
+    int X = (vd >> 4) & 1;
+    int B = (vd >> 3) & 1;
+    int R2 = (vs >> 4) & 1;
+    /* vvvv=0 encodes 1111b (inverted storage); LL=2 for the 512-bit source. */
+    emit_evex(e, 3, 0, R, X, B, R2, 0, 2, 1, 0, 0);
+    em_u8(e, 0x39);
+    em_u8(e, (unsigned)(0xC0 | ((vs & 7) << 3) | (vd & 7)));
+    em_u8(e, imm & 0xFF);
+}
+
+/* PCLMULQDQ (carryless multiply, quadword granular), 128-bit VEX form.
+ * VEX.128.66.0F3A.44 /r ib : PCLMULQDQ xmm1, xmm2, xmm3/m128, imm8.
+ * xmm1(dst) = CLMUL(xmm2, xmm3) with the 64-bit halves selected by imm8:
+ *   imm=0x00: dst = CLMUL(src1[63:0], src2[63:0])   (lo*lo)
+ *   imm=0x11: dst = CLMUL(src1[127:64], src2[127:64]) (hi*hi)
+ *   imm=0x01: dst = CLMUL(src1[127:64], src2[63:0])  (hi*lo)
+ *   imm=0x10: dst = CLMUL(src1[63:0], src2[127:64])  (lo*hi)
+ * Non-destructive 3-operand: vd=xmm1 (ModRM.reg), vs1=xmm2 (VEX.vvvv),
+ * vs2=xmm3 (ModRM r/m). WIG (W=0 to match GAS). VEX addresses only
+ * xmm0-15: callers must keep all three operands in the low 16 vector
+ * registers (the crc_fold backend reserves its temps/consts there).
+ * Requires PCLMULQDQ. Used by the REDUX crc_fold (per-stream 128-bit
+ * fold); the 512-bit em_vpclmulqdq stays for other consumers.
+ * (GAS assembles this form under the vpclmul{lq|hq}{lq|hq}dq mnemonics;
+ * the legacy 66 0F 3A 44 form is a different, destructive-2-operand
+ * encoding and is NOT what this emitter produces.) */
+void em_pclmulqdq(em_t *e, int vd, int vs1, int vs2, unsigned imm)
+{
+    int R = (vd >> 3) & 1;
+    int B = (vs2 >> 3) & 1;
+    /* 3-byte VEX (map 3 = 0F3A); W=0, L=0 (128-bit), pp=1 (66). */
+    emit_vex(e, 3, 0, R, 0, B, vs1, 0, 1);
+    em_u8(e, 0x44);
+    em_u8(e, (unsigned)(0xC0 | ((vd & 7) << 3) | (vs2 & 7)));
+    em_u8(e, imm & 0xFF);
+}
+
+/* VPXORD, 128-bit EVEX form: vd = s1 ^ s2 (32-bit lanes).
+ * EVEX.66.0F.W0 EF /r : bits [511:128] of vd's zmm are zeroed.
+ * Needed for the crc_fold state XORs: the VEX VPXOR cannot address
+ * xmm16-31, but fold states may live there. Requires AVX512F. */
+void em_vpxor_evex128(em_t *e, int vd, int s1, int s2)
+{
+    int R = (vd >> 3) & 1;
+    int X = (s2 >> 4) & 1;
+    int B = (s2 >> 3) & 1;
+    int R2 = (vd >> 4) & 1;
+    emit_evex(e, 1, 0, R, X, B, R2, s1, 0, 1, 0, 0);
+    em_u8(e, 0xEF);
+    em_u8(e, (unsigned)(0xC0 | ((vd & 7) << 3) | (s2 & 7)));
+}
+
+/* VMOVDQA32, 128-bit EVEX forms (load/store).
+ * EVEX.66.0F.W0 6F /r (load) and 7F /r (store): 16-byte aligned.
+ * Needed for crc_fold state load/store: the VEX VMOVDQA cannot address
+ * xmm16-31. Requires AVX512F. */
+void em_vmovdqa_ld_evex128(em_t *e, int vd, int b, int x, int sc, int disp)
+{
+    int R, X, B;
+    rxb(vd, b, x, &R, &X, &B);
+    int R2 = (vd >> 4) & 1;
+    emit_evex(e, 1, 0, R, X, B, R2, 0, 0, 1, 0, 0);
+    em_u8(e, 0x6F);
+    /* EVEX disp8 is scaled by the 16-byte memory operand size. */
+    emit_mrm(e, vd, b, x, sc, disp, 16);
+}
+
+void em_vmovdqa_st_evex128(em_t *e, int b, int x, int sc, int disp, int vs)
+{
+    int R, X, B;
+    rxb(vs, b, x, &R, &X, &B);
+    int R2 = (vs >> 4) & 1;
+    emit_evex(e, 1, 0, R, X, B, R2, 0, 0, 1, 0, 0);
+    em_u8(e, 0x7F);
+    /* EVEX disp8 is scaled by the 16-byte memory operand size. */
+    emit_mrm(e, vs, b, x, sc, disp, 16);
 }

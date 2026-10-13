@@ -123,8 +123,9 @@ int api_permi2b_duel_eligible(const version_t *winner, const plan_t *wpl,
            plan_any_nontrivial(wpl);
 }
 
-rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
-                   const rj_options *opts, char *err, size_t errlen)
+static rj_jit *rj_compile_impl(const rj_topology *topo, const rj_op *op,
+                                const rj_options *opts, char *err,
+                                size_t errlen, int want_crc)
 {
     if (!topo || !op) {
         if (err && errlen)
@@ -209,6 +210,7 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
             topo_int_free(&ti);
             return NULL;
         }
+        pl.want_crc = want_crc;
 
         /* Candidate buffer. Worst case today: RVV P_HORNER with LMUL:
          * 2 muls x 5 U x 4 LMUL = 40 base; +20 remat twins = 60;
@@ -332,7 +334,14 @@ rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
     /* The twins are built from the WINNER's plan: on the survivor
      * path that is the winning subset's plan (wpl), so the chosen set
      * bakes into every dispatched variant. Dispatcher ABI unchanged. */
-    if (o.benchmark && !wpl->noop) {
+    /* Stage 2 is skipped for REDUX crc_fold winners: fold kernels take
+     * the 4-argument entry (fold_state in RCX), but an installed
+     * dispatcher has the 3-argument rj_fn signature -- routing a fold
+     * kernel through it would feed the kernel a garbage fold_state and
+     * crash. The general fold kernel serves every length correctly
+     * (its scalar tail folds whole 16B chunks per the §3.4 contract),
+     * so no twin is needed. */
+    if (o.benchmark && !wpl->noop && !vs[winner].cand.crc_fold) {
         char e3[256];
         /* VPERMI2B twin (track B2, SOTA item 15): built from the stage-1
          * winner, NOT enumerated in stage-1 (plan_candidates never sets
@@ -861,7 +870,12 @@ const char *rj_plan_id(const rj_jit *j)
 }
 
 /* Field-by-field candidate equality for the pinned-compile membership
- * check (memcmp is unsafe: cand_t may carry padding bytes). */
+ * check (memcmp is unsafe: cand_t may carry padding bytes).
+ * BUG-COMBO-STATIC-F04: pipe, rec_cf, crc_fold were missing, so a pinned
+ * spec differing only in those axes could match an enumerated candidate
+ * that lacks them (membership bypass). CLASS HUNT: any new cand_t axis
+ * must be added here, to planid format/parse, to any_twin, and to
+ * twin_dominates in the same change. */
 static int cand_spec_equal(const cand_t *a, const cand_t *b)
 {
     return a->isa == b->isa && a->mul == b->mul && a->U == b->U &&
@@ -870,7 +884,9 @@ static int cand_spec_equal(const cand_t *a, const cand_t *b)
            a->notail == b->notail && a->predtail == b->predtail &&
            a->maskedtail == b->maskedtail && a->permi2b == b->permi2b &&
            a->xorsched == b->xorsched && a->xorbit == b->xorbit &&
-           a->mshift == b->mshift && a->lmul == b->lmul;
+           a->mshift == b->mshift && a->lmul == b->lmul &&
+           a->pipe == b->pipe && a->rec_cf == b->rec_cf &&
+           a->crc_fold == b->crc_fold;
 }
 
 static const char *planid_kind_name(plan_kind_t k)
@@ -971,13 +987,18 @@ rj_jit *rj_compile_pinned(const rj_topology *topo, const rj_op *op,
         topo_int_free(&ti);
         return NULL;
     }
-    /* No-op plans have no tail to twin: an ID naming tail twins for one
-     * is bogus. */
+    /* No-op plans have no code to twin: an ID naming any twin for one
+     * is bogus. The kernel is a vacuous prologue/epilogue; reporting
+     * twins as "applied" would be a phantom (BUG-COMBO-E50). */
     if (pl.noop &&
-        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail)) {
+        (spec.tail.notail || spec.tail.predtail || spec.tail.maskedtail ||
+         spec.cand.nt || spec.cand.ternlog || spec.cand.xorbit ||
+         spec.cand.xorsched || spec.cand.permi2b || spec.cand.remat ||
+         spec.cand.mshift || spec.cand.pipe || spec.cand.rec_cf ||
+         spec.cand.prefetch_dist || spec.cand.crc_fold || spec.cand.lmul)) {
         if (err && errlen)
             snprintf(err, errlen,
-                     "pinned plan ID: names tail twins for a no-op plan");
+                     "pinned plan ID: names twins for a no-op plan");
         plan_free(&pl);
         topo_int_free(&ti);
         return NULL;
@@ -1594,4 +1615,31 @@ int rj_list_variants(const rj_topology *topo, rj_op op,
 lv_done:
     topo_int_free(&ti);
     return rc == 0 ? total : -1;
+}
+
+rj_jit *rj_compile(const rj_topology *topo, const rj_op *op,
+                   const rj_options *opts, char *err, size_t errlen)
+{
+    return rj_compile_impl(topo, op, opts, err, errlen, 0);
+}
+
+struct rj_jit *rj_compile_want_crc(const rj_topology *t, const rj_op *op,
+                                   const rj_options *o, char *err,
+                                   size_t errlen)
+{
+    return rj_compile_impl(t, op, o, err, errlen, 1);
+}
+
+/* Phase 2: query in-kernel CRC folding. The version folds iff its
+ * candidate has crc_fold=1 (set by plan_candidates when want_crc=1 and
+ * the uarch gate is open). */
+int rj_jit_crc_fold(const version_t *v)
+{
+    return v && v->cand.crc_fold;
+}
+
+/* Phase 2: query folding on a jit handle. */
+int rj_jit_handle_crc_fold(const struct rj_jit *j)
+{
+    return j && rj_jit_crc_fold(&j->v);
 }

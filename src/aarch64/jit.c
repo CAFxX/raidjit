@@ -54,6 +54,9 @@ typedef struct {
     int U, group;    /* group = U*vl bytes per vector-loop iteration */
     int t, tlo, thi, r1, r2, tbl_lo, tbl_hi, mask; /* logical vector regs */
     int t2; /* XOR-schedule 2nd temp (P_XOR xorsched twin only) */
+    /* Bit-program (xorbit) twin registers: input-byte reg, two bit-temp
+     * regs, and the 0x01 mask reg (see xorbit_need_regs). */
+    int xbt_in, xbt_r1, xbt_r2, xbt_mask;
     /* Software-pipelined loop twin (track I8, cand->pipe): base logical
      * regs of the per-column double-buffered datasets D (pipe_d, U
      * regs) and Dn (pipe_dn, U regs). In pipe mode the single input
@@ -95,6 +98,11 @@ typedef struct {
     int use_eor3;
     uint8_t logtab[256], exptab[512];
     double uops, mem;
+    uint32_t twin_applied; /* BUG-COMBO-STATIC-F16: bitmask of TWIN_APPLIED_*
+                            * bits, set when each twin's code path is taken. */
+    int oom; /* sticky OOM flag: set by pool_get on realloc failure.
+              * jit_build_version checks it after codegen and fails
+              * cleanly instead of asserting. */
 } cg_t;
 
 /* logical vector reg -> physical: NEON identity; SVE: r in [0,15] ->
@@ -114,6 +122,7 @@ static int V(const cg_t *cg, int r)
 
 static size_t pool_get(cg_t *cg, int kind, uint8_t c)
 {
+    if (cg->oom) return 0; /* sticky OOM: fail fast */
     for (int i = 0; i < cg->ncent; i++)
         if (cg->cent[i].kind == kind && cg->cent[i].c == c)
             return cg->cent[i].off;
@@ -133,24 +142,27 @@ static size_t pool_get(cg_t *cg, int kind, uint8_t c)
     }
     size_t off = (cg->pool_len + 63) & ~(size_t)63;
     if (off + len > cg->pool_cap) {
-        cg->pool_cap = (off + len + 4095) & ~(size_t)4095;
-        cg->pool = realloc(cg->pool, cg->pool_cap);
-        assert(cg->pool);
-    /* The alignment gap [pool_len, off) is padding: zero it so the
-     * emitted const blob is deterministic (malloc/realloc leave it
-     * uninitialized). WASM-only: native output stays byte-identical.
-     * The gap is never read by generated code. */
-#ifdef RJ_WASM
-    if (off > cg->pool_len)
-        memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
-#endif
+        size_t new_cap = (off + len + 4095) & ~(size_t)4095;
+        uint8_t *np = realloc(cg->pool, new_cap);
+        if (!np) { cg->oom = 1; return 0; }
+        cg->pool = np;
+        cg->pool_cap = new_cap;
     }
+    /* L2 (const-pool alignment-gap determinism): the gap [pool_len, off)
+     * is copied verbatim into the emitted image, so it must not carry
+     * heap history. Zero it here at the single point where the gap is
+     * created. Gaps are never executed or read (entries are loaded at
+     * their aligned offsets), so no executed/read byte changes and the
+     * 64-byte alignment contract is preserved. */
+    memset(cg->pool + cg->pool_len, 0, off - cg->pool_len);
     memcpy(cg->pool + off, tmp, len);
     cg->pool_len = off + len;
     if (cg->ncent == cg->ccent) {
-        cg->ccent = cg->ccent ? cg->ccent * 2 : 32;
-        cg->cent = realloc(cg->cent, (size_t)cg->ccent * sizeof(*cg->cent));
-        assert(cg->cent);
+        int new_ccent = cg->ccent ? cg->ccent * 2 : 32;
+        void *ncent = realloc(cg->cent, (size_t)new_ccent * sizeof(*cg->cent));
+        if (!ncent) { cg->oom = 1; return 0; }
+        cg->cent = ncent;
+        cg->ccent = new_ccent;
     }
     cg->cent[cg->ncent].kind = kind;
     cg->cent[cg->ncent].c = c;
@@ -223,12 +235,16 @@ static void c_st_to(cg_t *cg, int r, int u, int ptr)
     em_t *e = &cg->em;
     if (cg->is_sve) {
         if (cg->pred) {
-            if (cg->nt)
+            if (cg->nt) {
                 em_sve_stnt1b(e, V(cg, r), 1, ptr);
-            else
+                /* BUG-COMBO-STATIC-F16: effect marker. */
+                cg->twin_applied |= TWIN_APPLIED_NT;
+            } else
                 em_sve_st1b(e, V(cg, r), 1, ptr);
         } else if (cg->nt) {
             em_sve_stnt1b_off(e, V(cg, r), 0, ptr, u);
+            /* BUG-COMBO-STATIC-F16: effect marker. */
+            cg->twin_applied |= TWIN_APPLIED_NT;
         } else {
             em_sve_st1b_off(e, V(cg, r), 0, ptr, u);
         }
@@ -317,6 +333,247 @@ static void c_lsr4(cg_t *cg, int d, int s)
     cg->uops += 1;
 }
 
+/* ---- Bit-program (xorbit) twin helpers ----
+ * Mirror the x86 c_srlw/c_and/c_sllw trio for the bit-program body.
+ * All forms are 1 uop (no SSE-style mov+shift penalty: NEON has
+ * 3-operand shifts via the new emitters, SVE uses unpredicated forms).
+ * The xorbit body is lane-independent, so unpredicated is sound (same
+ * argument as c_and3/c_lsr4). */
+
+/* d = s >> k, k in 1..7. Caller skips k=0 (no shift needed). */
+static void c_xbt_srl(cg_t *cg, int d, int s, unsigned k)
+{
+    em_t *e = &cg->em;
+    assert(k >= 1 && k <= 7);
+    if (cg->is_sve) {
+        em_sve_lsr_unpred(e, V(cg, d), V(cg, s), k);
+    } else {
+        assert(!cg->pred);
+        em_neon_ushr(e, d, s, k);
+    }
+    cg->uops += 1;
+}
+
+/* d = s & 0x01, using the xorbit 0x01 mask register (xbt_mask). */
+static void c_xbt_and1(cg_t *cg, int d, int s)
+{
+    em_t *e = &cg->em;
+    if (cg->is_sve) {
+        em_sve_and_unpred(e, V(cg, d), V(cg, s), V(cg, cg->xbt_mask));
+    } else {
+        assert(!cg->pred);
+        em_neon_and(e, d, s, cg->xbt_mask);
+    }
+    cg->uops += 1;
+}
+
+/* d = s << b, b in 1..7. Caller uses c_copy for b=0. */
+static void c_xbt_sll(cg_t *cg, int d, int s, unsigned b)
+{
+    em_t *e = &cg->em;
+    assert(b >= 1 && b <= 7);
+    if (cg->is_sve) {
+        em_sve_lsl_unpred(e, V(cg, d), V(cg, s), b);
+    } else {
+        assert(!cg->pred);
+        em_neon_shl(e, d, s, b);
+    }
+    cg->uops += 1;
+}
+
+/* ---- Bit-program (xorbit) body ---- */
+
+/* Zero a vector register (for xorbit dead-byte zeroing). */
+static void c_xbt_zero(cg_t *cg, int r)
+{
+    em_t *e = &cg->em;
+    if (cg->is_sve)
+        em_sve_dup(e, V(cg, r), 0);
+    else {
+        assert(!cg->pred);
+        em_neon_movi(e, r, 0);
+    }
+    cg->uops += 1;
+}
+
+/* Forward declarations (defined below, used by xorbit code) */
+static void c_inptr(cg_t *cg, int dst, int idx);
+static void c_inptr_np(cg_t *cg, int dst, int idx);
+
+/* Fan out one bit-0-normalized value (vsrc) to a temp's / input bit's
+ * user output bits, grouped by bit position b (users sorted ascending
+ * by output-bit id). Mirrors x86 xorbit_fanout exactly. */
+static void xorbit_fanout(cg_t *cg, const int *users, int nusers, int vsrc,
+                          int vtmp, int u, int *touched, int is_delta)
+{
+    int U = cg->U;
+    int w = 0;
+    while (w < nusers) {
+        int b = users[w] & 7;
+        int w1 = w;
+        while (w1 < nusers && (users[w1] & 7) == b)
+            w1++;
+        int nj = w1 - w;
+        int j0 = users[w] >> 3;
+        int acc0 = j0 * U + u;
+        if (nj == 1 && !is_delta && !touched[j0]) {
+            /* single first-touch user: shift/place directly into acc */
+            if (b == 0)
+                c_copy(cg, acc0, vsrc);
+            else
+                c_xbt_sll(cg, acc0, vsrc, (unsigned)b);
+            touched[j0] = 1;
+        } else if (b == 0) {
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                int acc = j * U + u;
+                if (!is_delta && !touched[j]) {
+                    c_copy(cg, acc, vsrc);
+                    touched[j] = 1;
+                } else {
+                    c_xor(cg, acc, vsrc);
+                }
+            }
+        } else {
+            c_xbt_sll(cg, vtmp, vsrc, (unsigned)b);
+            for (int x = w; x < w1; x++) {
+                int j = users[x] >> 3;
+                int acc = j * U + u;
+                if (!is_delta && !touched[j]) {
+                    c_copy(cg, acc, vtmp);
+                    touched[j] = 1;
+                } else {
+                    c_xor(cg, acc, vtmp);
+                }
+            }
+        }
+        w = w1;
+    }
+}
+
+static void gen_body_xorbit(cg_t *cg)
+{
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_XORBIT;
+    const plan_t *pl = cg->pl;
+    const xorbit_t *s = pl->bit_sched;
+    assert(s && s->ntemps > 0);
+    assert(s->kind == pl->kind);
+    int n_out = pl->n_out, U = cg->U, vl = cg->vl;
+    int ni_sched = s->n_in_sched;
+    int is_delta = (pl->kind == P_DELTA);
+    int inreg = cg->xbt_in, r1 = cg->xbt_r1, r2 = cg->xbt_r2;
+    (void)vl; /* vl used via c_ld_to's u parameter */
+    /* Predicated-tail mode processes one lane per chunk (the u=0
+     * slice); the chunk loop re-enters gen_body per VL-sized chunk.
+     * Computing the other lanes would be dead work: gen_stores only
+     * stores the u=0 slice in pred mode. */
+    int ulanes = cg->pred ? 1 : U;
+
+    if (!is_delta) {
+        /* zero dead output bytes (no atoms in any of their 8 bits) */
+        for (int j = 0; j < n_out; j++) {
+            int live = 0;
+            for (int b = 0; b < 8; b++)
+                if (s->bit_natoms[8 * j + b] > 0) {
+                    live = 1;
+                    break;
+                }
+            if (!live)
+                for (int u = 0; u < ulanes; u++)
+                    c_xbt_zero(cg, j * U + u);
+        }
+    } else {
+        /* seed accumulators from oldpar (like the naive DELTA body) */
+        int nc = pl->nchanged;
+        for (int j = 0; j < n_out; j++) {
+            c_inptr(cg, X10, 2 * nc + j);
+            for (int u = 0; u < ulanes; u++)
+                c_ld_to(cg, j * U + u, u, X10);
+        }
+    }
+
+    int pf_done[RJ_MAX_DISKS];
+    for (int i = 0; i < ni_sched; i++)
+        pf_done[i] = 0;
+    int touched[RJ_MAX_DISKS];
+
+    for (int u = 0; u < ulanes; u++) {
+        for (int j = 0; j < n_out; j++)
+            touched[j] = 0;
+        int cur_in = -1;
+        /* phase 1: form each temp, fan out immediately */
+        for (int m = 0; m < s->ntemps; m++) {
+            int a = s->temps[m].a, b = s->temps[m].b;
+            int ia = a >> 3, ka = a & 7;
+            int ib = b >> 3, kb = b & 7;
+            if (cur_in != ia) {
+                if (!pf_done[ia]) {
+                    c_inptr(cg, X10, ia);
+                    pf_done[ia] = 1;
+                } else {
+                    c_inptr_np(cg, X10, ia);
+                }
+                c_ld_to(cg, inreg, u, X10);
+                cur_in = ia;
+            }
+            /* Note: always shift+and, even for ka=0, to stay in lockstep
+             * with xorbit_version_uops (which counts 2 uops here for
+             * non-SSE). A shift-by-0 is a legal no-op. */
+            if (ka == 0)
+                c_copy(cg, r1, inreg);
+            else
+                c_xbt_srl(cg, r1, inreg, (unsigned)ka);
+            c_xbt_and1(cg, r1, r1);
+            if (cur_in != ib) {
+                if (!pf_done[ib]) {
+                    c_inptr(cg, X10, ib);
+                    pf_done[ib] = 1;
+                } else {
+                    c_inptr_np(cg, X10, ib);
+                }
+                c_ld_to(cg, inreg, u, X10);
+                cur_in = ib;
+            }
+            if (kb == 0) {
+                c_copy(cg, r2, inreg);
+                c_xbt_and1(cg, r2, r2);
+            } else {
+                c_xbt_srl(cg, r2, inreg, (unsigned)kb);
+                c_xbt_and1(cg, r2, r2);
+            }
+            c_xor(cg, r1, r2);
+            xorbit_fanout(cg, s->temps[m].users, s->temps[m].nusers, r1,
+                          r2, u, touched, is_delta);
+        }
+        /* phase 2: surviving input bits, fanned out directly */
+        for (int q = 0; q < 8 * ni_sched; q++) {
+            if (!s->inbit_nusers[q])
+                continue;
+            int i = q >> 3, k = q & 7;
+            if (cur_in != i) {
+                if (!pf_done[i]) {
+                    c_inptr(cg, X10, i);
+                    pf_done[i] = 1;
+                } else {
+                    c_inptr_np(cg, X10, i);
+                }
+                c_ld_to(cg, inreg, u, X10);
+                cur_in = i;
+            }
+            if (k == 0) {
+                c_copy(cg, r1, inreg);
+                c_xbt_and1(cg, r1, r1);
+            } else {
+                c_xbt_srl(cg, r1, inreg, (unsigned)k);
+                c_xbt_and1(cg, r1, r1);
+            }
+            xorbit_fanout(cg, s->inbit_users[q], s->inbit_nusers[q], r1,
+                          r2, u, touched, is_delta);
+        }
+    }
+}
+
 /* d = table[idx]; table is the logical reg tblr */
 static void c_tbl_into(cg_t *cg, int d, int tblr, int idx)
 {
@@ -339,6 +596,8 @@ static void c_inptr(cg_t *cg, int dst, int idx)
     if (cg->prefetch_dist && !cg->pred) {
         em_prfm(e, PRF_PLDL1STRM, dst, cg->prefetch_dist);
         cg->uops += 1;
+        /* BUG-COMBO-STATIC-F16: effect marker -- prefetch actually emitted. */
+        cg->twin_applied |= TWIN_APPLIED_PREFETCH;
     }
 }
 
@@ -365,7 +624,15 @@ static void gen_const_setup(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
     em_t *e = &cg->em;
-    if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && cg->need_mask) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: set up the 0x01 mask register. Counted for
+         * model↔emitter lockstep (see xb_body_sched_aarch64). */
+        if (cg->is_sve)
+            em_sve_dup(e, V(cg, cg->xbt_mask), 1);
+        else
+            em_neon_movi(e, cg->xbt_mask, 1);
+        cg->uops += 1;
+    } else if ((pl->kind == P_MULACC || pl->kind == P_DELTA) && cg->need_mask) {
         if (cg->is_sve)
             em_sve_dup(e, V(cg, cg->mask), 15);
         else
@@ -707,6 +974,8 @@ static void cf_combine_lane(cg_t *cg, int u, int acc0, int acc1,
  * distributivity makes it bit-identical to the closed form. */
 static void gen_body_rec_cf(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_REC_CF;
     const struct rec_cf_data *cfd = cg->pl->rec_cf;
     int U = cg->U;
     assert(cfd && (cfd->nf == 1 || cfd->nf == 2));
@@ -779,7 +1048,12 @@ static void gen_body(cg_t *cg)
     /* Accumulator seeding. Every live accumulator is overwritten before
      * its first read (see x86 backend for the argument); dead rows are
      * zeroed here. */
-    if (pl->kind == P_HORNER && n_in == 0) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: the body follows pl->bit_sched instead of
+         * the naive emitter. gen_body_xorbit handles its own
+         * accumulator seeding/zeroing; stores below are shared. */
+        gen_body_xorbit(cg);
+    } else if (pl->kind == P_HORNER && n_in == 0) {
         for (int j = 0; j < n_out; j++)
             for (int u = 0; u < ulanes; u++) {
                 int r = j * U + u;
@@ -792,6 +1066,8 @@ static void gen_body(cg_t *cg)
         /* fall through: store the zeroed accumulators below */
     } else if (pl->kind == P_XOR) {
         if (cg->cand.xorsched) {
+        /* BUG-COMBO-STATIC-F16: effect marker -- the xorsched path. */
+        cg->twin_applied |= TWIN_APPLIED_XORSCHED;
         /* XOR-schedule twin: the body follows pl->xor_sched (cross-row
          * CSE). Phase 1 forms each temp t_k = in_a ^ in_b into t/t2 and
          * fans out; phase 2 streams surviving inputs via t. Every
@@ -984,7 +1260,7 @@ static void gen_body(cg_t *cg)
         int *first_col = NULL;
         if (pl->kind == P_MULACC) {
             first_col = malloc((size_t)n_out * sizeof(*first_col));
-            assert(first_col);
+            if (!first_col) { cg->oom = 1; return; }
             for (int j = 0; j < n_out; j++) {
                 first_col[j] = -1;
                 for (int i = 0; i < n_in; i++)
@@ -1041,6 +1317,8 @@ static void gen_body(cg_t *cg)
                              * non-EOR3 path (EOR3 already did this). */
                             int lo_dst = acc;
                             if (cg->cand.remat) {
+                                /* BUG-COMBO-STATIC-F16: effect marker. */
+                                cg->twin_applied |= TWIN_APPLIED_REMAT;
                                 /* NIBLO/NIBHI ping-pong through the single
                                  * tbl_lo scratch: every (i,j,u) needs both
                                  * tables, and the scratch is shared across
@@ -1103,6 +1381,8 @@ static void gen_stores(cg_t *cg)
                              (unsigned)u * 16);
                 cg->uops += 1;
                 cg->mem += 2 * cg->vl;
+                /* BUG-COMBO-STATIC-F16: effect marker -- STNP emitted. */
+                cg->twin_applied |= TWIN_APPLIED_NT;
             }
             if (u < U)
                 c_st_to(cg, j * U + u, u, X10);
@@ -1219,6 +1499,8 @@ static void pipe_horner_column(cg_t *cg, int col, int data)
  * (degenerate: no input columns) falls back to gen_body. */
 static void gen_body_pipe(cg_t *cg)
 {
+    /* BUG-COMBO-STATIC-F16: effect marker. */
+    cg->twin_applied |= TWIN_APPLIED_PIPE;
     em_t *e = &cg->em;
     const plan_t *pl = cg->pl;
     int n_in = pl->n_in, n_out = pl->n_out, U = cg->U;
@@ -1236,7 +1518,7 @@ static void gen_body_pipe(cg_t *cg)
     int *first_col = NULL;
     if (pl->kind == P_MULACC) {
         first_col = malloc((size_t)n_out * sizeof(*first_col));
-        assert(first_col);
+        if (!first_col) { cg->oom = 1; return; }
         for (int j = 0; j < n_out; j++) {
             first_col[j] = -1;
             for (int i = 0; i < n_in; i++)
@@ -1632,7 +1914,19 @@ static void compute_regs(cg_t *cg)
 {
     const plan_t *pl = cg->pl;
     int n_out = pl->n_out, U = cg->U;
-    if (cg->cand.pipe) {
+    if (cg->cand.xorbit) {
+        /* Bit-program twin: n_out*U accumulators + input-byte reg +
+         * two bit temps + 0x01 mask. The nibble tables are dead.
+         * Must stay in lockstep with xorbit_need_regs. */
+        assert(pl->bit_sched && pl->bit_sched->ntemps > 0);
+        assert(pl->kind == P_MULACC || pl->kind == P_DELTA ||
+               pl->kind == P_HORNER);
+        cg->xbt_in = n_out * U;
+        cg->xbt_r1 = n_out * U + 1;
+        cg->xbt_r2 = n_out * U + 2;
+        cg->xbt_mask = n_out * U + 3;
+        cg->vmax = cg->xbt_mask;
+    } else if (cg->cand.pipe) {
         /* Software-pipelined shape (track I8): the D/Dn datasets
          * (U regs each) replace the single input temp t (dead: -1).
          * jit_build_version rejects unsupported (kind, mul, remat)
@@ -1662,7 +1956,7 @@ static void compute_regs(cg_t *cg)
             cg->mask = cg->tlo + 3;
             cg->hreg =
                 malloc((size_t)2 * (size_t)n_out * sizeof(*cg->hreg));
-            assert(cg->hreg);
+            if (!cg->hreg) { cg->oom = 1; return; }
             int r = cg->tlo + 4;
             for (int j = 0; j < n_out; j++) {
                 uint8_t c = pl->horner_c[j];
@@ -1693,8 +1987,18 @@ static void compute_regs(cg_t *cg)
         cg->mask = n_out * U + 4;
         cg->vmax = cg->mask;
         cg->hreg = malloc((size_t)2 * (size_t)n_out * sizeof(*cg->hreg));
-        assert(cg->hreg);
+        if (!cg->hreg) { cg->oom = 1; return; }
         if (cg->cand.remat) {
+            /* BUG_t5_remat (lead L5): effect marker at mode entry.
+             * The remat twin's code path starts here in register
+             * allocation (no persistent table regs; hreg[] stays -1,
+             * tables reloaded from the pool into tbl_lo on each use)
+             * -- taken for every remat build, including all-trivial
+             * plans where no per-coefficient pool reload ever fires
+             * in the body. Marking only the body reload site made the
+             * F16 postcondition misfire on all-trivial plans; the body
+             * site remains as the per-use instance of the same path. */
+            cg->twin_applied |= TWIN_APPLIED_REMAT;
             /* Rematerialize: no persistent table regs; hreg[] stays -1
              * and is never read (gen_const_setup and the body both
              * branch on cand.remat; the c_ldpool assert would fire if a
@@ -1765,12 +2069,15 @@ static void compute_regs(cg_t *cg)
      * with this assignment, or candidates could be wrongly dropped or
      * (worse) admitted past the regfile. The xorsched twin has its own
      * pressure formula (extra temp). */
-    int want_regs = cg->cand.xorsched
+    int want_regs = cg->cand.xorbit
+                        ? xorbit_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
+                                           pl, U)
+                        : cg->cand.xorsched
                         ? xorsched_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                              pl, U)
                         : plan_need_regs(cg->is_sve ? ISA_SVE : ISA_NEON,
                                          MUL_NIBBLE, pl, U, cg->cand.remat,
-                                         cg->cand.pipe, 0);
+                                         cg->cand.pipe, 0, cg->cand.crc_fold);
     assert(cg->vmax + 1 == want_regs);
 }
 
@@ -1857,6 +2164,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     cg.U = cand->U;
     cg.group = cg.U * cg.vl;
     cg.nt = cand->nt;
+    /* NEON nt pairs adjacent lanes with STNP, which needs U>=2. At U=1
+     * gen_stores() would silently fall through to temporal STR,
+     * violating the nt performance contract. The planner skips
+     * enumerating nt at U=1, but a pinned nt bypasses that guard:
+     * fail the build cleanly instead of degrading silently. */
+    if (cand->nt && !cg.is_sve && cand->U < 2) {
+        snprintf(err, errlen,
+                 "aarch64 backend: nt twin needs U>=2 on NEON "
+                 "(STNP pairs adjacent lanes)");
+        return -1;
+    }
     /* PRFM imm12 x 8: encodable distances are 0..32760, multiple of 8.
      * Fail the twin build cleanly on anything else (same rule as the
      * RVV Zicbop backend) -- never silently truncate the immediate
@@ -2032,11 +2350,17 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
 
     /* Over-pressure must fail cleanly (return -1), not abort. The
      * planner's filter normally prevents this, but force-built
-     * candidates (tests) must also be safe. */
+     * candidates (tests) must also be safe. The xorbit twin has its
+     * own (smaller) register footprint; checking it against the naive
+     * plan_need_regs would wrongly reject valid xorbit candidates
+     * (e.g. P_HORNER, whose naive body needs hregs the xorbit body
+     * never touches). */
     {
-        int need = plan_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON,
-                                  MUL_NIBBLE, pl, cand->U, cand->remat,
-                                  cand->pipe, 0);
+        int need = cand->xorbit
+            ? xorbit_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON, pl, cand->U)
+            : plan_need_regs(cg.is_sve ? ISA_SVE : ISA_NEON,
+                             MUL_NIBBLE, pl, cand->U, cand->remat,
+                             cand->pipe, 0, cand->crc_fold);
         int nregs = isa_nregs(cg.is_sve ? ISA_SVE : ISA_NEON);
         if (need > nregs) {
             snprintf(err, errlen,
@@ -2048,6 +2372,8 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     }
 
     compute_regs(&cg);
+    if (cg.oom)
+        goto oom;
 
     uint8_t *buf = malloc(1 << 20);
     if (!buf)
@@ -2071,11 +2397,42 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     for (size_t i = 0; i < cg.pool_len; i++)
         em_byte(&cg.em, cg.pool[i]);
     em_resolve(&cg.em);
-    if (cg.em.err) {
-        snprintf(err, errlen, "codegen error (branch/pool out of range)");
+    /* Error check: the emitter sets cg.em.err on buffer overflow,
+     * label/fixup realloc failure, or branch/pool out of range; pool_get
+     * and the gen_body/compute_regs helpers set cg.oom on allocation
+     * failure. Either way the generated code is incomplete -- reject
+     * cleanly instead of installing it. */
+    if (cg.em.err || cg.oom) {
+        snprintf(err, errlen, "aarch64 backend: codegen failed (%s)",
+                 cg.oom ? "out of memory" : "emitter error");
         free(buf);
         goto fail;
     }
+    /* BUG-COMBO-STATIC-F16: twin effect postcondition. If a twin was
+     * requested but its code path was never taken, the pin was a no-op:
+     * reject cleanly instead of recording a false twin label. */
+    {
+        struct { int req; uint32_t bit; const char *name; } twins[] = {
+            { cand->nt, TWIN_APPLIED_NT, "nt" },
+            { cand->prefetch_dist != 0, TWIN_APPLIED_PREFETCH, "prefetch" },
+            { cand->remat, TWIN_APPLIED_REMAT, "remat" },
+            { cand->xorsched, TWIN_APPLIED_XORSCHED, "xorsched" },
+            { cand->xorbit, TWIN_APPLIED_XORBIT, "xorbit" },
+            { cand->pipe, TWIN_APPLIED_PIPE, "pipe" },
+            { cand->rec_cf, TWIN_APPLIED_REC_CF, "rec_cf" },
+        };
+        for (size_t ti = 0; ti < sizeof(twins)/sizeof(twins[0]); ti++) {
+            if (twins[ti].req && !(cg.twin_applied & twins[ti].bit)) {
+                snprintf(err, errlen,
+                         "%s twin requested but its code path was not "
+                         "taken (phantom twin)",
+                         twins[ti].name);
+                free(buf);
+                goto fail;
+            }
+        }
+    }
+    v->twin_applied = cg.twin_applied;
     size_t total = (cg.em.len + 4095) & ~(size_t)4095;
 #ifdef RJ_WASM
     /* Compile-only (WebAssembly, tools/wasm/SPEC.md §S6.2): no

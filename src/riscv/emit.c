@@ -42,13 +42,16 @@ void em_init(em_t *e, uint8_t *buf, size_t cap)
 
 void em_byte(em_t *e, uint8_t v)
 {
-    assert(e->len < e->cap);
+    /* Buffer overflow (OOM path): set the sticky flag instead of
+     * asserting. All subsequent emits become no-ops; jit_build_version
+     * rejects the build cleanly after codegen. */
+    if (e->err || e->len >= e->cap) { e->err = 1; return; }
     e->buf[e->len++] = v;
 }
 
 static void emit32(em_t *e, uint32_t w)
 {
-    assert(e->len + 4 <= e->cap);
+    if (e->err || e->len + 4 > e->cap) { e->err = 1; return; }
     e->buf[e->len++] = (uint8_t)w;
     e->buf[e->len++] = (uint8_t)(w >> 8);
     e->buf[e->len++] = (uint8_t)(w >> 16);
@@ -73,10 +76,13 @@ static void patch32(em_t *e, size_t at, uint32_t w)
 
 int em_label(em_t *e)
 {
+    if (e->err) return -1;
     if (e->nlab == e->clab) {
-        e->clab = e->clab ? e->clab * 2 : 32;
-        e->lpos = realloc(e->lpos, (size_t)e->clab * sizeof(*e->lpos));
-        assert(e->lpos);
+        int nclab = e->clab ? e->clab * 2 : 32;
+        void *np = realloc(e->lpos, (size_t)nclab * sizeof(*e->lpos));
+        if (!np) { e->err = 1; return -1; }
+        e->lpos = np;
+        e->clab = nclab;
     }
     e->lpos[e->nlab] = (size_t)-1;
     return e->nlab++;
@@ -84,6 +90,7 @@ int em_label(em_t *e)
 
 void em_bind(em_t *e, int lab)
 {
+    if (e->err) return;
     assert(lab >= 0 && lab < e->nlab);
     assert(e->lpos[lab] == (size_t)-1); /* bind once */
     e->lpos[lab] = e->len;
@@ -91,10 +98,13 @@ void em_bind(em_t *e, int lab)
 
 static void add_fix(em_t *e, size_t at, int lab, int add, int kind)
 {
+    if (e->err) return;
     if (e->nfix == e->cfix) {
-        e->cfix = e->cfix ? e->cfix * 2 : 32;
-        e->fix = realloc(e->fix, (size_t)e->cfix * sizeof(*e->fix));
-        assert(e->fix);
+        int ncfix = e->cfix ? e->cfix * 2 : 32;
+        void *nf = realloc(e->fix, (size_t)ncfix * sizeof(*e->fix));
+        if (!nf) { e->err = 1; return; }
+        e->fix = nf;
+        e->cfix = ncfix;
     }
     e->fix[e->nfix].at = at;
     e->fix[e->nfix].lab = lab;
@@ -105,6 +115,7 @@ static void add_fix(em_t *e, size_t at, int lab, int add, int kind)
 
 void em_resolve(em_t *e)
 {
+    if (e->err) return;
     for (int i = 0; i < e->nfix; i++) {
         size_t labpos = e->lpos[e->fix[i].lab];
         assert(labpos != (size_t)-1); /* every referenced label is bound */
@@ -489,6 +500,12 @@ void em_vsrl_vi(em_t *e, int vd, int vs2, unsigned uimm)
 {
     assert(uimm < 32);
     em_opv(e, 0x28 /*101000*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
+}
+
+void em_vsll_vi(em_t *e, int vd, int vs2, unsigned uimm)
+{
+    assert(uimm < 32);
+    em_opv(e, 0x25 /*100101*/, vs2, (int)uimm, 0x3 /*OPIVI*/, vd);
 }
 
 /* Zvbb vector bitmanip. OPIVV class (funct3=000); operand placement

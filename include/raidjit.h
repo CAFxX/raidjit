@@ -41,12 +41,20 @@ typedef struct {
                       * stays as the correct gate for any future BITAlg
                       * use. */
     int gfni;        /* Galois-field affine instructions (needs AVX512) */
+    int pclmulqdq;   /* CLMUL carryless multiply (CRC-32 folding);
+                      * CPUID.1:ECX[1]. No XCR0 state needed. */
+    int vpclmulqdq;  /* AVX-512 vector carryless multiply (4x64-bit);
+                      * CPUID.7:ECX[10]. No XCR0 state needed. */
+    int sse42;       /* SSE4.2 (crc32 instruction); CPUID.1:ECX[20] */
     int cet_ss;      /* CPU supports CET shadow stack */
     /* AArch64 */
     int neon;        /* Advanced SIMD, baseline for AArch64 */
     int sve;         /* Scalable Vector Extension */
     int sve2;        /* SVE2 */
     int sve_vl;      /* SVE vector length in bytes (0 if no SVE) */
+    int crc32;       /* ARMv8 CRC32 instructions; HWCAP_CRC32 (AT_HWCAP bit 7) */
+    int pmull;       /* NEON PMULL (carryless multiply); HWCAP_PMULL (bit 4) */
+    int sha3;        /* SHA3 incl. EOR3; HWCAP_SHA3 (AT_HWCAP bit 17) */
     /* RISC-V */
     int rvv;         /* Vector extension */
     int rvv_vlen;    /* VLEN in bytes (0 if no RVV) */
@@ -70,6 +78,7 @@ typedef struct {
                       * one per nibble -- and neither vandn nor vbrev8
                       * can fuse them, so no profitable twin exists). */
     int rvv_zicond;  /* Zicond integer conditional (czero.eqz/nez) */
+    int zbc;         /* Zbc scalar carryless multiply (clmul/clmulh) */
     int p_ext;       /* Packed SIMD P-extension */
     int p_version;   /* P-extension draft version: 5=0.5, 9=0.9.x, 20=0.20 */
     char brand[64];
@@ -473,6 +482,59 @@ typedef struct {
 int rj_list_variants(const rj_topology *topo, rj_op op,
                      const rj_options *opts,
                      rj_plan_variant *out, int nout);
+
+/* ---------------- CRC-32 (standalone fast API, Option C) ----------------
+ * CRC-32/ISO-HDLC (the "PKZIP" CRC): polynomial 0x04C11DB7 reflected
+ * (0xEDB88320), init 0xFFFFFFFF, refin/refout true, xorout 0xFFFFFFFF.
+ * Check value: CRC32("123456789") = 0xCBF43926.
+ *
+ * rj_crc32_fast is a drop-in faster replacement for rj_crc32_update with
+ * an IDENTICAL chaining contract: it takes the running CRC and returns
+ * the updated running CRC, so rj_crc32_fast(c, d, n) ==
+ * rj_crc32_update(c, d, n) for every input (bit-exact; proven by
+ * tests/test_crc_fast.c against the scalar reference, an independent
+ * bitwise implementation, and zlib). Initialize with rj_crc32_init,
+ * finalize with rj_crc32_final, exactly as with rj_crc32_update:
+ *
+ *   uint32_t c; rj_crc32_init(&c);
+ *   c = rj_crc32_fast(c, chunk1, n1);
+ *   c = rj_crc32_fast(c, chunk2, n2);   // chaining across calls
+ *   uint32_t out = rj_crc32_final(c);
+ *
+ * len == 0 is legal (data may then be NULL); the call is a no-op
+ * returning crc unchanged. Thread-safe: dispatch has no mutable state.
+ *
+ * Edge-case contract (spec Finding 17b): data must point to len
+ * readable bytes (len > 0). Chunk arithmetic inside the implementation
+ * is wraparound-free by construction (size_t block counts, no 32-bit
+ * truncation; tests/test_crc_fast.c checks 2^32-16/2^32/2^32+16).
+ * Absurd lengths are a caller bug: the call performs no UB (no
+ * over-read, no wraparound), but the result for such inputs is not a
+ * meaningful CRC.
+ *
+ * Dispatch: the call goes to the best backend compiled for the host
+ * ISA -- x86-64: VPCLMULQDQ fusion (512-bit lanes with AVX-512, else
+ * 256-bit VPCLMULQDQ lanes), else 128-bit PCLMULQDQ fold, else slice-by-8
+ * (the x86 `crc32` instruction is CRC-32C/Castagnoli-only and unusable for
+ * IEEE CRC-32, so there is no hw-crc32 tier on x86); AArch64: PMULL+SHA3
+ * fusion, else hw crc32, else PMULL fold, else slice-by-8; RISC-V: Zvbc
+ * vector fold, else Zbc scalar fold, else slice-by-8; WASM/unknown:
+ * slice-by-8. Unknown or absent features degrade to a slower CORRECT
+ * variant -- never wrong, never SIGILL. See docs/crc.md for the
+ * per-ISA variant table, fallback chains, and where each variant wins.
+ *
+ * Performance note: every throughput figure quoted for these paths
+ * (docs/crc.md, hidden_files/crc_optimum_research/FINAL_SYNTHESIS.md)
+ * is ANALYTIC (derived from instruction throughput tables) or REPORTED
+ * from the literature -- never measured in this repo. No benchmark
+ * numbers are claimed.
+ */
+void rj_crc32_init(uint32_t *crc); /* *crc = 0xFFFFFFFF */
+uint32_t rj_crc32_update(uint32_t crc, const void *data, size_t len);
+uint32_t rj_crc32_update_scalar(uint32_t crc, const void *data, size_t len);
+uint32_t rj_crc32_final(uint32_t crc); /* ^ 0xFFFFFFFF */
+uint32_t rj_crc32(const void *data, size_t len); /* one-shot */
+uint32_t rj_crc32_fast(uint32_t crc, const void *data, size_t len);
 
 #ifdef __cplusplus
 }

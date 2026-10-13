@@ -60,6 +60,14 @@ void rj_cpu_detect(rj_cpu_info *out)
     cpuid(1, 0, &a, &b, &c, &d);
     out->sse2  = (d >> 26) & 1;
     out->ssse3 = (c >> 9) & 1;
+    out->pclmulqdq = (c >> 1) & 1;  /* CLMUL carryless multiply; CPUID.1:ECX[1].
+                                    * No XCR0 state needed (integer/SSE state). */
+    out->sse42 = (c >> 20) & 1;    /* SSE4.2 (crc32 insn); CPUID.1:ECX[20].
+                                    * NOTE: the x86 crc32 instruction implements
+                                    * CRC-32C (Castagnoli, 0x1EDC6F41), NOT the
+                                    * IEEE CRC-32 (0x04C11DB7) this library
+                                    * computes, so it is not usable for
+                                    * rj_crc32_fast (see src/x86_64/crc_fast.c). */
     int osxsave = (c >> 27) & 1;
     int avx_hw  = (c >> 28) & 1;
 
@@ -97,6 +105,11 @@ void rj_cpu_detect(rj_cpu_info *out)
         out->gfni     = ((c >> 8) & 1) && out->avx512f && avx512_os;
         out->cet_ss   = ((c >> 7) & 1); /* CET_SS: HW support; OS enablement
                                          * is separate (see rj_options) */
+        /* VPCLMULQDQ: vector carryless multiply (4x64-bit); CPUID.7:ECX[10].
+         * No XCR0 state needed for the bit itself (spec R3). Note the 256-bit
+         * VPCLMULQDQ path in src/x86_64/crc_fast.c uses YMM registers; see
+         * the dispatch notes there. */
+        out->vpclmulqdq = ((c >> 10) & 1);
     }
 }
 

@@ -204,14 +204,16 @@ int planid_format(char *out, size_t outlen, const topo_int_t *ti,
     if (cur_putc(&c, ':'))
         return -1;
     /* twins axis, fixed order; "-" when empty. */
-    /* BUG-COMBO-STATIC-F05: rec_cf was missing here although its token is
-     * emitted below. A rec_cf-only candidate formatted as "-" and lost
-     * the twin on re-parse. (crc_fold does not exist in this snapshot
-     * tree; it needs a re-sync from main, not a gate fix.) */
+    /* BUG-COMBO-STATIC-F05: rec_cf and crc_fold were missing here although
+     * their tokens are emitted below. A rec_cf/crc_fold-only candidate
+     * formatted as "-" and lost the twin on re-parse (identity
+     * corruption). CLASS HUNT: any new cand_t twin axis must be added
+     * here, to planid format/parse, to cand_spec_equal, to any_twin, and
+     * to twin_dominates in the same change. */
     int any_twin = cand->nt || cand->prefetch_dist || cand->ternlog ||
                    cand->remat || cand->xorsched || cand->xorbit ||
                    cand->mshift || cand->permi2b || cand->pipe || cand->lmul ||
-                   cand->rec_cf;
+                   cand->rec_cf || cand->crc_fold;
     if (!any_twin) {
         if (cur_putc(&c, '-'))
             return -1;
@@ -245,6 +247,7 @@ int planid_format(char *out, size_t outlen, const topo_int_t *ti,
         TWIN_TOK(cand->permi2b, "permi2b");
         TWIN_TOK(cand->pipe, "pipe");
         TWIN_TOK(cand->rec_cf, "reccf");
+        TWIN_TOK(cand->crc_fold, "crc_fold");
         if (cand->lmul) {
             if (!first && cur_putc(&c, '+'))
                 return -1;
@@ -704,6 +707,9 @@ int planid_parse(const char *id, const topo_int_t *ti, const char *toponame,
             } else if (field_eq(tok, "reccf")) {
                 if (c->rec_cf) goto dup_twin;
                 c->rec_cf = 1;
+            } else if (field_eq(tok, "crc_fold")) {
+                if (c->crc_fold) goto dup_twin;
+                c->crc_fold = 1;
             } else if (tok.n > 2 && memcmp(tok.p, "pf", 2) == 0) {
                 field_t vf2 = {tok.p + 2, tok.n - 2};
                 unsigned long long d;
@@ -819,9 +825,58 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
             SHAPE_BAD("unknown plan ID: xorbit needs GF-multiply rows");
         if (cand->mul != MUL_NIBBLE)
             SHAPE_BAD("unknown plan ID: xorbit needs the nibble method");
-        if (cand->ternlog || cand->permi2b || cand->remat || cand->xorsched)
+        /* BUG-COMBO-STATIC-F03: rec_cf was missing from this list, so a
+         * pinned rec_cf+xorbit spec passed L1 and silently dropped xorbit
+         * on RVV (dispatch-order drop). */
+        if (cand->ternlog || cand->permi2b || cand->remat || cand->xorsched ||
+            cand->rec_cf)
             SHAPE_BAD("unknown plan ID: xorbit combines with no other "
                       "body twin");
+        /* BUG_t1_529: xorbit is 5-8x worse than nibble on x86. */
+        if (cand->isa == ISA_SSE || cand->isa == ISA_AVX2 ||
+            cand->isa == ISA_AVX512)
+            SHAPE_BAD("unknown plan ID: xorbit not available on x86 "
+                      "(BUG_t1_529)");
+    }
+    /* BUG-COMBO-STATIC-F03: rec_cf/crc_fold had no L1 validation at all;
+     * validity rested on three divergent per-backend gates. This shared
+     * predicate mirrors the strictest common contract (planner
+     * enumeration + all backend gates): P_MULACC recovery with
+     * rec_cf_data, nf in {1,2} matching the plan shape, a nontrivial
+     * coefficient, and no other body twin (ternlog is the one allowed
+     * sibling: legitimate ternlog+rec_cf on x86). */
+    if (cand->rec_cf) {
+        const struct rec_cf_data *cfd = pl->rec_cf;
+        if (!cfd || pl->kind != P_MULACC ||
+            (cfd->nf != 1 && cfd->nf != 2) ||
+            pl->n_out != cfd->nf || pl->n_in != cfd->ns ||
+            !plan_any_nontrivial(pl) ||
+            cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->remat || cand->mshift || cand->pipe)
+            SHAPE_BAD("unknown plan ID: rec_cf needs a P_MULACC recovery "
+                      "plan with rec_cf_data (nf 1..2, n_out == nf, "
+                      "n_in == ns), a nontrivial coefficient, and no "
+                      "other body twin");
+    }
+    /* BUG-COMBO-STATIC-F03: crc_fold likewise had no L1 check. Static
+     * parts only -- the uarch gate (fused_crc_interleave_ok) needs the
+     * CPU, so the backend keeps that check (defense in depth). */
+    if (cand->crc_fold) {
+        if (cand->isa != ISA_AVX512)
+            SHAPE_BAD("unknown plan ID: crc_fold is AVX-512-only");
+        if (pl->noop)
+            SHAPE_BAD("unknown plan ID: crc_fold incompatible with noop");
+        if (cand->mul != MUL_NIBBLE && cand->mul != MUL_GFNI)
+            SHAPE_BAD("unknown plan ID: crc_fold needs MUL_NIBBLE or "
+                      "MUL_GFNI");
+        if (pl->kind == P_DELTA)
+            SHAPE_BAD("unknown plan ID: crc_fold is ENCODE-only");
+        if (cand->pipe || cand->xorbit || cand->xorsched || cand->permi2b ||
+            cand->mshift || cand->remat || cand->maskedtail ||
+            cand->ternlog || cand->predtail)
+            SHAPE_BAD("unknown plan ID: crc_fold incompatible with "
+                      "pipe/xorbit/xorsched/permi2b/mshift/remat/"
+                      "maskedtail/ternlog/predtail twins");
     }
     if (cand->mshift) {
         if (cand->isa != ISA_AVX512 || cand->mul != MUL_NIBBLE)
@@ -829,8 +884,10 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
         if (pl->kind != P_MULACC && pl->kind != P_DELTA &&
             pl->kind != P_HORNER)
             SHAPE_BAD("unknown plan ID: mshift needs GF-multiply rows");
-        /* BUG-COMBO-PARITY-TWIN-DROP: use plan_any_nontrivial (the single
-         * source of truth), not a local scan. */
+        /* BUG-COMBO-PARITY-TWIN-DROP: the kind gate alone passes degenerate
+         * XOR-only deltas (e.g. raid1 parity_update changed=[0], whose
+         * P_DELTA matrix is [[1]]). plan_any_nontrivial is the single source
+         * of truth for "some coefficient outside {0,1}" (plan.c:61). */
         if (!plan_any_nontrivial(pl))
             SHAPE_BAD("unknown plan ID: mshift needs GF-multiply rows");
         if (cand->xorbit || cand->permi2b || cand->remat || cand->xorsched)
@@ -866,10 +923,21 @@ int planid_cand_valid(const plan_t *pl, const cand_t *cand, char *err,
     }
     if (cand->ternlog && cand->isa != ISA_AVX512)
         SHAPE_BAD("unknown plan ID: ternlog is AVX-512-only");
-    /* BUG-COMBO-E1X86-01: ternlog only takes effect on the P_XOR fold or
-     * the MUL_NIBBLE body. P_HORNER never consults it, and an all-trivial
-     * P_DELTA takes the c==1 branch everywhere. Use plan_any_nontrivial
-     * (NULL-mat-safe for the UI path). */
+    /* BUG-COMBO-TRAP-001/003: the GFNI multiply path (c_aff) asserts
+     * !is_sse and em_vgf2p8affineqb needs VL64, so MUL_GFNI is
+     * AVX-512-only in the backend. The planner only enumerates it at
+     * ISA_AVX512 (plan.c); a pinned mul=gfni at any other ISA must
+     * fail here, never reach the asserts. */
+    if (cand->mul == MUL_GFNI && cand->isa != ISA_AVX512)
+        SHAPE_BAD("unknown plan ID: MUL_GFNI needs the AVX-512 ISA");
+    /* Ternlog only takes effect on the P_XOR fold or the MUL_NIBBLE body
+     * (nibble/permi2b branches, rec_cf syndrome). On MUL_GFNI/MUL_ZVBC the
+     * flag is never consulted, so the pin would be a phantom
+     * (BUG-COMBO-E1X86-01). P_HORNER's emitter never consults ternlog
+     * either, and an all-trivial (0/1-only) P_DELTA takes the c==1 branch
+     * everywhere. The backend phantom postcondition is the backstop; this
+     * gate fails earlier with a clear reason. plan_any_nontrivial returns
+     * 1 for NULL mat (conservative), so the explorer UI path is safe. */
     if (cand->ternlog && pl->kind != P_XOR &&
         (pl->kind == P_HORNER || cand->mul != MUL_NIBBLE ||
          !plan_any_nontrivial(pl)))

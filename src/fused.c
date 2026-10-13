@@ -18,11 +18,16 @@
  * api_batched.h.
  */
 #include "fused.h"
+#include "api.h"
 #include "crc.h"
 #include "striping.h"
+#ifdef __x86_64__
+#include "x86_64/crc_fold.h"
+#endif
 
 #include <assert.h>
 #include <pthread.h>
+#include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +42,8 @@ struct rj_fused {
     size_t n_flat_in, n_flat_out;
     int crc_op;    /* sequence index of the CRC op, -1 when absent */
     int crc_tgt;   /* its target data-op index */
+    int crc_fold;  /* Phase 2: 1 = the target unit has in-kernel CRC folding
+                    * (4-arg kernel); 0 = scalar fallback (3-arg kernel) */
     int ndata, npar; /* topology dims (for the CRC target layout) */
     size_t tile;   /* plan-time tile size (rj_tile_select) */
     int slot;      /* trampoline slot, -1 when not installed */
@@ -212,7 +219,21 @@ rj_fused *rj_fuse_compile(const rj_topology *topo, const rj_fop_t *ops,
                 snprintf(err, errlen, "out of memory");
             goto fail;
         }
-        rj_jit *u = rj_compile(topo, &op, &o, err, errlen);
+        rj_jit *u = NULL;
+        /* Phase 2: for the CRC target, try in-kernel folding first (when
+         * the uarch gate is open). If want_crc compile fails (no buildable
+         * kernel), fall back to the plain compile + scalar CRC path. */
+        if (k == crc_tgt) {
+            rj_cpu_info cpu;
+            rj_cpu_detect(&cpu);
+            if (fused_crc_interleave_ok(&cpu)) {
+                u = rj_compile_want_crc(topo, &op, &o, err, errlen);
+                /* If want_crc fails, u==NULL and we fall through to the
+                 * plain compile below. */
+            }
+        }
+        if (!u)
+            u = rj_compile(topo, &op, &o, err, errlen);
         rj_op_free(&op);
         if (!u)
             goto fail;
@@ -220,6 +241,9 @@ rj_fused *rj_fuse_compile(const rj_topology *topo, const rj_fop_t *ops,
         f->fns[k] = rj_get_fn(u);
         f->nin[k] = ni;
         f->nout[k] = no;
+        /* Phase 2: record whether this unit folds (for the driver). */
+        if (k == crc_tgt)
+            f->crc_fold = rj_jit_handle_crc_fold(u);
     }
 
     /* ---- flat buffer layout (sequence order) ---- */
@@ -268,6 +292,11 @@ static void fused_driver_call(const struct rj_fused *f,
     assert(len >= 1);
     int nops = f->nops;
     size_t tile = f->tile;
+    /* REDUX crc_fold invariant: tile is a multiple of 16, so per-tile
+     * partial chunks only occur at the final len%16 bytes (handled
+     * driver-side after the loop). rj_tile_select guarantees this
+     * (power of two >= 4096); assert the coupling. */
+    assert(!f->crc_fold || tile % 16 == 0);
 
     const void *ftin[RJ_FUSED_MAX_FLAT];
     void *ftout[RJ_FUSED_MAX_FLAT];
@@ -278,9 +307,26 @@ static void fused_driver_call(const struct rj_fused *f,
     int tn = t >= 0 ? f->nin[t] : 0;
     int tno = t >= 0 ? f->nout[t] : 0;
     assert(t < 0 || tn + tno <= RJ_FUSED_MAX_FLAT / 2);
-    if (crc && t >= 0)
-        for (int i = 0; i < tn + tno; i++)
-            rj_crc32_init(&acc[i]);
+    /* REDUX: fold state is 16 bytes per stream (one 128-bit state;
+     * spec §3.1-§3.2). Allocated on the stack, 64-byte aligned (the
+     * contract requires 16). */
+    alignas(64) uint8_t fold_state[RJ_FUSED_MAX_FLAT / 2 * 16];
+    int nstreams = tn + tno;
+    if (f->crc_fold) {
+        assert(t >= 0);
+        /* Initialize fold state: the backend defines the init convention.
+         * For x86-64: 0xFFFFFFFF in low 32 bits (reflected init), rest
+         * zero. The backend's kernel entry loads this. */
+        memset(fold_state, 0, (size_t)nstreams * 16);
+        for (int i = 0; i < nstreams; i++) {
+            uint32_t *p = (uint32_t *)(fold_state + i * 16);
+            p[0] = 0xFFFFFFFFu;
+        }
+    } else {
+        if (crc && t >= 0)
+            for (int i = 0; i < tn + tno; i++)
+                rj_crc32_init(&acc[i]);
+    }
 
     for (size_t off = 0; off < len; off += tile) {
         size_t tl = len - off < tile ? len - off : tile;
@@ -296,23 +342,62 @@ static void fused_driver_call(const struct rj_fused *f,
             for (int j = 0; j < f->nout[k]; j++)
                 ftout[boo + (size_t)j] =
                     (uint8_t *)out[boo + (size_t)j] + off;
-            f->fns[k](&ftin[bii], f->nout[k] ? &ftout[boo] : NULL, tl);
+            /* Phase 2: 4-arg call when folding, 3-arg otherwise. */
+            if (f->crc_fold && k == t) {
+                rj_fn_crc_fold fn4 = (rj_fn_crc_fold)(void *)f->fns[k];
+                fn4(&ftin[bii], f->nout[k] ? &ftout[boo] : NULL, tl,
+                    fold_state);
+            } else {
+                f->fns[k](&ftin[bii], f->nout[k] ? &ftout[boo] : NULL, tl);
+            }
         }
-        if (crc && t >= 0) {
-            /* The target's tile buffers are hot in cache here. */
+        if (crc && t >= 0 && !f->crc_fold) {
+            /* Scalar fallback: the target's tile buffers are hot in cache
+             * here. (When folding, the kernel already updated fold_state;
+             * no scalar pass needed.) */
             size_t bii = f->base_in[t], boo = f->base_out[t];
             for (int i = 0; i < tn; i++)
-                acc[i] = rj_crc32_update(acc[i], ftin[bii + (size_t)i],
-                                         tl);
+                acc[i] = rj_crc32_fast(acc[i], ftin[bii + (size_t)i],
+                                       tl);
             for (int j = 0; j < tno; j++)
-                acc[tn + j] = rj_crc32_update(acc[tn + j],
-                                             ftout[boo + (size_t)j], tl);
+                acc[tn + j] = rj_crc32_fast(acc[tn + j],
+                                           ftout[boo + (size_t)j], tl);
         }
     }
 
-    if (crc && t >= 0)
-        for (int i = 0; i < tn + tno; i++)
-            crc[i] = rj_crc32_final(acc[i]);
+    if (crc && t >= 0) {
+        if (f->crc_fold) {
+            /* Phase 2 v2: handle tail bytes (len % 16) driver-side, then
+             * finalize each stream's 128-bit state to CRC-32 via per-stream
+             * Barrett reduction. No cross-lane combination (lanes are
+             * independent streams). */
+#ifdef __x86_64__
+            size_t tail_len = len % 16;
+            if (tail_len > 0) {
+                size_t bii = f->base_in[t], boo = f->base_out[t];
+                /* Tail bytes are at the end of each stream. */
+                for (int i = 0; i < tn; i++) {
+                    const uint8_t *p =
+                        (const uint8_t *)in[bii + (size_t)i] + len - tail_len;
+                    rj_crc_fold_tail(&fold_state[i * 16], p, tail_len);
+                }
+                for (int j = 0; j < tno; j++) {
+                    const uint8_t *p =
+                        (const uint8_t *)out[boo + (size_t)j] + len - tail_len;
+                    rj_crc_fold_tail(&fold_state[(tn + j) * 16], p, tail_len);
+                }
+            }
+            rj_crc_fold_finalize_x86(fold_state, nstreams, len, crc);
+#else
+            /* AArch64/RISC-V gates are closed; this is unreachable. */
+            for (int i = 0; i < nstreams; i++)
+                crc[i] = 0;
+#endif
+        } else {
+            for (int i = 0; i < tn + tno; i++)
+                crc[i] = rj_crc32_final(acc[i]);
+        }
+    }
 }
 
 /* Direct driver call for internal composition (no trampoline slot
@@ -447,4 +532,40 @@ int rj_fused_sub_npar(const rj_fused *f, int idx)
     if (!f || idx < 0 || idx >= f->nops)
         return -1;
     return f->kinds[idx] == RJ_FOP_ENCODE ? f->npar : -1;
+}
+
+/* Phase 2 microarchitecture gate for interleaved CRC folding.
+ * Conservative: returns 1 ONLY for the allowlisted (µarch, feature)
+ * combinations where FINAL_SYNTHESIS.md shows the fold hides under DRAM
+ * bandwidth. Everything else (including unknown/new µarchs) returns 0
+ * for the scalar fallback path. */
+#include "cpu.h"
+int fused_crc_interleave_ok(const rj_cpu_info *cpu)
+{
+    if (!cpu)
+        return 0;
+#if defined(__x86_64__)
+    /* REDUX: PCLMULQDQ (128-bit fold) + AVX512F required; SPR-only
+     * (spec §3.6 -- ICL-SP/Zen4 are NOT carried over; re-opening them
+     * needs per-µarch throughput data and a spec amendment). Unknown or
+     * new µarchs fail closed. cpu->vpclmulqdq is deliberately NOT
+     * required: the fold uses 128-bit PCLMULQDQ, not VPCLMULQDQ. */
+    if (!cpu->pclmulqdq || !cpu->avx512f)
+        return 0;
+    if (rj_uarch_current() == RJ_UARCH_INTEL_SAPPHIRERAPIDS)
+        return 1;
+    return 0;
+#elif defined(__aarch64__)
+    /* AArch64: gate CLOSED for Phase 2 (see spec §2). The codebase has no
+     * Apple-silicon µarch detection, making a conservative allowlist
+     * unimplementable. Always scalar fallback. */
+    (void)cpu;
+    return 0;
+#else
+    /* RISC-V and others: never interleave in Phase 2 (conservative).
+     * RISC-V throughput data does not exist; unknown ISAs default
+     * to scalar. */
+    (void)cpu;
+    return 0;
+#endif
 }
