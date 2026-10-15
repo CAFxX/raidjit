@@ -1341,7 +1341,7 @@ int plan_candidates(const plan_t *pl, const rj_cpu_info *cpu,
             for (int i = 0; i < ntemp && n < maxout; i++) {
                 if (out[i].xorbit || out[i].xorsched || out[i].permi2b ||
                     out[i].remat || out[i].mshift || out[i].pipe ||
-                    out[i].rec_cf)
+                    out[i].rec_cf || out[i].ternlog)
                     continue;
                 /* rec_cf is a recovery-only twin; the plan must be a
                  * recovery plan (rec_cf_data only exists for those). */

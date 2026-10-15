@@ -1294,7 +1294,8 @@ static void gen_body_rec_cf(cg_t *cg)
     /* The planner excludes the other body twins from rec_cf bases;
      * jit_build_version rejects them outright. */
     assert(!cg->cand.xorbit && !cg->cand.xorsched && !cg->cand.permi2b &&
-           !cg->cand.remat && !cg->cand.mshift && !cg->cand.pipe);
+           !cg->cand.remat && !cg->cand.mshift && !cg->cand.pipe &&
+           !cg->cand.ternlog);
     /* P_MULACC kind guarantees a nontrivial baked R, hence need_mask:
      * the nibble temps (tlo/thi/r1/r2/tbl/mask) or GFNI temps (t2/tbl)
      * are allocated. */
@@ -2760,13 +2761,13 @@ int jit_build_version(const plan_t *pl, const cand_t *cand,
     }
     /* Recovery closed-form emitter twin (algos #4): implemented for
      * P_MULACC recovery plans; never combined with the other body
-     * twins (xorbit/xorsched/permi2b/remat/mshift/pipe -- the planner
-     * excludes those bases at enumeration). Anything else fails the
-     * build cleanly -- never wrong code. */
+     * twins (xorbit/xorsched/permi2b/remat/mshift/pipe/ternlog -- the
+     * planner excludes those bases at enumeration). Anything else fails
+     * the build cleanly -- never wrong code. */
     if (cand->rec_cf &&
         (pl->kind != P_MULACC || pl->rec_cf == NULL || cand->xorbit ||
          cand->xorsched || cand->permi2b || cand->remat || cand->mshift ||
-         cand->pipe)) {
+         cand->pipe || cand->ternlog)) {
         snprintf(err, errlen,
                  "x86_64 backend: rec_cf twin needs P_MULACC without "
                  "other body twins");
