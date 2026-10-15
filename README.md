@@ -1,3 +1,11 @@
+> # ⚠️ EXPERIMENTAL — DO NOT USE ⚠️
+>
+> **This is experimental, pre-alpha software, written by AI agents.**
+> It is unfinished, unreviewed, and may be broken in ways that are not obvious.
+> **Do not use it yet.**
+
+---
+
 # raidjit
 
 JIT compiler for RAID encode / erasure-recovery kernels. Given a topology
