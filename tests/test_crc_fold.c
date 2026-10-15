@@ -1,7 +1,11 @@
 /* REDUX crc_fold kernel smoke test.
  *
- * 1. Gate closed (host CPU): plan_candidates with want_crc=1 returns zero
- *    candidates; jit_build_version with hand-set crc_fold=1 fails cleanly.
+ * 1. Gate closed (SKYLAKEX override -- deterministic on ANY host): the
+ *    fold gate opens only on the SPR uarch bucket (src/fused.c), so a
+ *    host in that bucket (e.g. CI's Xeon 8573C, Emerald Rapids) must not
+ *    be able to fail this section. plan_candidates with want_crc=1
+ *    returns zero candidates; jit_build_version with hand-set crc_fold=1
+ *    fails cleanly.
  * 2. Gate open (SPR override): plan_candidates yields crc_fold=1
  *    candidates; jit_build_version succeeds; calling the kernel once
  *    through the 4-arg entry does not crash.
@@ -53,6 +57,12 @@ int main(void)
         cand_t *cands = malloc(512 * sizeof(cand_t));
         int n, nfold, i;
 
+        /* Force the gate closed deterministically: the gate opens only
+         * for the SPR uarch bucket, so on a host in that bucket (e.g. an
+         * Emerald Rapids CI machine) the unfixed section failed its
+         * nfold==0 check. SKYLAKEX keeps the gate closed on ANY host,
+         * exactly mirroring how section 2 forces it open. */
+        rj_uarch_override(RJ_UARCH_INTEL_SKYLAKEX);
         memset(&pl, 0, sizeof(pl));
         topo_int_build(&ti, topo, err, sizeof(err));
         plan_build(&ti, &op, "raid5-4", &pl, err, sizeof(err));

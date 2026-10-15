@@ -134,6 +134,11 @@ int main(int argc, char **argv)
     }
     if (gate_open)
         rj_uarch_override(RJ_UARCH_INTEL_SAPPHIRERAPIDS);
+    else
+        /* Force the gate closed deterministically: on a host in the SPR
+         * uarch bucket (e.g. an Emerald Rapids CI machine) the host gate
+         * is open, which would fail the closed-mode checks below. */
+        rj_uarch_override(RJ_UARCH_INTEL_SKYLAKEX);
 
     rj_fuse_options fopts;
     rj_fuse_options_default(&fopts);

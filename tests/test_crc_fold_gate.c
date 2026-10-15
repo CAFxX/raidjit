@@ -30,8 +30,11 @@ int main(int argc, char **argv)
     int spr_mode = argc > 1 && !strcmp(argv[1], "spr");
 
     if (!spr_mode) {
-        /* Host uarch (non-SPR on this box): gate closed even with both
-         * flags set. */
+        /* Gate closed, deterministically: force a non-SPR uarch. The gate
+         * opens for the SPR uarch bucket, so on a host in that bucket
+         * (e.g. an Emerald Rapids CI machine) the unfixed check failed.
+         * SKYLAKEX keeps the gate closed on ANY host. */
+        rj_uarch_override(RJ_UARCH_INTEL_SKYLAKEX);
         rj_cpu_info c;
         rj_cpu_detect(&c);
         c.pclmulqdq = 1;
